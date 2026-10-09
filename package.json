@@ -1,0 +1,33 @@
+{
+  "name": "merge-master",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "scripts": {
+    "dev:host": "pnpm --filter @mm/host dev",
+    "dev:participant": "pnpm --filter @mm/participant dev",
+    "dev:server": "cargo run -p collect-server --bin collect-dev-server -- --fixture fixtures/budget.sheet.json --required F --dev-admin",
+    "build:participant": "pnpm --filter @mm/participant build",
+    "tauri": "tauri",
+    "app:dev": "pnpm build:participant && tauri dev",
+    "app:build": "node scripts/build-installer.mjs",
+    "fixture": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-fixture.ps1 && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-fixture-variants.ps1",
+    "spike:excel": "cargo run -p excel-com --example spike --release -- fixtures/generated/budget.xlsx",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test && cargo test --workspace",
+    "types": "cargo test --workspace --lib -q export_bindings && node scripts/gen-types-index.mjs",
+    "e2e": "pnpm build:participant && playwright test",
+    "format": "prettier --write . && cargo fmt --all",
+    "format:check": "prettier --check . && cargo fmt --all --check",
+    "smoke:host": "cargo build -p merge-master && node scripts/host-smoke.mjs",
+    "smoke:release": "node scripts/host-smoke.mjs --release",
+    "load": "cargo test -p collect-server --release --test load -- --ignored --nocapture",
+    "bump": "node scripts/version.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.1",
+    "typescript": "^5.9.0",
+    "@playwright/test": "^1.64.0",
+    "prettier": "^3.9.9"
+  }
+}

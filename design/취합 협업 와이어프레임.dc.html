@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&display=swap" rel="stylesheet">
+<style>body{margin:0;background:#f0eee9;font-family:'Gaegu',system-ui,sans-serif;color:#222}*{box-sizing:border-box}a{color:#2a78d6}a:hover{color:#1d5aa6}.dv-turn{padding:40px 44px 32px;border-bottom:1px solid rgba(0,0,0,.08);scroll-margin-top:16px}.dv-thd{display:flex;align-items:baseline;gap:10px;margin:0 0 20px}.dv-tid{font:600 10px ui-monospace,Menlo,monospace;padding:3px 7px;background:#1a1a1a;color:#fff;border-radius:4px;text-decoration:none}.dv-tname{font:600 13px/1.2 system-ui,sans-serif;color:#1a1a1a}.dv-opts{display:flex;flex-wrap:wrap;gap:48px 40px;align-items:flex-start}.dv-opt{flex:none;display:flex;flex-direction:column;gap:9px;scroll-margin-top:16px}.dv-oid{font:600 10.5px ui-monospace,Menlo,monospace;padding:3px 7px;background:rgba(0,0,0,.08);color:#1a1a1a;border-radius:5px;text-decoration:none}.dv-olabel{display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 system-ui,sans-serif;color:rgba(0,0,0,.55)}.dv-card{max-width:100%;background:#fff;border:1px solid rgba(0,0,0,.08);border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}.dv-opt:target .dv-oid{background:#2a78d6;color:#fff}.dv-next{margin:28px 0 0;font:12px/1.5 system-ui,sans-serif;color:rgba(0,0,0,.5)}</style>
+</helmet>
+<section class="dv-turn" id="t1">
+<div class="dv-thd"><a class="dv-tid" href="#t1">1</a><span class="dv-tname">단일 방향 · 호스트(Windows 앱) → 참여자(브라우저) 전체 흐름</span></div>
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:-8px 0 28px;font:12px/1.4 system-ui,sans-serif;color:rgba(0,0,0,.55)">
+<span>흐름</span><a class="dv-oid" href="#1a">1a</a><span>불러오기 →</span><a class="dv-oid" href="#1b">1b</a><span>취합 설정 →</span><a class="dv-oid" href="#1c">1c</a><span>서비스 시작 →</span><a class="dv-oid" href="#1e">1e</a><span>참여자 접속 →</span><a class="dv-oid" href="#1f">1f</a><span>그리드 /</span><a class="dv-oid" href="#1g">1g</a><span>행 단위 입력 →</span><a class="dv-oid" href="#1d">1d</a><span>모니터링 · 수시로</span><a class="dv-oid" href="#1h">1h</a><span>히스토리,</span><a class="dv-oid" href="#1i">1i</a><span>알림·강조·채팅</span>
+<span style="margin-left:12px">범례: 빗금 = 입력 금지 · 빨간 모서리 = 필수 미입력 · 노랑 = 호스트 강조 · 이름표 = 다른 사람 커서 · 파란 원 = 주석</span>
+</div>
+<div class="dv-opts">
+
+<div class="dv-opt" id="1a">
+<div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a>호스트 · 엑셀 불러오기 (COM / 시트 선택)</div>
+<div class="dv-card" style="width:1200px">
+<div style="height:34px;display:flex;align-items:center;gap:10px;padding-left:12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:15px"><span style="width:14px;height:14px;background:#222;border-radius:3px"></span><b>엑셀 취합 도구</b><span style="color:#777">새 취합</span><span style="flex:1"></span><span style="font-size:14px;color:#2f9e6b">● Excel 연결됨 (COM)</span><span style="display:flex;margin-left:12px;font-size:15px"><span style="width:42px;text-align:center">–</span><span style="width:42px;text-align:center">□</span><span style="width:42px;text-align:center">✕</span></span></div>
+<div style="display:flex;height:640px">
+<div style="width:156px;flex:none;border-right:1.5px solid #222;background:#fbfaf8;padding:14px 10px;display:flex;flex-direction:column;gap:4px;font-size:16px"><div style="padding:6px 10px;border-radius:6px;background:#222;color:#fff">1 불러오기</div><div style="padding:6px 10px;color:#999">2 취합 설정</div><div style="padding:6px 10px;color:#999">3 서비스·접속자</div><div style="padding:6px 10px;color:#999">4 진행 모니터링</div><div style="padding:6px 10px;color:#999">5 히스토리</div><div style="flex:1"></div><div style="border:1.5px dashed #999;border-radius:6px;padding:8px;font-size:14px;line-height:1.3;color:#777">○ 서비스 중지됨</div></div>
+<div style="flex:1;min-width:0;padding:18px 22px;display:flex;flex-direction:column;gap:14px">
+<div><div style="font-size:26px;font-weight:700;line-height:1.1">엑셀 불러오기</div><div style="font-size:16px;color:#666">실행 중인 Excel에서 통합문서를 고르거나 파일을 엽니다. 값·서식·병합·유효성을 함께 읽습니다.</div></div>
+<div style="flex:1;min-height:0;display:flex;gap:16px">
+<div style="width:340px;flex:none;display:flex;flex-direction:column;gap:12px">
+<div style="border:1.5px solid #222;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;gap:8px"><b style="font-size:18px">통합문서</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span style="flex:1"></span><span style="font-size:14px;border:1.5px solid #222;border-radius:4px;padding:0 8px;white-space:nowrap;flex:none">↻ 다시 찾기</span></div>
+<div style="display:flex;border:1.5px solid #222;border-radius:6px;overflow:hidden;font-size:15px"><span style="flex:1;text-align:center;padding:4px;background:#222;color:#fff">실행 중인 Excel</span><span style="flex:1;text-align:center;padding:4px">파일 열기…</span></div>
+<div style="border:2px solid #2a78d6;background:#eef4fc;border-radius:6px;padding:7px 10px;line-height:1.2"><div style="font-size:16px;font-weight:700">2026_4Q_예산신청_취합.xlsx</div><div style="font-size:13px;color:#666">C:\Users\jihoon\문서\예산 · 시트 3개</div></div>
+<div style="border:1.5px solid #cfcdc6;border-radius:6px;padding:7px 10px;line-height:1.2"><div style="font-size:16px">부서별_인원현황_1007.xlsx</div><div style="font-size:13px;color:#666">D:\공유\인사 · 시트 2개</div></div>
+<div style="border:1.5px solid #cfcdc6;border-radius:6px;padding:7px 10px;line-height:1.2"><div style="font-size:16px">통합 문서1</div><div style="font-size:13px;color:#666">저장 안 됨 · 시트 1개</div></div>
+</div>
+<div style="border:1.5px solid #222;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px">
+<b style="font-size:18px">시트</b>
+<div style="display:flex;flex-wrap:wrap;gap:6px;font-size:15px"><span style="padding:2px 10px;border-radius:20px;background:#222;color:#fff;white-space:nowrap;flex:none">✓ 예산신청서</span><span style="padding:2px 10px;border-radius:20px;border:1.5px solid #222;white-space:nowrap;flex:none">작성가이드</span><span style="padding:2px 10px;border-radius:20px;border:1.5px solid #222;white-space:nowrap;flex:none">코드표</span></div>
+<div style="font-size:14px;color:#666">코드표!A2:A6 → ‘집행 시기’ 목록 원본으로 연결됨</div>
+</div>
+</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:12px">
+<div style="border:1.5px solid #222;border-radius:8px;padding:12px;display:flex;flex-wrap:wrap;align-items:flex-end;gap:16px">
+<div style="display:flex;align-items:center;gap:8px;width:100%"><b style="font-size:18px">범위 · 머리글</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span></div>
+<div style="display:flex;flex-direction:column;gap:3px;font-size:14px;color:#666">데이터 범위<span style="height:32px;width:150px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;padding:0 8px;font-family:ui-monospace,monospace;font-size:13px;color:#222;white-space:nowrap;flex:none">A1:I1002</span></div>
+<div style="font-size:14px;color:#2a78d6;padding-bottom:6px">자동 감지됨</div>
+<div style="display:flex;flex-direction:column;gap:3px;font-size:14px;color:#666">머리글 행<span style="display:flex;align-items:center;gap:6px;color:#222"><span style="height:32px;width:44px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;justify-content:center">1</span>~<span style="height:32px;width:44px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;justify-content:center">2</span></span></div>
+<div style="display:flex;flex-direction:column;gap:3px;font-size:14px;color:#666">틀 고정<span style="height:32px;width:110px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;padding:0 8px;color:#222;white-space:nowrap;flex:none">A–D열 ▾</span></div>
+</div>
+<div style="border:1.5px solid #222;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;gap:8px"><b style="font-size:18px">가져올 항목</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span></div>
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 12px;font-size:15px">
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>값</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>수식 (참여자에겐 결과만)</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>셀 병합</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>글꼴 · 글자색</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>테두리</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>배경색</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>열 너비 · 행 높이</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>데이터 유효성 → 입력 형식</span>
+<span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px"></span>숨긴 행·열 포함</span>
+</div>
+</div>
+<div style="flex:1;min-height:0;border:1.5px solid #222;border-radius:8px;padding:12px;display:flex;gap:16px">
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px"><b style="font-size:18px">미리보기 · 예산신청서</b>
+<div style="flex:1;min-height:0;border:1.5px solid #222;border-radius:4px;overflow:hidden;background:#fff">
+<sc-for list="{{pv}}" as="pr" hint-placeholder-count="9"><div style="display:flex;border-bottom:1px solid #e2e0da"><sc-for list="{{pr.cells}}" as="pc"><div style="width:{{pc.w}};flex:none;height:22px;background:{{pc.bg}};border-right:1px solid #e2e0da;display:flex;align-items:center;padding:0 5px"><span style="display:block;height:6px;width:{{pc.bw}};border-radius:3px;background:{{pc.bc}}"></span></div></sc-for></div></sc-for>
+</div></div>
+<div style="width:220px;flex:none;display:flex;flex-direction:column;gap:6px;font-size:15px"><b style="font-size:18px">감지 결과</b>
+<div style="display:flex;justify-content:space-between;border-bottom:1px dashed #cfcdc6;padding:3px 0"><span>데이터 행</span><b>1,000</b></div>
+<div style="display:flex;justify-content:space-between;border-bottom:1px dashed #cfcdc6;padding:3px 0"><span>열</span><b>9</b></div>
+<div style="display:flex;justify-content:space-between;border-bottom:1px dashed #cfcdc6;padding:3px 0"><span>병합 영역</span><b>214</b></div>
+<div style="display:flex;justify-content:space-between;border-bottom:1px dashed #cfcdc6;padding:3px 0"><span>수식 셀 (G열)</span><b>1,000</b></div>
+<div style="display:flex;justify-content:space-between;border-bottom:1px dashed #cfcdc6;padding:3px 0"><span>목록 유효성 (I열)</span><b>1</b></div>
+<div style="font-size:14px;color:#666;line-height:1.25">C열 ‘담당자’ → 행 배정 기준 후보</div>
+</div>
+</div>
+</div>
+</div>
+<div style="display:flex;align-items:center;gap:12px;border-top:1.5px dashed #cfcdc6;padding-top:12px">
+<span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span>
+<div style="display:flex;flex-direction:column;gap:3px;width:360px;font-size:14px;color:#666">읽는 중 · 서식 620 / 1,000행<span style="height:8px;border:1.5px solid #222;border-radius:6px;overflow:hidden"><span style="display:block;width:62%;height:100%;background:#222"></span></span></div>
+<span style="flex:1"></span>
+<span style="height:36px;padding:0 16px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;font-size:17px;white-space:nowrap;flex:none">취소</span>
+<span style="height:36px;padding:0 18px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;font-size:17px;white-space:nowrap;flex:none">불러오기 → 취합 설정</span>
+</div>
+</div>
+</div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>COM으로 실행 중인 Excel의 통합문서를 열거. Excel이 안 떠 있으면 ‘파일 열기’ → 백그라운드 인스턴스로 읽기.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>병합된 다단 머리글을 자동 감지. 틀 고정 열은 참여자 화면에도 그대로 적용.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span>원본 서식을 그대로 가져와 호스트가 다음 단계에서 조정. 목록 유효성은 드롭다운 입력 형식으로 변환.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span><span>~1,000행: 값은 범위 일괄 읽기, 서식은 같은 서식 영역 단위로 묶어 읽고 진행률 표시.</span></div>
+</div>
+</div>
+
+<div class="dv-opt" id="1b">
+<div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a>호스트 · 취합 설정 (조회조건 · 입력 영역 · 입력 금지 · 필수 · 배정)</div>
+<div class="dv-card" style="width:1200px">
+<div style="height:34px;display:flex;align-items:center;gap:10px;padding-left:12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:15px"><span style="width:14px;height:14px;background:#222;border-radius:3px"></span><b>엑셀 취합 도구</b><span style="color:#777">2026_4Q_예산신청_취합.xlsx · 예산신청서</span><span style="flex:1"></span><span style="font-size:14px;color:#2f9e6b">● Excel 연결됨 (COM)</span><span style="display:flex;margin-left:12px;font-size:15px"><span style="width:42px;text-align:center">–</span><span style="width:42px;text-align:center">□</span><span style="width:42px;text-align:center">✕</span></span></div>
+<div style="display:flex;height:660px">
+<div style="width:156px;flex:none;border-right:1.5px solid #222;background:#fbfaf8;padding:14px 10px;display:flex;flex-direction:column;gap:4px;font-size:16px"><div style="padding:6px 10px">1 불러오기 ✓</div><div style="padding:6px 10px;border-radius:6px;background:#222;color:#fff">2 취합 설정</div><div style="padding:6px 10px">3 서비스·접속자</div><div style="padding:6px 10px">4 진행 모니터링</div><div style="padding:6px 10px">5 히스토리</div><div style="flex:1"></div><div style="border:1.5px dashed #999;border-radius:6px;padding:8px;font-size:14px;line-height:1.3;color:#777">○ 서비스 중지됨</div></div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="min-height:42px;flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:5px;padding:4px 10px;border-bottom:1px solid #cfcdc6;font-size:15px">
+<span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;flex:none">맑은 고딕 ▾</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;flex:none">11 ▾</span>
+<span style="width:1px;height:22px;background:#cfcdc6;margin:0 3px"></span>
+<span style="width:28px;height:28px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-weight:700">B</span><span style="width:28px;height:28px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-style:italic">I</span><span style="width:28px;height:28px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;text-decoration:underline">U</span>
+<span style="height:28px;padding:0 7px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;gap:3px;white-space:nowrap;flex:none"><span style="border-bottom:3px solid #d64545;line-height:1">가</span>▾</span><span style="height:28px;padding:0 7px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;gap:4px;white-space:nowrap;flex:none"><span style="width:12px;height:12px;background:#fff3b0;border:1px solid #222"></span>채우기 ▾</span><span style="height:28px;padding:0 7px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;flex:none">테두리 ▾</span>
+<span style="width:1px;height:22px;background:#cfcdc6;margin:0 3px"></span>
+<span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;flex:none">셀 병합</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;flex:none">≡ 정렬 ▾</span>
+<span style="flex:1"></span>
+<span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span><span style="font-size:14px;color:#666;white-space:nowrap;flex:none">참여자 시점으로 보기</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;flex:none">선택 안 함 ▾</span>
+</div>
+<div style="min-height:46px;flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 10px;border-bottom:1px solid #cfcdc6;background:#fbfaf8;font-size:16px">
+<span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><b style="white-space:nowrap;flex:none">역할 지정</b>
+<span style="height:30px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:inline-flex;align-items:center;gap:5px;background:#fff;white-space:nowrap;flex:none"><span style="font-size:12px;padding:0 4px;border-radius:3px;background:#e8f1fb;color:#2a78d6">조회</span>조회조건</span>
+<span style="height:30px;padding:0 10px;border-radius:6px;display:inline-flex;align-items:center;gap:5px;background:#222;color:#fff;white-space:nowrap;flex:none"><span style="width:12px;height:12px;background:#fff;border:1px solid #fff"></span>입력 영역</span>
+<span style="height:30px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:inline-flex;align-items:center;gap:5px;background:#fff;white-space:nowrap;flex:none"><span style="width:12px;height:12px;border:1px solid #222;background-image:repeating-linear-gradient(135deg, rgba(0,0,0,0.35) 0 1px, transparent 1px 3px)"></span>입력 금지</span>
+<span style="height:30px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:inline-flex;align-items:center;gap:5px;background:#fff;white-space:nowrap;flex:none"><span style="color:#d64545;font-weight:700">*</span>필수</span>
+<span style="height:30px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:inline-flex;align-items:center;gap:5px;background:#fff;white-space:nowrap;flex:none">담당자 배정</span>
+<span style="height:30px;padding:0 10px;border:1.5px dashed #999;border-radius:6px;display:inline-flex;align-items:center;color:#777;white-space:nowrap;flex:none">지우개</span>
+<span style="font-size:14px;color:#777;margin-left:6px;flex:1 1 240px;min-width:240px">범위 드래그 → 역할 클릭 · 열 머리글 = 1,000행 전체</span>
+</div>
+<div style="height:32px;flex:none;display:flex;align-items:center;border-bottom:1px solid #cfcdc6;font-size:14px"><span style="width:110px;height:100%;border-right:1px solid #cfcdc6;display:flex;align-items:center;justify-content:center;font-family:ui-monospace,monospace;font-size:12px">F3:F1002</span><span style="width:34px;text-align:center;color:#999;font-style:italic">fx</span><span style="color:#999">1,000개 셀 선택됨 · 입력 영역 · 필수 · 숫자(천원)</span></div>
+<div style="flex:1;min-height:0;overflow:hidden;background:#fff;font-size:15px">
+<div style="display:flex"><div style="width:40px;flex:none;height:22px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1px solid #cfcdc6"></div><sc-for list="{{gConfig.head}}" as="h" hint-placeholder-count="9"><div style="width:{{h.w}};flex:none;height:22px;background:{{h.bg}};border-right:1px solid #cfcdc6;border-bottom:1px solid #cfcdc6;font-size:13px;color:#666;display:flex;align-items:center;justify-content:center">{{h.l}}</div></sc-for></div>
+<div style="display:flex"><div style="width:40px;flex:none;height:42px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1.5px solid #222"></div><sc-for list="{{gConfig.head}}" as="h" hint-placeholder-count="9"><div style="width:{{h.w}};flex:none;height:42px;background:#f7f6f3;border-right:1px solid #cfcdc6;border-bottom:1.5px solid #222;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-weight:700;line-height:1.1"><span>{{h.t}}</span><sc-if value="{{h.tag}}" hint-placeholder-val="{{false}}"><span style="font-size:12px;font-weight:400;padding:0 5px;border-radius:3px;background:{{h.tb}};color:{{h.tf}}">{{h.tag}}</span></sc-if></div></sc-for></div>
+<sc-for list="{{gConfig.rows}}" as="r" hint-placeholder-count="11"><div style="display:flex"><div style="width:40px;flex:none;height:30px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1px solid #e2e0da;display:flex;align-items:center;justify-content:center;gap:4px;font-size:13px;color:#666"><span style="width:6px;height:6px;border-radius:50%;background:{{r.dot}}"></span>{{r.n}}</div><sc-for list="{{r.cells}}" as="c"><div style="width:{{c.w}};flex:none;height:30px;position:relative;z-index:{{c.z}};background-color:{{c.bg}};background-image:{{c.img}};color:{{c.fg}};box-shadow:{{c.ring}};outline:{{c.out}};outline-offset:-4px;border-right:1px solid #e2e0da;border-bottom:{{c.bb}};display:flex;align-items:center;justify-content:{{c.jc}};gap:3px;padding:0 6px"><span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{{c.t}}</span><sc-if value="{{c.badge}}" hint-placeholder-val="{{false}}"><span style="font-size:12px;padding:0 4px;border:1px solid #222;border-radius:3px;background:#fff;color:#222;flex:none;line-height:1.2">{{c.badge}}</span></sc-if><sc-if value="{{c.mark}}" hint-placeholder-val="{{false}}"><span style="position:absolute;top:0;right:0;border-top:8px solid #d64545;border-left:8px solid transparent"></span></sc-if></div></sc-for></div></sc-for>
+<div style="height:30px;display:flex;align-items:center;padding-left:12px;color:#9a978f;font-size:15px">⋮ 1,002행까지 · 가상 스크롤 (머리글 · A–D열 고정)</div>
+</div>
+<div style="min-height:40px;flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:4px 12px;border-top:1px solid #cfcdc6;font-size:14px;color:#555">
+<span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="width:16px;height:12px;border:1px solid #222;background:#fff"></span>입력 3열</span>
+<span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="width:16px;height:12px;border:1px solid #222;background-image:repeating-linear-gradient(135deg, rgba(0,0,0,0.3) 0 1px, transparent 1px 4px)"></span>입력 금지 6열</span>
+<span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="width:16px;height:12px;border:1px solid #222;background:#fdecec;position:relative"><span style="position:absolute;top:0;right:0;border-top:6px solid #d64545;border-left:6px solid transparent"></span></span>필수 미입력 1,214</span>
+<span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="font-size:12px;padding:0 4px;border-radius:3px;background:#e8f1fb;color:#2a78d6">조회</span>조회 3열</span>
+<span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="width:16px;height:12px;border:1.5px dashed #222"></span>예외 2</span>
+<span style="flex:1"></span>
+<span style="height:30px;padding:0 14px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;font-size:16px;white-space:nowrap;flex:none">다음: 서비스 시작 →</span>
+</div>
+</div>
+<div style="width:300px;flex:none;border-left:1.5px solid #222;display:flex;flex-direction:column;overflow:auto;font-size:15px">
+<div style="padding:9px 14px;border-bottom:1px dashed #cfcdc6;display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:center;gap:6px"><span style="font-family:ui-monospace,monospace;font-size:12px;padding:1px 5px;border:1.5px solid #222;border-radius:3px">F</span><b style="font-size:18px">신청 금액</b><span style="color:#777;font-size:14px">열 전체</span></div>
+<div style="display:flex;border:1.5px solid #222;border-radius:6px;overflow:hidden"><span style="flex:1;text-align:center;padding:3px;background:#222;color:#fff">입력 영역</span><span style="flex:1;text-align:center;padding:3px;border-left:1.5px solid #222">입력 금지</span></div>
+<div style="display:flex;gap:14px"><span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>필수</span><span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px"></span>조회조건</span></div>
+<div style="display:flex;gap:6px;align-items:center"><span style="color:#666;width:56px">형식</span><span style="flex:1;height:28px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;padding:0 8px">숫자 ▾</span><span style="width:64px;height:28px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;padding:0 8px">천원</span></div>
+<div style="display:flex;gap:6px;align-items:center"><span style="color:#666;width:56px">안내</span><span style="flex:1;height:28px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;padding:0 8px;color:#999">천원 단위, 숫자만</span></div>
+</div>
+<div style="padding:9px 14px;border-bottom:1px dashed #cfcdc6;display:flex;flex-direction:column;gap:5px">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:17px">셀 예외</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span></div>
+<div style="display:flex;align-items:center;gap:6px;border:1.5px dashed #222;border-radius:4px;padding:3px 8px"><span style="font-family:ui-monospace,monospace;font-size:12px">F6</span><span>입력 금지 · 계약 확정값</span><span style="flex:1"></span>✕</div>
+<div style="display:flex;align-items:center;gap:6px;border:1.5px dashed #222;border-radius:4px;padding:3px 8px"><span style="font-family:ui-monospace,monospace;font-size:12px">J3:J20</span><span>필수 추가</span><span style="flex:1"></span>✕</div>
+<span style="color:#2a78d6">+ 선택 셀을 예외로</span>
+</div>
+<div style="padding:9px 14px;border-bottom:1px dashed #cfcdc6;display:flex;flex-direction:column;gap:5px">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:17px">담당자 배정</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span></div>
+<div style="color:#666;font-size:14px">행 배정 기준</div>
+<div style="height:28px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;padding:0 8px">C열 담당자 = 접속 이름 ▾</div>
+<div style="color:#666;font-size:14px;margin-top:2px">범위 배정 (행 배정에 추가)</div>
+<div style="display:flex;align-items:center;gap:6px;font-size:15px"><span style="width:8px;height:8px;border-radius:50%;background:#2f9e6b"></span><span style="font-family:ui-monospace,monospace;font-size:12px">I3:I1002</span>→ 이서연 <span style="color:#777">(집행 시기 일괄)</span></div>
+<div style="display:flex;align-items:center;gap:6px;font-size:15px"><span style="width:8px;height:8px;border-radius:50%;background:#e07b28"></span><span style="font-family:ui-monospace,monospace;font-size:12px">H500:H620</span>→ 최도윤</div>
+<span style="color:#2a78d6">+ 선택 범위 배정</span>
+<div style="font-size:14px;line-height:1.25;color:#555;background:#f4f3ef;border-radius:4px;padding:6px 8px">입력 가능 = (배정 행 ∪ 배정 범위) ∩ 입력 영역 − 입력 금지</div>
+</div>
+<div style="padding:9px 14px;display:flex;flex-direction:column;gap:6px">
+<b style="font-size:17px">참여자 권한</b>
+<div style="display:flex;align-items:center;gap:6px"><span style="color:#666;width:84px">서식 변경</span><span style="flex:1;display:flex;border:1.5px solid #222;border-radius:6px;overflow:hidden;font-size:14px"><span style="flex:1;text-align:center;padding:2px;background:#222;color:#fff">불가</span><span style="flex:1;text-align:center;padding:2px;border-left:1.5px solid #222">배경색만</span><span style="flex:1;text-align:center;padding:2px;border-left:1.5px solid #222">허용</span></span></div>
+<div style="display:flex;align-items:center;gap:6px"><span style="color:#666;width:84px">남의 행</span><span style="flex:1;display:flex;border:1.5px solid #222;border-radius:6px;overflow:hidden;font-size:14px"><span style="flex:1;text-align:center;padding:2px;background:#222;color:#fff">읽기 전용</span><span style="flex:1;text-align:center;padding:2px;border-left:1.5px solid #222">숨김</span></span></div>
+<div style="display:flex;gap:14px"><span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>필터·정렬</span><span style="display:flex;align-items:center;gap:5px;white-space:nowrap;flex:none"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px"></span>행 추가</span></div>
+</div>
+</div>
+</div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>역할 브러시: 범위를 고른 뒤 역할 버튼 → 그리드에 즉시 오버레이. 서식 도구(위 줄)와 역할 도구(아래 줄)를 분리해 헷갈리지 않게.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>열 단위 역할 위에 셀 단위 예외(입력 금지 셀 · 필수 셀)를 덮어씀. 예외 셀은 점선 테두리로 구분.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span>행 + 범위 혼합 배정: C열 값으로 행을 나누고, 특정 범위를 다른 사람에게 추가로 줌. 입력 금지는 항상 우선.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span><span>참여자 시점 미리보기: 특정 사람으로 보이는 화면·권한을 서비스 시작 전에 확인.</span></div>
+</div>
+</div>
+
+<div class="dv-opt" id="1c">
+<div class="dv-olabel"><a class="dv-oid" href="#1c">1c</a>호스트 · 서비스 시작 · 접속자 관리</div>
+<div class="dv-card" style="width:1200px">
+<div style="height:34px;display:flex;align-items:center;gap:10px;padding-left:12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:15px"><span style="width:14px;height:14px;background:#222;border-radius:3px"></span><b>엑셀 취합 도구</b><span style="color:#777">2026_4Q_예산신청_취합.xlsx · 예산신청서</span><span style="flex:1"></span><span style="font-size:14px;color:#2f9e6b">● Excel 연결됨 (COM)</span><span style="display:flex;margin-left:12px;font-size:15px"><span style="width:42px;text-align:center">–</span><span style="width:42px;text-align:center">□</span><span style="width:42px;text-align:center">✕</span></span></div>
+<div style="display:flex;height:600px">
+<div style="width:156px;flex:none;border-right:1.5px solid #222;background:#fbfaf8;padding:14px 10px;display:flex;flex-direction:column;gap:4px;font-size:16px"><div style="padding:6px 10px">1 불러오기 ✓</div><div style="padding:6px 10px">2 취합 설정 ✓</div><div style="padding:6px 10px;border-radius:6px;background:#222;color:#fff">3 서비스·접속자</div><div style="padding:6px 10px">4 진행 모니터링</div><div style="padding:6px 10px">5 히스토리</div><div style="flex:1"></div><div style="border:1.5px solid #2f9e6b;border-radius:6px;padding:8px;font-size:14px;line-height:1.3;color:#2f9e6b">● 실행 중<br>접속 4 / 6</div></div>
+<div style="flex:1;min-width:0;padding:18px 22px;display:flex;gap:18px">
+<div style="width:380px;flex:none;border:1.5px solid #222;border-radius:8px;padding:14px;display:flex;flex-direction:column;gap:12px;font-size:16px">
+<div style="display:flex;align-items:center;gap:8px"><b style="font-size:20px">웹소켓 서비스</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span style="flex:1"></span><span style="color:#2f9e6b">● 실행 중 · 32분</span></div>
+<div style="display:flex;flex-direction:column;gap:4px"><span style="color:#666;font-size:14px">네트워크</span><span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:14px;border-radius:50%;border:1.5px solid #222;display:inline-flex;align-items:center;justify-content:center"><span style="width:6px;height:6px;border-radius:50%;background:#222"></span></span>이더넷 · 192.168.0.24</span><span style="display:flex;align-items:center;gap:6px;color:#777"><span style="width:14px;height:14px;border-radius:50%;border:1.5px solid #999"></span>Wi-Fi · 10.10.4.17</span></div>
+<div style="display:flex;gap:10px;align-items:center"><span style="color:#666;font-size:14px;width:40px">포트</span><span style="width:90px;height:30px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;padding:0 8px;font-family:ui-monospace,monospace;font-size:13px">8080</span><span style="color:#666;font-size:14px">마감</span><span style="flex:1;height:30px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;padding:0 8px;font-size:15px">10/10(금) 18:00</span></div>
+<div style="display:flex;gap:12px;align-items:stretch">
+<div style="flex:1;display:flex;flex-direction:column;gap:6px"><span style="color:#666;font-size:14px">접속 주소</span><span style="border:2px solid #222;border-radius:6px;padding:8px;font-family:ui-monospace,monospace;font-size:14px;word-break:break-all">http://192.168.0.24:8080/q4</span><span style="display:flex;gap:6px"><span style="flex:1;height:30px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;justify-content:center">주소 복사</span><span style="flex:1;height:30px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;justify-content:center">안내문 복사</span></span></div>
+<div style="width:96px;height:96px;flex:none;border:1.5px solid #222;border-radius:4px;background-image:repeating-linear-gradient(45deg, #eee 0 6px, #fff 6px 12px);display:flex;align-items:center;justify-content:center;font-family:ui-monospace,monospace;font-size:12px;color:#777">QR</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:4px"><span style="color:#666;font-size:14px">참여 방식 <span style="width:18px;height:18px;border-radius:50%;background:#2a78d6;color:#fff;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span></span><span>이름만 입력 · 명단 외 이름은 승인 후 배정</span></div>
+<div style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border:1.5px solid #222;border-radius:3px;display:inline-flex;align-items:center;justify-content:center;font-size:12px">✓</span>마감 후 자동 읽기 전용</div>
+<div style="font-size:14px;color:#a86a00;background:#fff8e1;border:1px dashed #d4a514;border-radius:4px;padding:6px 8px;line-height:1.25">Windows 방화벽에서 8080 포트 허용이 필요하면 최초 1회 안내</div>
+<div style="flex:1"></div>
+<span style="height:36px;border:1.5px solid #d64545;color:#d64545;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:17px">서비스 중지</span>
+</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:12px;font-size:16px">
+<div style="display:flex;align-items:baseline;gap:10px"><b style="font-size:20px">접속자</b><span style="color:#666">명단 6명 · 접속 중 4 · 승인 대기 1</span><span style="flex:1"></span><span style="color:#2a78d6">+ 이름 추가</span><span style="color:#2a78d6">C열에서 다시 가져오기</span></div>
+<div style="display:flex;align-items:center;gap:10px;border:1.5px solid #d4a514;background:#fff8e1;border-radius:8px;padding:8px 12px"><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><b>승인 대기</b><span>‘김민수’ — 명단에 없는 이름 · 192.168.0.51</span><span style="flex:1"></span><span style="height:28px;padding:0 10px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">배정 후 승인</span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">거부</span></div>
+<div style="border:1.5px solid #222;border-radius:8px;overflow:visible">
+<div style="display:flex;height:34px;align-items:center;padding:0 12px;border-bottom:1.5px solid #222;background:#f7f6f3;font-size:14px;color:#555"><span style="width:120px">이름</span><span style="width:120px">상태</span><span style="width:170px">배정</span><span style="width:96px">현재 위치</span><span style="flex:1">필수 입력</span><span style="width:40px"></span></div>
+<div style="display:flex;height:44px;align-items:center;padding:0 12px;border-bottom:1px solid #e2e0da;position:relative;background:#eef4fc"><span style="width:120px;display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:50%;background:#2f9e6b"></span>이서연</span><span style="width:120px;color:#2f9e6b">● 접속 중</span><span style="width:170px;font-size:15px">행 3–40 + I열 범위</span><span style="width:96px;font-family:ui-monospace,monospace;font-size:12px">F5 입력 중</span><span style="flex:1;display:flex;align-items:center;gap:8px"><span style="width:120px;height:8px;border:1.5px solid #222;border-radius:6px;overflow:hidden"><span style="display:block;width:67%;height:100%;background:#222"></span></span>52 / 76</span><span style="width:40px;text-align:center;border:1.5px solid #222;border-radius:4px">⋯</span>
+<div style="position:absolute;right:8px;top:42px;z-index:5;width:220px;background:#fff;border:1.5px solid #222;border-radius:8px;box-shadow:3px 3px 0 #222;padding:6px;display:flex;flex-direction:column;font-size:15px"><span style="padding:5px 8px">배정 변경…</span><span style="padding:5px 8px;background:#f4f3ef;border-radius:4px;display:flex;align-items:center;gap:6px">편집 잠금 해제 (F5) <span style="width:18px;height:18px;border-radius:50%;background:#2a78d6;color:#fff;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span></span><span style="padding:5px 8px">이 사람에게 메시지</span><span style="padding:5px 8px;color:#d64545">연결 끊기</span></div></div>
+<div style="display:flex;height:44px;align-items:center;padding:0 12px;border-bottom:1px solid #e2e0da"><span style="width:120px;display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:50%;background:#e07b28"></span>최도윤</span><span style="width:120px;color:#2f9e6b">● 접속 중</span><span style="width:170px;font-size:15px">행 41–80 + H500:H620</span><span style="width:96px;font-family:ui-monospace,monospace;font-size:12px">H7</span><span style="flex:1;display:flex;align-items:center;gap:8px"><span style="width:120px;height:8px;border:1.5px solid #222;border-radius:6px;overflow:hidden"><span style="display:block;width:45%;height:100%;background:#222"></span></span>36 / 80</span><span style="width:40px;text-align:center;border:1.5px solid #222;border-radius:4px">⋯</span></div>
+<div style="display:flex;height:44px;align-items:center;padding:0 12px;border-bottom:1px solid #e2e0da"><span style="width:120px;display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:50%;background:#8a5cd6"></span>김민지</span><span style="width:120px;color:#2f9e6b">● 접속 중</span><span style="width:170px;font-size:15px">행 81–120</span><span style="width:96px;font-family:ui-monospace,monospace;font-size:12px">H9</span><span style="flex:1;display:flex;align-items:center;gap:8px"><span style="width:120px;height:8px;border:1.5px solid #222;border-radius:6px;overflow:hidden"><span style="display:block;width:62%;height:100%;background:#222"></span></span>50 / 80</span><span style="width:40px;text-align:center;border:1.5px solid #222;border-radius:4px">⋯</span></div>
+<div style="display:flex;height:44px;align-items:center;padding:0 12px;border-bottom:1px solid #e2e0da"><span style="width:120px;display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:50%;background:#c2417a"></span>정하늘</span><span style="width:120px;color:#a86a00">◐ 자리 비움 3분</span><span style="width:170px;font-size:15px">행 121–200</span><span style="width:96px;color:#999">–</span><span style="flex:1;display:flex;align-items:center;gap:8px"><span style="width:120px;height:8px;border:1.5px solid #222;border-radius:6px;overflow:hidden"><span style="display:block;width:8%;height:100%;background:#222"></span></span>12 / 160</span><span style="width:40px;text-align:center;border:1.5px solid #222;border-radius:4px">⋯</span></div>
+<div style="display:flex;height:44px;align-items:center;padding:0 12px;border-bottom:1px solid #e2e0da;color:#888"><span style="width:120px;display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:50%;border:1.5px solid #999"></span>한지우</span><span style="width:120px">○ 미접속</span><span style="width:170px;font-size:15px">행 201–600</span><span style="width:96px">–</span><span style="flex:1;display:flex;align-items:center;gap:8px"><span style="width:120px;height:8px;border:1.5px solid #999;border-radius:6px"></span>0 / 800</span><span style="width:40px;text-align:center;border:1.5px solid #999;border-radius:4px">⋯</span></div>
+<div style="display:flex;height:44px;align-items:center;padding:0 12px;color:#888"><span style="width:120px;display:flex;align-items:center;gap:6px"><span style="width:10px;height:10px;border-radius:50%;border:1.5px solid #999"></span>오세린</span><span style="width:120px">○ 미접속</span><span style="width:170px;font-size:15px">행 601–1002</span><span style="width:96px">–</span><span style="flex:1;display:flex;align-items:center;gap:8px"><span style="width:120px;height:8px;border:1.5px solid #999;border-radius:6px"></span>0 / 804</span><span style="width:40px;text-align:center;border:1.5px solid #999;border-radius:4px">⋯</span></div>
+</div>
+<div style="font-size:15px;color:#777">미접속자에게 안내문을 다시 보내려면 주소·안내문을 복사해 메신저로 공유합니다.</div>
+</div>
+</div>
+</div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>Tauri 백엔드가 로컬 웹소켓 서버를 엶. 네트워크 인터페이스·포트 선택, 주소·QR·안내문 공유.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>이름만 입력해 접속 → 명단(C열 담당자)과 일치하면 자동 배정, 아니면 호스트 승인 대기.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span>편집 중 셀 잠금은 연결이 끊기면 30초 뒤 자동 해제, 호스트는 즉시 강제 해제 가능.</span></div>
+</div>
+</div>
+
+<div class="dv-opt" id="1d">
+<div class="dv-olabel"><a class="dv-oid" href="#1d">1d</a>호스트 · 진행 현황 모니터링 (실시간)</div>
+<div class="dv-card" style="width:1200px">
+<div style="height:34px;display:flex;align-items:center;gap:10px;padding-left:12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:15px"><span style="width:14px;height:14px;background:#222;border-radius:3px"></span><b>엑셀 취합 도구</b><span style="color:#777">2026_4Q_예산신청_취합.xlsx · 예산신청서</span><span style="flex:1"></span><span style="font-size:14px;color:#2f9e6b">● Excel 연결됨 (COM)</span><span style="display:flex;margin-left:12px;font-size:15px"><span style="width:42px;text-align:center">–</span><span style="width:42px;text-align:center">□</span><span style="width:42px;text-align:center">✕</span></span></div>
+<div style="display:flex;height:640px">
+<div style="width:156px;flex:none;border-right:1.5px solid #222;background:#fbfaf8;padding:14px 10px;display:flex;flex-direction:column;gap:4px;font-size:16px"><div style="padding:6px 10px">1 불러오기 ✓</div><div style="padding:6px 10px">2 취합 설정 ✓</div><div style="padding:6px 10px">3 서비스·접속자</div><div style="padding:6px 10px;border-radius:6px;background:#222;color:#fff">4 진행 모니터링</div><div style="padding:6px 10px">5 히스토리</div><div style="flex:1"></div><div style="border:1.5px solid #2f9e6b;border-radius:6px;padding:8px;font-size:14px;line-height:1.3;color:#2f9e6b">● 실행 중<br>접속 4 / 6</div></div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="height:50px;flex:none;display:flex;align-items:center;gap:14px;padding:0 14px;border-bottom:1.5px solid #222;font-size:16px">
+<b style="font-size:19px">실시간 취합 중</b>
+<span style="display:flex;align-items:center;gap:8px">필수 입력 <b>1,284 / 2,000</b><span style="width:160px;height:10px;border:1.5px solid #222;border-radius:6px;overflow:hidden"><span style="display:block;width:64%;height:100%;background:#222"></span></span>64%</span>
+<span style="color:#666">마감까지 2일 3시간</span>
+<span style="flex:1"></span>
+<span style="height:30px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">공지 보내기</span><span style="height:30px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">선택 셀 강조</span><span style="height:30px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">채팅 2</span><span style="height:30px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">스냅샷</span>
+</div>
+<div style="min-height:42px;flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 14px;border-bottom:1px solid #cfcdc6;font-size:15px"><span style="color:#666;white-space:nowrap;flex:none">조회조건</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;white-space:nowrap;flex:none">본부: 전체 ▾</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;white-space:nowrap;flex:none">부서: 전체 ▾</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;white-space:nowrap;flex:none">비목: 전체 ▾</span><span style="width:1px;height:20px;background:#cfcdc6;margin:0 4px"></span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:20px;display:flex;align-items:center;white-space:nowrap;flex:none">필수 미입력만</span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:20px;display:flex;align-items:center;white-space:nowrap;flex:none">최근 삭제된 셀</span><span style="flex:1"></span><span style="color:#777;white-space:nowrap">1,000행 중 1,000행</span></div>
+<div style="flex:1;min-height:0;display:flex">
+<div style="width:200px;flex:none;border-right:1px solid #cfcdc6;padding:12px;display:flex;flex-direction:column;gap:9px;font-size:15px;background:#fbfaf8">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:17px">담당자별</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span></div>
+<div style="display:flex;flex-direction:column;gap:2px;border:1.5px solid #2a78d6;background:#eef4fc;border-radius:6px;padding:5px 7px"><span style="display:flex;justify-content:space-between"><span>● 이서연</span><span>68%</span></span><span style="height:6px;border:1px solid #222;border-radius:4px;overflow:hidden"><span style="display:block;width:68%;height:100%;background:#2f9e6b"></span></span></div>
+<div style="display:flex;flex-direction:column;gap:2px;padding:0 7px"><span style="display:flex;justify-content:space-between"><span>● 김민지</span><span>62%</span></span><span style="height:6px;border:1px solid #222;border-radius:4px;overflow:hidden"><span style="display:block;width:62%;height:100%;background:#8a5cd6"></span></span></div>
+<div style="display:flex;flex-direction:column;gap:2px;padding:0 7px"><span style="display:flex;justify-content:space-between"><span>● 최도윤</span><span>45%</span></span><span style="height:6px;border:1px solid #222;border-radius:4px;overflow:hidden"><span style="display:block;width:45%;height:100%;background:#e07b28"></span></span></div>
+<div style="display:flex;flex-direction:column;gap:2px;padding:0 7px"><span style="display:flex;justify-content:space-between"><span>◐ 정하늘</span><span>8%</span></span><span style="height:6px;border:1px solid #222;border-radius:4px;overflow:hidden"><span style="display:block;width:8%;height:100%;background:#c2417a"></span></span></div>
+<div style="display:flex;flex-direction:column;gap:2px;padding:0 7px;color:#888"><span style="display:flex;justify-content:space-between"><span>○ 한지우</span><span>0%</span></span><span style="height:6px;border:1px solid #999;border-radius:4px"></span></div>
+<div style="display:flex;align-items:center;gap:6px;margin-top:6px"><b style="font-size:17px">열별 완료</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span></div>
+<div style="display:flex;flex-direction:column;gap:2px"><span style="display:flex;justify-content:space-between"><span>F 신청 금액</span><span>74%</span></span><span style="height:6px;border:1px solid #222;border-radius:4px;overflow:hidden"><span style="display:block;width:74%;height:100%;background:#222"></span></span></div>
+<div style="display:flex;flex-direction:column;gap:2px"><span style="display:flex;justify-content:space-between"><span>H 산출 근거</span><span>54%</span></span><span style="height:6px;border:1px solid #222;border-radius:4px;overflow:hidden"><span style="display:block;width:54%;height:100%;background:#222"></span></span></div>
+</div>
+<div style="flex:1;min-width:0;overflow:hidden;background:#fff;font-size:15px">
+<div style="display:flex"><div style="width:40px;flex:none;height:22px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1px solid #cfcdc6"></div><sc-for list="{{gMon.head}}" as="h" hint-placeholder-count="9"><div style="width:{{h.w}};flex:none;height:22px;background:{{h.bg}};border-right:1px solid #cfcdc6;border-bottom:1px solid #cfcdc6;font-size:13px;color:#666;display:flex;align-items:center;justify-content:center">{{h.l}}</div></sc-for></div>
+<div style="display:flex"><div style="width:40px;flex:none;height:42px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1.5px solid #222"></div><sc-for list="{{gMon.head}}" as="h" hint-placeholder-count="9"><div style="width:{{h.w}};flex:none;height:42px;background:#f7f6f3;border-right:1px solid #cfcdc6;border-bottom:1.5px solid #222;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-weight:700;line-height:1.1"><span>{{h.t}}</span><sc-if value="{{h.tag}}" hint-placeholder-val="{{false}}"><span style="font-size:12px;font-weight:400;padding:0 5px;border-radius:3px;background:{{h.tb}};color:{{h.tf}}">{{h.tag}}</span></sc-if></div></sc-for></div>
+<sc-for list="{{gMon.rows}}" as="r" hint-placeholder-count="11"><div style="display:flex"><div style="width:40px;flex:none;height:30px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1px solid #e2e0da;display:flex;align-items:center;justify-content:center;gap:4px;font-size:13px;color:#666"><span style="width:6px;height:6px;border-radius:50%;background:{{r.dot}}"></span>{{r.n}}</div><sc-for list="{{r.cells}}" as="c"><div style="width:{{c.w}};flex:none;height:30px;position:relative;z-index:{{c.z}};background-color:{{c.bg}};background-image:{{c.img}};color:{{c.fg}};box-shadow:{{c.ring}};outline:{{c.out}};outline-offset:-4px;border-right:1px solid #e2e0da;border-bottom:{{c.bb}};display:flex;align-items:center;justify-content:{{c.jc}};gap:3px;padding:0 6px"><span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{{c.t}}</span><sc-if value="{{c.badge}}" hint-placeholder-val="{{false}}"><span style="font-size:12px;padding:0 4px;border:1px solid #222;border-radius:3px;background:#fff;color:#222;flex:none;line-height:1.2">{{c.badge}}</span></sc-if><sc-if value="{{c.mark}}" hint-placeholder-val="{{false}}"><span style="position:absolute;top:0;right:0;border-top:8px solid #d64545;border-left:8px solid transparent"></span></sc-if><sc-if value="{{c.lock}}" hint-placeholder-val="{{false}}"><span style="position:absolute;right:3px;top:6px;font-size:12px;line-height:16px;padding:0 5px;border-radius:3px;background:{{c.tc}};color:#fff">{{c.lock}}</span></sc-if><sc-if value="{{c.tag}}" hint-placeholder-val="{{false}}"><span style="position:absolute;left:-2px;bottom:100%;font-size:12px;line-height:15px;padding:0 5px;border-radius:3px 3px 3px 0;background:{{c.tc}};color:#fff;white-space:nowrap">{{c.tag}}</span></sc-if></div></sc-for></div></sc-for>
+<div style="height:30px;display:flex;align-items:center;padding-left:12px;color:#9a978f;font-size:15px">⋮ 1,002행까지 · 가상 스크롤</div>
+</div>
+<div style="width:270px;flex:none;border-left:1.5px solid #222;display:flex;flex-direction:column;font-size:15px">
+<div style="padding:10px 12px;border-bottom:1px solid #cfcdc6;display:flex;align-items:center;gap:6px"><b style="font-size:17px">실시간 활동</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span style="flex:1"></span><span style="color:#777;font-size:14px">전체 ▾</span></div>
+<div style="padding:8px 12px;border-bottom:1px dashed #cfcdc6;line-height:1.25"><div style="color:#777;font-size:13px">14:32:08 · <span style="color:#2f9e6b">● 이서연</span></div><div><span style="font-family:ui-monospace,monospace;font-size:12px">F5</span> 입력 중… <span style="font-size:12px;padding:0 4px;border-radius:3px;background:#2f9e6b;color:#fff">잠금</span></div></div>
+<div style="padding:8px 12px;border-bottom:1px dashed #cfcdc6;line-height:1.25"><div style="color:#777;font-size:13px">14:31:50 · <span style="color:#8a5cd6">● 김민지</span></div><div><span style="font-family:ui-monospace,monospace;font-size:12px">H8</span> (빈 값) → 거점 방문 월 4회</div></div>
+<div style="padding:8px 12px;border-bottom:1px dashed #cfcdc6;line-height:1.25"><div style="color:#777;font-size:13px">14:24:13 · <span style="color:#2f9e6b">● 이서연</span></div><div><span style="font-family:ui-monospace,monospace;font-size:12px">F4</span> (빈 값) → 7,200</div></div>
+<div style="padding:8px 12px;border-bottom:1px dashed #cfcdc6;line-height:1.25;background:#fdecec"><div style="color:#777;font-size:13px">14:20:51 · <span style="color:#e07b28">● 최도윤</span> · <b style="color:#d64545">범위 삭제 2셀</b></div><div><span style="font-family:ui-monospace,monospace;font-size:12px">F7:H7</span> <span style="text-decoration:line-through;color:#888">4,800 · 본사-지사 감사 출장</span></div><div style="display:flex;gap:6px;margin-top:4px"><span style="height:26px;padding:0 10px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">되돌리기</span><span style="height:26px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">셀로 이동</span></div></div>
+<div style="padding:8px 12px;border-bottom:1px dashed #cfcdc6;line-height:1.25"><div style="color:#777;font-size:13px">14:13:52 · <span style="color:#e07b28">● 최도윤</span></div><div><span style="font-family:ui-monospace,monospace;font-size:12px">H7</span> (빈 값) → 본사-지사 감사 출장 6회</div></div>
+<div style="flex:1"></div>
+<div style="padding:10px 12px;border-top:1px solid #cfcdc6;color:#2a78d6">전체 히스토리 보기 →</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>담당자를 누르면 그리드가 그 사람 행으로 필터되고, 미접속자에게 바로 알림을 보낼 수 있음.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>1,000행 규모에서 어떤 항목이 비는지 열별 완료율로 파악. 누르면 ‘필수 미입력만’ 필터.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span>삭제·대량 변경은 빨간 묶음으로 떠서 그 자리에서 되돌리기. 편집 중 셀은 이름 + ‘잠금’ 표시.</span></div>
+</div>
+</div>
+
+<div class="dv-opt" id="1e">
+<div class="dv-olabel"><a class="dv-oid" href="#1e">1e</a>참여자 · 접속 화면 (URL → 이름만 입력)</div>
+<div class="dv-card" style="width:1200px">
+<div style="height:40px;display:flex;align-items:center;gap:12px;padding:0 12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:16px"><span style="color:#777">←</span><span style="color:#777">→</span><span style="color:#777">↻</span><span style="flex:1;max-width:640px;height:28px;border:1.5px solid #222;border-radius:20px;background:#fff;display:flex;align-items:center;padding:0 14px;font-family:ui-monospace,monospace;font-size:13px">http://192.168.0.24:8080/q4</span></div>
+<div style="height:560px;display:flex;gap:32px;align-items:center;justify-content:center;background:#f7f6f3;padding:24px">
+<div style="width:460px;flex:none;background:#fff;border:2px solid #222;border-radius:12px;padding:26px;display:flex;flex-direction:column;gap:14px;font-size:16px">
+<div style="color:#666">박지훈 (기획팀) 님의 엑셀 취합 요청</div>
+<div style="font-size:30px;font-weight:700;line-height:1.1">2026년 부서별 예산 신청</div>
+<div style="display:flex;gap:8px;flex-wrap:wrap"><span style="padding:1px 10px;border:1.5px solid #222;border-radius:20px;white-space:nowrap;flex:none">마감 10/10(금) 18:00</span><span style="padding:1px 10px;border:1.5px solid #222;border-radius:20px;white-space:nowrap;flex:none">● 접속 중 4명</span></div>
+<div style="background:#f4f3ef;border-radius:6px;padding:10px 12px;line-height:1.3">부서별 담당 비목의 신청 금액과 산출 근거를 입력해 주세요. 산출 근거는 “단가 × 수량” 형식으로.</div>
+<div style="display:flex;flex-direction:column;gap:5px;margin-top:4px"><b>이름</b><span style="height:42px;border:2px solid #2a78d6;border-radius:6px;display:flex;align-items:center;padding:0 12px;font-size:18px">김민지<span style="width:1.5px;height:20px;background:#2a78d6;margin-left:2px"></span></span><span style="display:flex;gap:6px;color:#666;font-size:15px;line-height:1.25"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span>호스트 명단과 같은 이름이면 담당 행이 자동으로 연결됩니다.</span></div>
+<span style="height:46px;border-radius:8px;background:#222;color:#fff;display:flex;align-items:center;justify-content:center;font-size:19px">참여하기</span>
+<div style="color:#888;font-size:14px;text-align:center">입력 내용과 변경 이력은 호스트 PC에 저장됩니다.</div>
+</div>
+<div style="width:320px;flex:none;display:flex;flex-direction:column;gap:14px;font-size:16px">
+<div style="background:#fff;border:1.5px dashed #222;border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;align-items:center;gap:6px"><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><b>명단에 없는 이름</b></div><div style="color:#555;line-height:1.25">‘김민수’ 님, 호스트 승인을 기다리는 중입니다…</div><div style="height:6px;border:1px solid #222;border-radius:4px;overflow:hidden"><span style="display:block;width:35%;height:100%;background:#222"></span></div><span style="color:#2a78d6">이름 다시 입력</span></div>
+<div style="background:#fff;border:1.5px dashed #222;border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;align-items:center;gap:6px"><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><b>같은 이름이 이미 접속 중</b></div><div style="color:#555;line-height:1.25">다른 기기에서 ‘김민지’로 접속 중입니다. 이 기기로 전환할까요?</div><div style="display:flex;gap:6px"><span style="height:30px;padding:0 12px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">이 기기로 전환</span><span style="height:30px;padding:0 12px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">취소</span></div></div>
+<div style="background:#fff;border:1.5px dashed #222;border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;align-items:center;gap:6px"><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span><b>연결 끊김</b></div><div style="color:#555;line-height:1.25">다시 연결 중… 입력한 3건은 이 브라우저에 보관했다가 연결되면 보냅니다.</div></div>
+</div>
+</div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>이름만 입력. 이름은 브라우저에 기억해 재접속 시 바로 입장.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>명단 외 이름 → 호스트가 <a class="dv-oid" href="#1c">1c</a>에서 배정 후 승인하면 자동 입장.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span>같은 이름 중복 접속 방지(코드 없이 이름만 쓰는 방식의 최소 보호).</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span><span>끊김 중 입력은 로컬 대기열에 보관 → 재연결 시 동기화, 충돌 셀은 알림.</span></div>
+</div>
+</div>
+
+<div class="dv-opt" id="1f">
+<div class="dv-olabel"><a class="dv-oid" href="#1f">1f</a>참여자 · 그리드 동시편집 (김민지 시점)</div>
+<div class="dv-card" style="width:1200px">
+<div style="height:40px;display:flex;align-items:center;gap:12px;padding:0 12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:16px"><span style="color:#777">←</span><span style="color:#777">→</span><span style="color:#777">↻</span><span style="flex:1;max-width:640px;height:28px;border:1.5px solid #222;border-radius:20px;background:#fff;display:flex;align-items:center;padding:0 14px;font-family:ui-monospace,monospace;font-size:13px">http://192.168.0.24:8080/q4</span></div>
+<div style="height:58px;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1.5px solid #222;font-size:16px">
+<div style="line-height:1.1"><div style="font-size:14px;color:#777">박지훈 님의 취합 요청</div><div style="font-size:22px;font-weight:700">2026년 부서별 예산 신청</div></div>
+<span style="padding:1px 10px;border:1.5px solid #222;border-radius:20px;white-space:nowrap;flex:none">마감 D-2</span>
+<span style="flex:1"></span>
+<span>내 필수 입력 <b>50 / 80</b></span><span style="width:120px;height:10px;border:1.5px solid #222;border-radius:6px;overflow:hidden"><span style="display:block;width:62%;height:100%;background:#222"></span></span>
+<span style="display:flex;margin-left:6px"><span style="width:30px;height:30px;border-radius:50%;border:2px solid #222;background:#fff;display:flex;align-items:center;justify-content:center;font-size:14px">박</span><span style="width:30px;height:30px;border-radius:50%;border:2px solid #2f9e6b;background:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;margin-left:-6px">이</span><span style="width:30px;height:30px;border-radius:50%;border:2px solid #e07b28;background:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;margin-left:-6px">최</span><span style="width:30px;height:30px;border-radius:50%;border:2px solid #8a5cd6;background:#8a5cd6;color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;margin-left:-6px">나</span></span>
+</div>
+<div style="height:40px;display:flex;align-items:center;gap:10px;padding:0 18px;border-bottom:1.5px solid #222;background:#eef4fc;font-size:16px"><b>공지</b><span style="color:#777;font-size:14px">14:02</span><span>10일(금) 18시까지 입력 완료 바랍니다. 산출 근거는 “단가 × 수량” 형식으로.</span><span style="flex:1"></span><span style="height:26px;padding:0 12px;border:1.5px solid #222;border-radius:6px;background:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">확인</span></div>
+<div style="min-height:44px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 12px;border-bottom:1px solid #cfcdc6;font-size:15px">
+<span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;flex:none">↶ 실행 취소</span>
+<span style="width:1px;height:22px;background:#cfcdc6;margin:0 3px"></span>
+<span style="display:flex;align-items:center;gap:5px;opacity:0.35"><span style="width:28px;height:28px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-weight:700">B</span><span style="width:28px;height:28px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;font-style:italic">I</span><span style="height:28px;padding:0 7px;border:1.5px solid #222;border-radius:4px;display:inline-flex;align-items:center;white-space:nowrap;flex:none">채우기 ▾</span></span>
+<span style="color:#777;font-size:14px;display:flex;align-items:center;gap:4px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span>서식은 호스트가 관리합니다</span>
+<span style="width:1px;height:22px;background:#cfcdc6;margin:0 3px"></span>
+<span style="display:flex;border:1.5px solid #222;border-radius:6px;overflow:hidden;flex:none"><span style="padding:2px 12px;background:#222;color:#fff;white-space:nowrap">그리드</span><span style="padding:2px 12px;border-left:1.5px solid #222;white-space:nowrap">행 단위</span></span>
+<span style="flex:1"></span>
+<span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">알림 1</span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">채팅 2</span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">셀 이력</span>
+</div>
+<div style="min-height:42px;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 12px;border-bottom:1px solid #cfcdc6;font-size:15px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span style="color:#666;white-space:nowrap;flex:none">조회조건</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;white-space:nowrap;flex:none">본부: 전체 ▾</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;white-space:nowrap;flex:none">부서: 전체 ▾</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;white-space:nowrap;flex:none">비목: 전체 ▾</span><span style="width:1px;height:20px;background:#cfcdc6;margin:0 4px"></span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:20px;display:flex;align-items:center;white-space:nowrap;flex:none">내 담당만</span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:20px;display:flex;align-items:center;white-space:nowrap;flex:none">필수 미입력만</span><span style="flex:1"></span><span style="color:#777;white-space:nowrap">1,000행 · 내 담당 40행</span></div>
+<div style="height:32px;display:flex;align-items:center;border-bottom:1px solid #cfcdc6;font-size:15px"><span style="width:80px;height:100%;border-right:1px solid #cfcdc6;display:flex;align-items:center;justify-content:center;font-family:ui-monospace,monospace;font-size:12px">F9</span><span style="width:34px;text-align:center;color:#999;font-style:italic">fx</span><span style="flex:1">9,800</span><span style="display:flex;gap:4px;padding-right:10px;font-size:13px"><span style="padding:0 6px;border-radius:3px;background:#fdecec;color:#d64545">필수</span><span style="padding:0 6px;border-radius:3px;background:#eeede9">숫자 · 천원</span><span style="padding:0 6px;border-radius:3px;background:#efe7fb;color:#8a5cd6">내 담당</span></span></div>
+<div style="display:flex;height:430px">
+<div style="flex:1;min-width:0;overflow:hidden;background:#fff;font-size:15px">
+<div style="display:flex"><div style="width:40px;flex:none;height:22px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1px solid #cfcdc6"></div><sc-for list="{{gPart.head}}" as="h" hint-placeholder-count="9"><div style="width:{{h.w}};flex:none;height:22px;background:{{h.bg}};border-right:1px solid #cfcdc6;border-bottom:1px solid #cfcdc6;font-size:13px;color:#666;display:flex;align-items:center;justify-content:center">{{h.l}}</div></sc-for></div>
+<div style="display:flex"><div style="width:40px;flex:none;height:42px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1.5px solid #222"></div><sc-for list="{{gPart.head}}" as="h" hint-placeholder-count="9"><div style="width:{{h.w}};flex:none;height:42px;background:#f7f6f3;border-right:1px solid #cfcdc6;border-bottom:1.5px solid #222;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-weight:700;line-height:1.1"><span>{{h.t}}</span><sc-if value="{{h.tag}}" hint-placeholder-val="{{false}}"><span style="font-size:12px;font-weight:400;padding:0 5px;border-radius:3px;background:{{h.tb}};color:{{h.tf}}">{{h.tag}}</span></sc-if></div></sc-for></div>
+<sc-for list="{{gPart.rows}}" as="r" hint-placeholder-count="11"><div style="display:flex"><div style="width:40px;flex:none;height:30px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1px solid #e2e0da;display:flex;align-items:center;justify-content:center;gap:4px;font-size:13px;color:#666"><span style="width:6px;height:6px;border-radius:50%;background:{{r.dot}}"></span>{{r.n}}</div><sc-for list="{{r.cells}}" as="c"><div style="width:{{c.w}};flex:none;height:30px;position:relative;z-index:{{c.z}};background-color:{{c.bg}};background-image:{{c.img}};color:{{c.fg}};box-shadow:{{c.ring}};outline:{{c.out}};outline-offset:-4px;border-right:1px solid #e2e0da;border-bottom:{{c.bb}};display:flex;align-items:center;justify-content:{{c.jc}};gap:3px;padding:0 6px"><span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{{c.t}}</span><sc-if value="{{c.caret}}" hint-placeholder-val="{{false}}"><span style="width:1.5px;height:16px;background:#2a78d6;flex:none"></span></sc-if><sc-if value="{{c.mark}}" hint-placeholder-val="{{false}}"><span style="position:absolute;top:0;right:0;border-top:8px solid #d64545;border-left:8px solid transparent"></span></sc-if><sc-if value="{{c.lock}}" hint-placeholder-val="{{false}}"><span style="position:absolute;right:3px;top:6px;font-size:12px;line-height:16px;padding:0 5px;border-radius:3px;background:{{c.tc}};color:#fff">{{c.lock}}</span></sc-if><sc-if value="{{c.tag}}" hint-placeholder-val="{{false}}"><span style="position:absolute;left:-2px;bottom:100%;font-size:12px;line-height:15px;padding:0 5px;border-radius:3px 3px 3px 0;background:{{c.tc}};color:#fff;white-space:nowrap">{{c.tag}}</span></sc-if><sc-if value="{{c.call}}" hint-placeholder-val="{{false}}"><span style="position:absolute;left:0;top:calc(100% + 6px);width:230px;font-size:15px;line-height:1.25;padding:8px 10px;border:1.5px solid #222;border-radius:8px;background:#fff3b0;color:#222;box-shadow:2px 2px 0 #222;white-space:normal">{{c.call}}</span></sc-if></div></sc-for></div></sc-for>
+<div style="height:30px;display:flex;align-items:center;padding-left:12px;color:#9a978f;font-size:15px">⋮ 1,002행까지 · 가상 스크롤 (머리글 · A–D열 고정)</div>
+</div>
+<div style="width:250px;flex:none;border-left:1.5px solid #222;display:flex;flex-direction:column;font-size:15px">
+<div style="display:flex;border-bottom:1px solid #cfcdc6"><span style="flex:1;text-align:center;padding:7px 0;border-bottom:2.5px solid #222;font-weight:700">알림</span><span style="flex:1;text-align:center;padding:7px 0;color:#777">채팅</span><span style="flex:1;text-align:center;padding:7px 0;color:#777">셀 이력</span></div>
+<div style="padding:10px 12px;display:flex;flex-direction:column;gap:8px">
+<b>강조된 셀</b>
+<div style="border:1.5px solid #d4a514;background:#fff8e1;border-radius:6px;padding:7px 9px;line-height:1.25"><div><span style="font-family:ui-monospace,monospace;font-size:12px">H10</span> · 박지훈 · 14:28</div><div>교육 과정명과 인원을 적어 주세요.</div><div style="color:#2a78d6;margin-top:2px">셀로 이동 →</div></div>
+<b style="margin-top:4px">공지</b>
+<div style="border:1.5px solid #cfcdc6;border-radius:6px;padding:7px 9px;line-height:1.25;color:#555"><div style="font-size:13px;color:#777">14:02 · 확인함</div>10일(금) 18시까지 입력 완료 바랍니다.</div>
+</div>
+</div>
+</div>
+<div style="height:30px;display:flex;align-items:center;gap:12px;padding:0 14px;border-top:1px solid #cfcdc6;font-size:14px;color:#666"><span style="color:#2f9e6b">● 실시간 동기화</span><span>내 변경 12건 · 마지막 저장 14:32:10</span><span style="flex:1"></span><span>F9 편집 중 — 다른 사람에게 잠김으로 보입니다</span></div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>편집 중 셀 잠금: F5는 이서연이 입력 중 → 클릭하면 “이서연 님이 입력 중입니다 · 끝나면 알려드릴까요?” 내 F9도 남들에겐 잠김.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>내 담당(행 + 범위)은 흰 바탕, 남의 행은 회색 읽기 전용(호스트가 ‘숨김’으로 바꿀 수 있음). 빗금 = 입력 금지.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span>조회조건은 호스트가 지정한 열만 드롭다운으로 노출. 필터 시 병합 셀은 보이는 행 기준으로 다시 묶어 표시.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span><span>서식 도구는 호스트 정책(불가 / 배경색만 / 허용)에 따라 비활성·제한.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">5</span><span>호스트가 강조한 H10은 노란색 + 말풍선, 해제 전까지 유지. 키보드: 방향키·Enter·Tab·Delete·Ctrl+Z 엑셀과 동일.</span></div>
+</div>
+</div>
+
+<div class="dv-opt" id="1g">
+<div class="dv-olabel"><a class="dv-oid" href="#1g">1g</a>참여자 · 행 단위 입력 폼</div>
+<div class="dv-card" style="width:1200px">
+<div style="height:40px;display:flex;align-items:center;gap:12px;padding:0 12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:16px"><span style="color:#777">←</span><span style="color:#777">→</span><span style="color:#777">↻</span><span style="flex:1;max-width:640px;height:28px;border:1.5px solid #222;border-radius:20px;background:#fff;display:flex;align-items:center;padding:0 14px;font-family:ui-monospace,monospace;font-size:13px">http://192.168.0.24:8080/q4</span></div>
+<div style="height:50px;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1.5px solid #222;font-size:16px">
+<div style="font-size:20px;font-weight:700">2026년 부서별 예산 신청</div><span style="padding:1px 10px;border:1.5px solid #222;border-radius:20px;white-space:nowrap;flex:none">마감 D-2</span><span style="flex:1"></span>
+<span style="display:flex;border:1.5px solid #222;border-radius:6px;overflow:hidden;flex:none"><span style="padding:2px 12px;white-space:nowrap">그리드</span><span style="padding:2px 12px;border-left:1.5px solid #222;background:#222;color:#fff;white-space:nowrap">행 단위</span></span>
+<span style="color:#777;font-size:14px">Enter 다음 칸 · Ctrl+Enter 다음 행</span>
+</div>
+<div style="display:flex;height:580px">
+<div style="width:280px;flex:none;border-right:1.5px solid #222;padding:12px;display:flex;flex-direction:column;gap:8px;font-size:15px;background:#fbfaf8">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:17px">내 담당 행</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span style="flex:1"></span><span style="color:#777">40행</span></div>
+<span style="height:30px;border:1.5px solid #222;border-radius:4px;background:#fff;display:flex;align-items:center;padding:0 8px;color:#999;white-space:nowrap;flex:none">행 검색 (비목, 부서…)</span>
+<span style="display:flex;border:1.5px solid #222;border-radius:6px;overflow:hidden;font-size:14px"><span style="flex:1;text-align:center;padding:2px">전체 40</span><span style="flex:1;text-align:center;padding:2px;border-left:1.5px solid #222;background:#222;color:#fff">미입력 15</span><span style="flex:1;text-align:center;padding:2px;border-left:1.5px solid #222">강조 1</span></span>
+<div style="display:flex;align-items:center;gap:8px;border:2px solid #2a78d6;background:#eef4fc;border-radius:6px;padding:7px 9px"><span style="font-size:13px;color:#777;width:24px">9</span><span style="flex:1;line-height:1.15">회의비<br><span style="font-size:13px;color:#777">국내영업팀</span></span><span style="font-size:13px;padding:0 6px;border-radius:3px;background:#fdecec;color:#d64545">미입력 1</span></div>
+<div style="display:flex;align-items:center;gap:8px;border:1.5px solid #cfcdc6;background:#fff;border-radius:6px;padding:7px 9px"><span style="font-size:13px;color:#777;width:24px">10</span><span style="flex:1;line-height:1.15">교육훈련비<br><span style="font-size:13px;color:#777">국내영업팀</span></span><span style="font-size:13px;padding:0 6px;border-radius:3px;background:#fff3b0">강조</span></div>
+<div style="display:flex;align-items:center;gap:8px;border:1.5px solid #cfcdc6;background:#fff;border-radius:6px;padding:7px 9px"><span style="font-size:13px;color:#777;width:24px">84</span><span style="flex:1;line-height:1.15">출장비<br><span style="font-size:13px;color:#777">국내영업 2팀</span></span><span style="font-size:13px;padding:0 6px;border-radius:3px;background:#fdecec;color:#d64545">미입력 2</span></div>
+<div style="display:flex;align-items:center;gap:8px;border:1.5px solid #cfcdc6;background:#fff;border-radius:6px;padding:7px 9px"><span style="font-size:13px;color:#777;width:24px">85</span><span style="flex:1;line-height:1.15">외주용역비<br><span style="font-size:13px;color:#777">국내영업 2팀</span></span><span style="font-size:13px;padding:0 6px;border-radius:3px;background:#fdecec;color:#d64545">미입력 2</span></div>
+<div style="color:#9a978f;padding-left:8px">⋮ 11행 더</div>
+</div>
+<div style="flex:1;min-width:0;padding:20px 26px;display:flex;flex-direction:column;gap:14px;font-size:16px">
+<div style="display:flex;align-items:center;gap:10px"><div style="line-height:1.1"><div style="color:#777;font-size:14px">9행 · 2 / 15 미입력</div><div style="font-size:24px;font-weight:700">국내영업팀 · 회의비</div></div><span style="flex:1"></span><span style="height:32px;padding:0 12px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">‹ 이전</span><span style="height:32px;padding:0 12px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">다음 미입력 ›</span></div>
+<div style="display:flex;gap:0;border:1.5px solid #222;border-radius:8px;overflow:hidden;background-image:repeating-linear-gradient(135deg, rgba(0,0,0,0.05) 0 1px, transparent 1px 6px)">
+<div style="flex:1;padding:8px 12px;border-right:1px solid #cfcdc6;line-height:1.2"><div style="font-size:13px;color:#777">본부</div>영업본부</div><div style="flex:1;padding:8px 12px;border-right:1px solid #cfcdc6;line-height:1.2"><div style="font-size:13px;color:#777">부서</div>국내영업팀</div><div style="flex:1;padding:8px 12px;border-right:1px solid #cfcdc6;line-height:1.2"><div style="font-size:13px;color:#777">담당자</div>김민지</div><div style="flex:1;padding:8px 12px;border-right:1px solid #cfcdc6;line-height:1.2"><div style="font-size:13px;color:#777">전년 실적</div>9,200</div><div style="flex:1;padding:8px 12px;line-height:1.2"><div style="font-size:13px;color:#777">증감률 (수식)</div>+6.5%</div>
+</div>
+<div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px 18px">
+<div style="display:flex;flex-direction:column;gap:5px"><span><b>신청 금액</b> <span style="color:#d64545">*</span> <span style="font-family:ui-monospace,monospace;font-size:12px;color:#777">F9</span></span><span style="height:40px;border:2px solid #2a78d6;border-radius:6px;display:flex;align-items:center;justify-content:flex-end;padding:0 10px;gap:6px;font-size:18px">9,800<span style="width:1.5px;height:20px;background:#2a78d6"></span><span style="color:#777;font-size:15px">천원</span></span><span style="font-size:14px;color:#666">전년 대비 +6.5% · 천원 단위, 숫자만</span></div>
+<div style="display:flex;flex-direction:column;gap:5px"><span><b>집행 시기</b> <span style="font-family:ui-monospace,monospace;font-size:12px;color:#777">I9</span> <span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span></span><span style="display:flex;gap:5px;opacity:0.45"><span style="height:36px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">1분기</span><span style="height:36px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">2분기</span><span style="height:36px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">3분기</span><span style="height:36px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">4분기</span><span style="height:36px;padding:0 10px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;background:#222;color:#fff;white-space:nowrap;flex:none">연중</span></span><span style="font-size:14px;color:#2f9e6b">● 이서연 님이 편집 중 — 끝나면 입력할 수 있어요</span></div>
+<div style="display:flex;flex-direction:column;gap:5px;grid-column:1 / -1"><span><b>산출 근거</b> <span style="color:#d64545">*</span> <span style="font-family:ui-monospace,monospace;font-size:12px;color:#777">H9</span></span><span style="height:76px;border:2px solid #d64545;background:#fffafa;border-radius:6px;padding:8px 10px;color:#aaa">단가 × 수량 형식으로 입력 (예: 간담회 4회 × 2,450)</span><span style="font-size:14px;color:#d64545">필수 입력 항목입니다</span></div>
+<div style="display:flex;flex-direction:column;gap:5px;grid-column:1 / -1"><span><b>비고</b> <span style="font-family:ui-monospace,monospace;font-size:12px;color:#777">J9</span></span><span style="height:40px;border:1.5px solid #222;border-radius:6px"></span></div>
+</div>
+<div style="flex:1"></div>
+<div style="display:flex;align-items:center;gap:8px;color:#666;font-size:15px;border-top:1px dashed #cfcdc6;padding-top:10px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span>칸을 벗어나면 자동 저장 · 이 행 변경 이력: 14:31 신청 금액 (빈 값) → 9,800</div>
+</div>
+<div style="width:240px;flex:none;border-left:1.5px solid #222;padding:12px;display:flex;flex-direction:column;gap:8px;font-size:15px">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:17px">같은 비목 비교</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span></div>
+<div style="color:#777;font-size:14px;line-height:1.2">여러 행을 옆에 두고 입력 (읽기 전용)</div>
+<div style="border:1.5px solid #cfcdc6;border-radius:6px;overflow:hidden">
+<div style="display:flex;padding:5px 8px;background:#f7f6f3;font-size:13px;color:#666"><span style="flex:1">부서</span><span style="width:64px;text-align:right">신청</span></div>
+<div style="display:flex;padding:5px 8px;border-top:1px solid #e2e0da"><span style="flex:1">인사팀</span><span style="width:64px;text-align:right">7,200</span></div>
+<div style="display:flex;padding:5px 8px;border-top:1px solid #e2e0da"><span style="flex:1">해외영업팀</span><span style="width:64px;text-align:right;color:#aaa">–</span></div>
+<div style="display:flex;padding:5px 8px;border-top:1px solid #e2e0da;background:#eef4fc"><span style="flex:1">국내영업팀 (나)</span><span style="width:64px;text-align:right">9,800</span></div>
+<div style="display:flex;padding:5px 8px;border-top:1px solid #e2e0da"><span style="flex:1">국내영업 2팀</span><span style="width:64px;text-align:right">6,400</span></div>
+</div>
+<span style="color:#2a78d6">그리드에서 이 행 보기 →</span>
+</div>
+</div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>내 담당 행만 목록화, 미입력·강조 순으로 정렬. ‘다음 미입력’으로 1,000행에서도 빠르게 이동.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>개별 입력 중에도 같은 비목의 다른 행을 옆에서 비교 — ‘여러 행 보기’ 요구를 폼 안에서 해결.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span>읽기 전용 값은 상단 요약 띠(빗금), 입력 칸만 크게. 필수·형식 검증은 즉시 표시, 칸 이탈 시 자동 저장.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">4</span><span>범위 배정으로 공유된 칸(I열 = 이서연 범위)은 상대가 편집 중이면 칸 단위로 잠김.</span></div>
+</div>
+</div>
+
+<div class="dv-opt" id="1h">
+<div class="dv-olabel"><a class="dv-oid" href="#1h">1h</a>히스토리 · 복원 (셀 단위 + 스냅샷)</div>
+<div class="dv-card" style="width:1200px">
+<div style="height:34px;display:flex;align-items:center;gap:10px;padding-left:12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:15px"><span style="width:14px;height:14px;background:#222;border-radius:3px"></span><b>엑셀 취합 도구</b><span style="color:#777">2026_4Q_예산신청_취합.xlsx · 예산신청서</span><span style="flex:1"></span><span style="font-size:14px;color:#2f9e6b">● Excel 연결됨 (COM)</span><span style="display:flex;margin-left:12px;font-size:15px"><span style="width:42px;text-align:center">–</span><span style="width:42px;text-align:center">□</span><span style="width:42px;text-align:center">✕</span></span></div>
+<div style="display:flex;height:620px">
+<div style="width:156px;flex:none;border-right:1.5px solid #222;background:#fbfaf8;padding:14px 10px;display:flex;flex-direction:column;gap:4px;font-size:16px"><div style="padding:6px 10px">1 불러오기 ✓</div><div style="padding:6px 10px">2 취합 설정 ✓</div><div style="padding:6px 10px">3 서비스·접속자</div><div style="padding:6px 10px">4 진행 모니터링</div><div style="padding:6px 10px;border-radius:6px;background:#222;color:#fff">5 히스토리</div><div style="flex:1"></div><div style="border:1.5px solid #2f9e6b;border-radius:6px;padding:8px;font-size:14px;line-height:1.3;color:#2f9e6b">● 실행 중<br>접속 4 / 6</div></div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column">
+<div style="height:52px;flex:none;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1.5px solid #222;font-size:16px"><b style="font-size:21px">변경 히스토리</b><span style="color:#666">오늘 1,284건 · 참여자 5명</span><span style="flex:1"></span><span style="height:30px;padding:0 12px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;white-space:nowrap;flex:none">CSV 내보내기</span></div>
+<div style="min-height:44px;flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:4px 16px;border-bottom:1px solid #cfcdc6;font-size:15px"><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;white-space:nowrap;flex:none">오늘 ▾</span><span style="height:28px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;white-space:nowrap;flex:none">사용자: 전체 ▾</span><span style="width:1px;height:20px;background:#cfcdc6;margin:0 4px"></span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:20px;display:flex;align-items:center;white-space:nowrap;flex:none">입력</span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:20px;display:flex;align-items:center;white-space:nowrap;flex:none">수정</span><span style="height:28px;padding:0 10px;border-radius:20px;background:#222;color:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">삭제</span><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:20px;display:flex;align-items:center;white-space:nowrap;flex:none">되돌림</span><span style="width:1px;height:20px;background:#cfcdc6;margin:0 4px"></span><span style="height:28px;width:120px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;font-family:ui-monospace,monospace;font-size:12px;color:#999;white-space:nowrap;flex:none">셀/범위</span><span style="height:28px;flex:1;max-width:200px;padding:0 8px;border:1.5px solid #222;border-radius:4px;display:flex;align-items:center;color:#999;white-space:nowrap;flex:none">값 검색</span></div>
+<div style="flex:1;min-height:0;display:flex">
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;font-size:15px">
+<div style="display:flex;height:32px;align-items:center;padding:0 14px;background:#f7f6f3;border-bottom:1.5px solid #222;color:#555;font-size:14px"><span style="width:76px">시간</span><span style="width:84px">사용자</span><span style="width:70px">셀</span><span style="width:150px">행</span><span style="flex:1">이전 → 이후</span><span style="width:90px"></span></div>
+<div style="display:flex;align-items:center;min-height:42px;padding:0 14px;background:#fdecec;border-bottom:1px solid #e2e0da"><span style="width:76px;font-family:ui-monospace,monospace;font-size:12px">14:20:51</span><span style="width:84px;color:#e07b28">● 최도윤</span><span style="width:70px;font-family:ui-monospace,monospace;font-size:12px">F7:H7</span><span style="width:150px">재무팀 · 출장비</span><span style="flex:1"><b style="color:#d64545">범위 삭제 · 2셀</b> <span style="color:#777">(Delete 1회)</span></span><span style="width:90px;height:28px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;justify-content:center">묶음 복원</span></div>
+<div style="display:flex;align-items:center;min-height:38px;padding:0 14px 0 34px;border-bottom:1px solid #e2e0da;background:#eef4fc;box-shadow:inset 3px 0 0 #2a78d6"><span style="width:56px;color:#999">└</span><span style="width:84px"></span><span style="width:70px;font-family:ui-monospace,monospace;font-size:12px">F7</span><span style="width:150px;color:#666">신청 금액</span><span style="flex:1"><span style="text-decoration:line-through;color:#888">4,800</span> → <span style="color:#999">(빈 값)</span></span><span style="width:90px;height:26px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;justify-content:center">되돌리기</span></div>
+<div style="display:flex;align-items:center;min-height:38px;padding:0 14px 0 34px;border-bottom:1px solid #e2e0da"><span style="width:56px;color:#999">└</span><span style="width:84px"></span><span style="width:70px;font-family:ui-monospace,monospace;font-size:12px">H7</span><span style="width:150px;color:#666">산출 근거</span><span style="flex:1"><span style="text-decoration:line-through;color:#888">본사-지사 감사 출장 6회</span> → <span style="color:#999">(빈 값)</span></span><span style="width:90px;height:26px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;justify-content:center">되돌리기</span></div>
+<div style="display:flex;align-items:center;min-height:42px;padding:0 14px;border-bottom:1px solid #e2e0da"><span style="width:76px;font-family:ui-monospace,monospace;font-size:12px">14:16:22</span><span style="width:84px;color:#e07b28">● 최도윤</span><span style="width:70px;font-family:ui-monospace,monospace;font-size:12px">H8</span><span style="width:150px">재무팀 · 소모품비</span><span style="flex:1"><span style="color:#999">(빈 값)</span> → 전년 동일 수준 유지</span><span style="width:90px"></span></div>
+<div style="display:flex;align-items:center;min-height:42px;padding:0 14px;border-bottom:1px solid #e2e0da"><span style="width:76px;font-family:ui-monospace,monospace;font-size:12px">14:13:52</span><span style="width:84px;color:#e07b28">● 최도윤</span><span style="width:70px;font-family:ui-monospace,monospace;font-size:12px">H7</span><span style="width:150px">재무팀 · 출장비</span><span style="flex:1"><span style="color:#999">(빈 값)</span> → 본사-지사 감사 출장 6회</span><span style="width:90px"></span></div>
+<div style="display:flex;align-items:center;min-height:42px;padding:0 14px;border-bottom:1px solid #e2e0da"><span style="width:76px;font-family:ui-monospace,monospace;font-size:12px">14:13:10</span><span style="width:84px;color:#e07b28">● 최도윤</span><span style="width:70px;font-family:ui-monospace,monospace;font-size:12px">F7</span><span style="width:150px">재무팀 · 출장비</span><span style="flex:1"><span style="color:#999">(빈 값)</span> → 4,800</span><span style="width:90px"></span></div>
+<div style="display:flex;align-items:center;min-height:42px;padding:0 14px;border-bottom:1px solid #e2e0da"><span style="width:76px;font-family:ui-monospace,monospace;font-size:12px">14:07:02</span><span style="width:84px;color:#2f9e6b">● 이서연</span><span style="width:70px;font-family:ui-monospace,monospace;font-size:12px">H3</span><span style="width:150px">인사팀 · 교육훈련비</span><span style="flex:1"><span style="color:#999">(빈 값)</span> → 리더십 교육 2회</span><span style="width:90px"></span></div>
+<div style="padding:8px 14px;color:#9a978f">⋮ 무한 스크롤</div>
+</div>
+<div style="width:330px;flex:none;border-left:1.5px solid #222;display:flex;flex-direction:column;font-size:15px">
+<div style="padding:12px 14px;border-bottom:1px dashed #cfcdc6;display:flex;flex-direction:column;gap:6px">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:17px">셀 타임라인 · F7</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span></div>
+<div style="display:flex;gap:10px;align-items:flex-start"><span style="width:10px;height:10px;border-radius:50%;border:1.5px solid #222;margin-top:5px;flex:none"></span><span style="line-height:1.2"><span style="font-size:13px;color:#777">14:00 원본</span><br>(빈 값)</span></div>
+<div style="display:flex;gap:10px;align-items:flex-start"><span style="width:10px;height:10px;border-radius:50%;background:#e07b28;margin-top:5px;flex:none"></span><span style="flex:1;line-height:1.2"><span style="font-size:13px;color:#777">14:13 최도윤 입력</span><br><b>4,800</b></span><span style="height:26px;padding:0 8px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;font-size:14px;white-space:nowrap;flex:none">이 값으로</span></div>
+<div style="display:flex;gap:10px;align-items:flex-start"><span style="width:10px;height:10px;border-radius:50%;background:#d64545;margin-top:5px;flex:none"></span><span style="line-height:1.2"><span style="font-size:13px;color:#777">14:20 최도윤 삭제</span><br>(빈 값) · 현재</span></div>
+</div>
+<div style="padding:12px 14px;display:flex;flex-direction:column;gap:7px">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:17px">스냅샷</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span style="flex:1"></span><span style="color:#2a78d6">+ 지금 저장</span></div>
+<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border:1.5px solid #cfcdc6;border-radius:6px"><span style="font-family:ui-monospace,monospace;font-size:12px">14:30</span><span style="flex:1">자동 (15분)</span></div>
+<div style="display:flex;flex-direction:column;gap:6px;padding:7px 8px;border:2px solid #2a78d6;background:#eef4fc;border-radius:6px"><div style="display:flex;align-items:center;gap:8px"><span style="font-family:ui-monospace,monospace;font-size:12px">14:15</span><span style="flex:1">자동 (15분)</span></div><div style="color:#555">현재와 37셀 다름 · 이후 변경 3명</div><div style="display:flex;gap:6px"><span style="height:28px;padding:0 10px;border:1.5px solid #222;border-radius:6px;background:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">비교 보기</span><span style="height:28px;padding:0 10px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">이 시점으로 복원</span></div></div>
+<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border:1.5px solid #cfcdc6;border-radius:6px"><span style="font-family:ui-monospace,monospace;font-size:12px">14:00</span><span style="flex:1">서비스 시작 (원본)</span></div>
+<div style="font-size:14px;color:#666;line-height:1.25">복원 직전 상태는 자동으로 스냅샷에 남아 복원도 되돌릴 수 있습니다.</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 32px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>셀 단위: 모든 입력·수정·삭제를 사용자·시각과 기록. 셀 타임라인에서 원하는 시점 값으로 바로 복원. 범위 삭제·붙여넣기는 묶음으로 기록 → 한 번에 복원.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>시점 단위: 자동(15분)·수동 스냅샷. 복원 전에 차이를 비교. 참여자는 셀 우클릭 → ‘셀 이력’에서 본인 변경만 되돌리기, 그 외는 호스트에게 요청.</span></div>
+</div>
+</div>
+
+<div class="dv-opt" id="1i">
+<div class="dv-olabel"><a class="dv-oid" href="#1i">1i</a>일괄 알림 · 셀 강조 · 채팅 (왼쪽 호스트 → 오른쪽 참여자)</div>
+<div class="dv-card" style="width:1200px;display:flex">
+<div style="width:540px;flex:none;border-right:2px solid #222;display:flex;flex-direction:column">
+<div style="height:34px;display:flex;align-items:center;gap:10px;padding-left:12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:15px"><span style="width:14px;height:14px;background:#222;border-radius:3px"></span><b>엑셀 취합 도구</b><span style="color:#777">호스트</span><span style="flex:1"></span><span style="display:flex;font-size:15px"><span style="width:36px;text-align:center">–</span><span style="width:36px;text-align:center">□</span><span style="width:36px;text-align:center">✕</span></span></div>
+<div style="height:600px;padding:14px 16px;display:flex;flex-direction:column;gap:12px;font-size:16px">
+<div style="border:1.5px solid #222;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:18px">공지 보내기</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span></div>
+<div style="display:flex;align-items:center;gap:6px;font-size:15px"><span style="color:#666;flex:none;white-space:nowrap">대상</span><span style="padding:1px 10px;border:1.5px solid #222;border-radius:20px;white-space:nowrap;flex:none">전체 4</span><span style="padding:1px 10px;border-radius:20px;background:#222;color:#fff;white-space:nowrap;flex:none">미완료자 3</span><span style="padding:1px 10px;border:1.5px solid #222;border-radius:20px;white-space:nowrap;flex:none">선택…</span><span style="flex:1"></span><span style="color:#666">중요</span><span style="width:30px;height:16px;border-radius:10px;background:#222;position:relative"><span style="position:absolute;right:2px;top:2px;width:12px;height:12px;border-radius:50%;background:#fff"></span></span></div>
+<div style="height:56px;border:1.5px solid #222;border-radius:6px;padding:6px 8px;line-height:1.25">오늘 17시까지 산출 근거 입력 부탁드립니다.</div>
+<div style="display:flex;align-items:center;gap:8px"><span style="color:#666;font-size:15px;flex:1">보낸 공지 · 14:02 마감 안내 (읽음 4/4)</span><span style="height:32px;padding:0 14px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">3명에게 보내기</span></div>
+</div>
+<div style="border:1.5px solid #222;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:18px">셀 강조</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span style="flex:1"></span><span style="color:#666;font-size:15px">그리드에서 선택한 셀</span><span style="font-family:ui-monospace,monospace;font-size:12px;padding:1px 6px;border:1.5px solid #222;border-radius:3px">H10</span></div>
+<div style="height:34px;border:1.5px solid #222;border-radius:6px;padding:0 8px;display:flex;align-items:center">교육 과정명과 인원을 적어 주세요.</div>
+<div style="display:flex;align-items:center;gap:8px;font-size:15px"><span style="color:#666;white-space:nowrap;flex:none">보일 사람</span><span style="padding:1px 10px;border-radius:20px;background:#222;color:#fff;white-space:nowrap;flex:none">담당자(김민지)</span><span style="padding:1px 10px;border:1.5px solid #222;border-radius:20px;white-space:nowrap;flex:none">모두</span><span style="flex:1"></span><span style="height:32px;padding:0 14px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;font-size:16px;white-space:nowrap;flex:none">강조 표시</span></div>
+<div style="display:flex;align-items:center;gap:8px;font-size:15px;border-top:1px dashed #cfcdc6;padding-top:6px"><span style="width:12px;height:12px;background:#fff3b0;border:1.5px solid #d4a514"></span><span style="font-family:ui-monospace,monospace;font-size:12px">H10</span><span style="flex:1">김민지 · 확인함 14:29</span><span style="color:#d64545">해제</span></div>
+</div>
+<div style="flex:1;min-height:0;border:1.5px solid #222;border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;gap:6px"><b style="font-size:18px">채팅</b><span style="width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span style="flex:1"></span><span style="color:#666;font-size:15px;white-space:nowrap;flex:none">전체 ▾</span></div>
+<div style="align-self:flex-start;max-width:80%;background:#f4f3ef;border-radius:8px;padding:6px 10px;line-height:1.25"><div style="font-size:13px;color:#e07b28">최도윤 · 14:33</div>출장비 행 제가 실수로 지웠어요, 복구 가능할까요?</div>
+<div style="align-self:flex-end;max-width:80%;background:#222;color:#fff;border-radius:8px;padding:6px 10px;line-height:1.25">히스토리에서 복원했습니다 <span style="font-family:ui-monospace,monospace;font-size:12px;padding:0 4px;border-radius:3px;background:#fff;color:#222">#F7:H7</span></div>
+<div style="flex:1"></div>
+<div style="display:flex;gap:6px"><span style="flex:1;height:32px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;padding:0 8px;color:#999">메시지 · #셀 참조</span><span style="width:52px;height:32px;border-radius:6px;background:#222;color:#fff;display:flex;align-items:center;justify-content:center">전송</span></div>
+</div>
+</div>
+</div>
+<div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#fff">
+<div style="height:34px;display:flex;align-items:center;gap:10px;padding:0 12px;background:#f4f3ef;border-bottom:1.5px solid #222;font-size:15px"><span style="color:#777">←</span><span style="color:#777">→</span><span style="flex:1;height:24px;border:1.5px solid #222;border-radius:20px;background:#fff;display:flex;align-items:center;padding:0 12px;font-family:ui-monospace,monospace;font-size:12px">http://192.168.0.24:8080/q4</span><span style="color:#777">참여자 (김민지)</span></div>
+<div style="height:42px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1.5px solid #222;background:#fdecec;font-size:16px"><b style="color:#d64545">중요 공지</b><span style="color:#777;font-size:14px">14:35</span><span>오늘 17시까지 산출 근거 입력 부탁드립니다.</span><span style="flex:1"></span><span style="height:26px;padding:0 12px;border:1.5px solid #222;border-radius:6px;background:#fff;display:flex;align-items:center;white-space:nowrap;flex:none">확인</span></div>
+<div style="flex:1;min-height:0;display:flex">
+<div style="flex:1;min-width:0;position:relative;overflow:hidden;font-size:15px">
+<div style="display:flex"><div style="width:40px;flex:none;height:22px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1px solid #cfcdc6"></div><sc-for list="{{gNote.head}}" as="h" hint-placeholder-count="3"><div style="width:{{h.w}};flex:none;height:22px;background:{{h.bg}};border-right:1px solid #cfcdc6;border-bottom:1px solid #cfcdc6;font-size:13px;color:#666;display:flex;align-items:center;justify-content:center">{{h.l}}</div></sc-for></div>
+<div style="display:flex"><div style="width:40px;flex:none;height:42px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1.5px solid #222"></div><sc-for list="{{gNote.head}}" as="h" hint-placeholder-count="3"><div style="width:{{h.w}};flex:none;height:42px;background:#f7f6f3;border-right:1px solid #cfcdc6;border-bottom:1.5px solid #222;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1px;font-weight:700;line-height:1.1"><span>{{h.t}}</span><sc-if value="{{h.tag}}" hint-placeholder-val="{{false}}"><span style="font-size:12px;font-weight:400;padding:0 5px;border-radius:3px;background:{{h.tb}};color:{{h.tf}}">{{h.tag}}</span></sc-if></div></sc-for></div>
+<sc-for list="{{gNote.rows}}" as="r" hint-placeholder-count="5"><div style="display:flex"><div style="width:40px;flex:none;height:30px;background:#eeede9;border-right:1px solid #cfcdc6;border-bottom:1px solid #e2e0da;display:flex;align-items:center;justify-content:center;gap:4px;font-size:13px;color:#666"><span style="width:6px;height:6px;border-radius:50%;background:{{r.dot}}"></span>{{r.n}}</div><sc-for list="{{r.cells}}" as="c"><div style="width:{{c.w}};flex:none;height:30px;position:relative;z-index:{{c.z}};background-color:{{c.bg}};background-image:{{c.img}};color:{{c.fg}};box-shadow:{{c.ring}};outline:{{c.out}};outline-offset:-4px;border-right:1px solid #e2e0da;border-bottom:{{c.bb}};display:flex;align-items:center;justify-content:{{c.jc}};gap:3px;padding:0 6px"><span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{{c.t}}</span><sc-if value="{{c.mark}}" hint-placeholder-val="{{false}}"><span style="position:absolute;top:0;right:0;border-top:8px solid #d64545;border-left:8px solid transparent"></span></sc-if><sc-if value="{{c.call}}" hint-placeholder-val="{{false}}"><span style="position:absolute;left:0;top:calc(100% + 6px);width:220px;font-size:15px;line-height:1.25;padding:8px 10px;border:1.5px solid #222;border-radius:8px;background:#fff3b0;color:#222;box-shadow:2px 2px 0 #222;white-space:normal">{{c.call}}</span></sc-if></div></sc-for></div></sc-for>
+<div style="position:absolute;left:16px;right:16px;bottom:16px;display:flex;align-items:center;gap:10px;background:#222;color:#fff;border-radius:8px;padding:9px 12px;font-size:15px"><span style="width:10px;height:10px;background:#fff3b0;flex:none"></span><span style="flex:1;line-height:1.2">박지훈 님이 <span style="font-family:ui-monospace,monospace;font-size:12px">H10</span> 셀을 강조했습니다</span><span style="height:26px;padding:0 10px;border-radius:6px;background:#fff;color:#222;display:flex;align-items:center;white-space:nowrap;flex:none">셀로 이동</span></div>
+</div>
+<div style="width:230px;flex:none;border-left:1.5px solid #222;display:flex;flex-direction:column;font-size:15px">
+<div style="display:flex;border-bottom:1px solid #cfcdc6"><span style="flex:1;text-align:center;padding:7px 0;color:#777">알림</span><span style="flex:1;text-align:center;padding:7px 0;border-bottom:2.5px solid #222;font-weight:700">채팅</span><span style="flex:1;text-align:center;padding:7px 0;color:#777">셀 이력</span></div>
+<div style="flex:1;padding:10px;display:flex;flex-direction:column;gap:8px">
+<div style="align-self:flex-start;max-width:90%;background:#f4f3ef;border-radius:8px;padding:6px 9px;line-height:1.2"><div style="font-size:13px;color:#e07b28">최도윤</div>출장비 행 제가 실수로 지웠어요…</div>
+<div style="align-self:flex-start;max-width:90%;background:#f4f3ef;border-radius:8px;padding:6px 9px;line-height:1.2"><div style="font-size:13px;color:#555">박지훈 · 호스트</div>복원했습니다 <span style="font-family:ui-monospace,monospace;font-size:12px;padding:0 4px;border-radius:3px;background:#fff;border:1px solid #222">#F7:H7</span></div>
+<div style="align-self:flex-end;max-width:90%;background:#8a5cd6;color:#fff;border-radius:8px;padding:6px 9px;line-height:1.2">H10 적었습니다</div>
+<div style="flex:1"></div>
+<span style="height:32px;border:1.5px solid #222;border-radius:6px;display:flex;align-items:center;padding:0 8px;color:#999;white-space:nowrap;flex:none">메시지 · #셀</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div style="width:1200px;max-width:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 28px;font-size:17px;line-height:1.3;color:#333;padding:4px 2px">
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">1</span><span>공지: 전체 / 미완료자 / 특정인. ‘중요’는 확인 전까지 상단 고정, 읽음 집계.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">2</span><span>셀 강조: 노란 표시 + 말풍선 + ‘셀로 이동’ 토스트. 해제 전까지 유지, 확인 여부 집계.</span></div>
+<div style="display:flex;gap:8px"><span style="flex:none;width:20px;height:20px;border-radius:50%;background:#2a78d6;color:#fff;font-size:13px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">3</span><span>채팅: #셀 참조를 누르면 그 셀로 이동. 호스트는 1:1 메시지도 가능.</span></div>
+</div>
+</div>
+
+</div>
+<p class="dv-next">다음으로: “<a class="dv-oid" href="#1f">1f</a>를 하이파이로” · “엑셀로 다시 저장하는 화면 추가” · “<a class="dv-oid" href="#1b">1b</a> 역할 지정 방식을 2–3가지로 비교”</p>
+</section>
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  build() {
+    const RW = [
+      ['3','경영지원','인사팀','이서연','교육훈련비','42,000','45,000','+7.1%','리더십 교육 2회','2분기'],
+      ['4','','','','회의비','6,800','7,200','+5.9%','간담회 4회','연중'],
+      ['5','','','','소모품비','3,100','','','',''],
+      ['6','','재무팀','최도윤','외주용역비','58,000','61,000','+5.2%','회계감사 계약','1분기'],
+      ['7','','','','출장비','4,500','','','',''],
+      ['8','영업','국내영업팀','김민지','출장비','38,000','41,500','+9.2%','거점 방문 월 4회','연중'],
+      ['9','','','','회의비','9,200','','','',''],
+      ['10','','','','교육훈련비','7,000','8,000','+14.3%','','3분기'],
+      ['11','','','','소모품비','2,000','2,100','+5.0%','판촉물 소모분','연중'],
+      ['12','','해외영업팀','정하늘','출장비','96,000','','','',''],
+      ['13','','','','외주용역비','24,000','','','','']
+    ];
+    const OWN = ['이서연','이서연','이서연','최도윤','최도윤','김민지','김민지','김민지','김민지','정하늘','정하늘'];
+    const CL = ['A','B','C','D','E','F','G','H','I'];
+    const CT = ['본부','부서','담당자','비목','전년 실적','신청 금액','증감률','산출 근거','집행 시기'];
+    const CW = [72,88,62,84,74,80,62,150,70];
+    const PC = {'이서연':'#2f9e6b','최도윤':'#e07b28','김민지':'#8a5cd6','정하늘':'#c2417a'};
+    const LOCK = [0,1,2,3,4,6], REQ = [5,7];
+    const H1 = 'repeating-linear-gradient(135deg, rgba(0,0,0,0.10) 0 1px, transparent 1px 6px)';
+    const H2 = 'repeating-linear-gradient(135deg, rgba(0,0,0,0.05) 0 1px, transparent 1px 6px)';
+    const ALL = [0,1,2,3,4,5,6,7,8], ROWS = [0,1,2,3,4,5,6,7,8,9,10];
+    const mk = (v, cols, rows, ov) => {
+      const head = cols.map(ci => {
+        let tag = '', tb = '', tf = '';
+        if (v === 'config') {
+          if (ci === 0 || ci === 1 || ci === 3) { tag = '조회'; tb = '#e8f1fb'; tf = '#2a78d6'; }
+          if (ci === 2) { tag = '배정 기준'; tb = '#222'; tf = '#fff'; }
+          if (ci === 8) { tag = '목록'; tb = '#eeede9'; tf = '#555'; }
+        }
+        if (REQ.indexOf(ci) >= 0) { tag = '필수'; tb = '#fdecec'; tf = '#d64545'; }
+        if (v !== 'config' && LOCK.indexOf(ci) >= 0 && ci > 3) { tag = '잠금'; tb = '#eeede9'; tf = '#777'; }
+        return { l: CL[ci], t: CT[ci], w: CW[ci] + 'px', tag, tb, tf, bg: (v === 'config' && ci === 5) ? '#dbe8f8' : '#eeede9' };
+      });
+      const out = rows.map(ri => {
+        const row = RW[ri], own = OWN[ri], mine = own === '김민지';
+        const cells = cols.map(ci => {
+          const t = row[ci + 1], empty = t === '', locked = LOCK.indexOf(ci) >= 0, req = REQ.indexOf(ci) >= 0;
+          const cont = ci <= 2 && rows.indexOf(ri + 1) >= 0 && RW[ri + 1][ci + 1] === '';
+          let bg = ci <= 1 ? '#f7f6f3' : '#fff', fg = '#222', img = 'none', ring = 'none', mark = false;
+          if (v === 'config') {
+            if (locked) img = H1;
+            if (req && empty) { bg = '#fdecec'; mark = true; }
+            if (ci === 5) ring = 'inset 0 0 0 999px rgba(42,120,214,0.10)';
+          } else if (v === 'mon') {
+            if (locked) img = H2;
+            if (req && empty) { bg = '#fdecec'; mark = true; }
+          } else {
+            if (!mine) { fg = '#9a978f'; bg = ci <= 1 ? '#f7f6f3' : '#fbfaf8'; }
+            else { if (locked) img = H1; if (req && empty) { bg = '#fdecec'; mark = true; } }
+          }
+          const c = { t, w: CW[ci] + 'px', bg, fg, img, ring, mark, out: 'none', z: '1', badge: '', tag: '', tc: '#222', lock: '', call: '', caret: false,
+            bb: cont ? '1px solid transparent' : '1px solid #e2e0da',
+            jc: (ci === 4 || ci === 5 || ci === 6) ? 'flex-end' : ((ci <= 2 || ci === 8) ? 'center' : 'flex-start') };
+          const o = ov[ri + ':' + ci];
+          if (o) Object.assign(c, o);
+          return c;
+        });
+        return { n: row[0], dot: PC[own], cells };
+      });
+      return { head, rows: out };
+    };
+    const G = '#2f9e6b', P = '#8a5cd6';
+    const HL = { bg: '#fff3b0', ring: 'inset 0 0 0 2px #d4a514', mark: false, z: '4', call: '호스트: 교육 과정명과 인원을 적어 주세요.' };
+    const pv = [];
+    const PW = [30, 52, 60, 44, 56, 50, 50, 46, 84];
+    for (let i = 0; i < 12; i++) {
+      pv.push({ cells: PW.map((w, j) => ({ w: w + 'px', bg: i === 0 ? '#eeede9' : (j < 2 ? '#f7f6f3' : '#fff'), bc: i === 0 ? '#999' : '#cfcdc6', bw: i === 0 ? '75%' : (((i * 7 + j * 13) % 6 === 0) ? '0%' : (35 + ((i * 11 + j * 17) % 55)) + '%') })) });
+    }
+    return {
+      pv,
+      gConfig: mk('config', ALL, ROWS, { '3:5': { img: H1, out: '1.5px dashed #222', badge: '예외', z: '2' } }),
+      gMon: mk('mon', ALL, ROWS, {
+        '2:5': { ring: 'inset 0 0 0 2px ' + G, tag: '이서연', tc: G, lock: '입력 중', z: '3' },
+        '5:7': { ring: 'inset 0 0 0 2px ' + P, tag: '김민지', tc: P, z: '3' },
+        '4:7': { badge: '삭제됨' }
+      }),
+      gPart: mk('part', ALL, ROWS, {
+        '6:5': { t: '9,800', bg: '#fff', mark: false, ring: 'inset 0 0 0 2px #2a78d6', caret: true, z: '3' },
+        '7:7': HL,
+        '2:5': { ring: 'inset 0 0 0 2px ' + G, tag: '이서연', tc: G, lock: '편집 중', z: '3' },
+        '9:7': { ring: 'inset 0 0 0 2px #222', tag: '박지훈 (호스트)', tc: '#222', z: '3' }
+      }),
+      gNote: mk('note', [3, 5, 7], [5, 6, 7, 8, 9], { '6:5': { t: '9,800', bg: '#fff', mark: false }, '7:7': HL })
+    };
+  }
+  renderVals() {
+    if (!this._g) this._g = this.build();
+    return this._g;
+  }
+}
+</script>
+</body>
+</html>

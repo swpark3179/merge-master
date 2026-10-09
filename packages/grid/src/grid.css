@@ -1,0 +1,189 @@
+/*
+ * 4분면 고정 레이아웃: 스크롤 영역 안에 같은 좌표계를 쓰는 띠 3개(모서리·위·왼쪽)를 sticky로 겹친다.
+ * 각 띠는 음수 margin-bottom으로 흐름에서 자리를 차지하지 않게 해 모두 (0,0)에서 시작한다.
+ */
+.mmg-scroller {
+  position: relative;
+  overflow: auto;
+  outline: none;
+  background: #fff;
+  font:
+    13px system-ui,
+    sans-serif;
+  color: #222;
+  overscroll-behavior: contain;
+}
+
+.mmg-content {
+  position: relative;
+}
+
+.mmg-band {
+  position: sticky;
+  background: #fff;
+}
+
+.mmg-corner {
+  top: 0;
+  left: 0;
+  z-index: 4;
+}
+
+.mmg-top {
+  top: 0;
+  z-index: 3;
+}
+
+.mmg-left {
+  left: 0;
+  z-index: 2;
+}
+
+.mmg-cell {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  padding: 0 4px;
+  overflow: hidden;
+  white-space: nowrap;
+  line-height: 1.25;
+}
+
+.mmg-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mmg-selected {
+  outline: 2px solid #2a78d6;
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+.mmg-colhead,
+.mmg-rowhead {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eeede9;
+  color: #666;
+  font-size: 12px;
+  border-right: 1px solid #cfcdc6;
+  border-bottom: 1px solid #cfcdc6;
+  user-select: none;
+}
+
+.mmg-colhead {
+  top: 0;
+  height: 22px;
+}
+
+.mmg-rowhead {
+  left: 0;
+  width: 40px;
+}
+
+/* 숨긴 행·열 바로 다음 머리글: Excel처럼 굵은 경계로 숨김이 있음을 알린다. */
+.mmg-colhead.mmg-after-hidden {
+  box-shadow: inset 2px 0 0 #8c8a83;
+}
+
+.mmg-rowhead.mmg-after-hidden {
+  box-shadow: inset 0 2px 0 #8c8a83;
+}
+
+/* 범위 선택: 선택 안 칸은 옅은 파랑, 활성 칸은 테두리(.mmg-selected). 드래그 중 글자 선택은 막는다. */
+.mmg-scroller {
+  user-select: none;
+}
+
+.mmg-cell.mmg-insel {
+  box-shadow: inset 0 0 0 999px rgba(42, 120, 214, 0.12);
+}
+
+.mmg-colhead,
+.mmg-rowhead {
+  cursor: pointer;
+}
+
+.mmg-colhead.mmg-head-sel,
+.mmg-rowhead.mmg-head-sel {
+  background: #dbe8f8;
+  color: #1d5aa6;
+}
+
+/* 행 담당자 색 점 */
+.mmg-dot {
+  width: 6px;
+  height: 6px;
+  margin-right: 4px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* ------------------------------------------------------------------ 공용 셀 장식
+ * 호스트 1b·참여자 화면이 같은 표시를 쓴다: deco-locked(입력 금지 빗금), deco-missing(필수 미입력),
+ * deco-exception(셀 예외), deco-others(남의 행·남의 칸). */
+.mmg-cell.deco-locked {
+  /* 1px 대각선은 1배율에서 칸 위치에 따라 흐려 보여 1.5px로 둔다. */
+  background-image: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.11) 0 1.5px, transparent 1.5px 6px);
+}
+
+.mmg-cell.deco-missing {
+  background-color: #fdecec !important;
+}
+
+.mmg-cell.deco-missing::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  border-top: 7px solid #d64545;
+  border-left: 7px solid transparent;
+}
+
+.mmg-cell.deco-exception {
+  outline: 1.5px dashed #222;
+  outline-offset: -3px;
+}
+
+.mmg-cell.deco-others {
+  background-color: #fbfaf8 !important;
+  color: #9a978f !important;
+}
+
+/* 다른 사람 커서: 색 테두리 + 셀 위 이름표(색은 style로 준다) */
+.mmg-cell.deco-peer {
+  overflow: visible;
+  z-index: 2;
+}
+
+.peer-tag {
+  position: absolute;
+  left: -1px;
+  bottom: 100%;
+  padding: 0 5px;
+  border-radius: 3px 3px 3px 0;
+  color: #fff;
+  font-size: 11px;
+  line-height: 15px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 활성 칸 위 편집기 자리(편집기 모양은 쓰는 쪽이 정한다). 틀은 마우스를 밑의 칸으로 넘기고,
+ * 마우스를 받아야 하는 안쪽 요소만 pointer-events: auto로 둔다. */
+.mmg-overlay {
+  position: absolute;
+  z-index: 6;
+  pointer-events: none;
+}
+
+/* 호스트가 강조한 칸(노란 표시). 말풍선은 쓰는 쪽이 장식으로 붙인다. */
+.mmg-cell.deco-highlight {
+  background-color: #fff3b0 !important;
+  box-shadow: inset 0 0 0 2px #e0b400;
+}

@@ -1,0 +1,13 @@
+[package]
+name = "collect-core"
+description = "시트 모델, 취합 설정, 권한 엔진, 편집 연산"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+base64 = "0.23"
+ts-rs.workspace = true

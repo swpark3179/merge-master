@@ -1,0 +1,506 @@
+/* ---------------------------------------------------------------- 4 진행 모니터링 (1d) · 1i 소통 패널 */
+.monitor-screen {
+  gap: 8px;
+  padding: 12px 16px;
+  overflow: hidden;
+}
+
+.mon-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.mon-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mon-progress .bar {
+  width: 160px;
+}
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.filter-bar select {
+  height: 28px;
+  margin-left: 4px;
+}
+
+.mon-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr) 330px;
+  gap: 12px;
+}
+
+.mon-left {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+}
+
+.mon-left section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mon-person,
+.mon-col {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.mon-person:hover,
+.mon-col:hover {
+  background: var(--chrome);
+}
+
+.mon-person.on,
+.mon-col.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mon-grid {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.mon-grid .mmg-scroller {
+  flex: 1;
+}
+
+.mon-right {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.mon-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.mon-tabs button {
+  height: 28px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.mon-tabs button[aria-selected="true"] {
+  background: var(--ink);
+  color: #fff;
+}
+
+.feed,
+.panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.feed-item {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 13px;
+}
+
+.feed-item.editing {
+  background: #fff4e5;
+}
+
+.feed-item.alert {
+  border: 1.5px solid var(--danger);
+  background: #fdecec;
+}
+
+.feed-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin: 0 4px 0 2px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.panel-body textarea {
+  font: inherit;
+  border: 1.5px solid var(--ink);
+  border-radius: 4px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.pick-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.sent {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line);
+}
+
+.sent-item {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 13px;
+}
+
+.radio-inline {
+  margin-left: 8px;
+}
+
+button.cell-ref {
+  height: auto;
+  padding: 0 3px;
+  border: 0;
+  border-radius: 3px;
+  background: #fff3b0;
+  color: #6b5b00;
+  font:
+    12px ui-monospace,
+    Menlo,
+    monospace;
+}
+
+.chat-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: auto;
+}
+
+.chat-msg {
+  max-width: 92%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--paper);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.chat-msg.mine {
+  align-self: flex-end;
+  background: var(--accent-soft);
+}
+
+.chat-input {
+  display: flex;
+  gap: 4px;
+}
+
+.chat-input select {
+  width: 96px;
+}
+
+.chat-input input {
+  flex: 1;
+  min-width: 0;
+}
+
+.steps .badge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------- 5 히스토리 (1h) */
+.history-screen {
+  flex-direction: row;
+  align-items: stretch;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.history-main {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.history-filters select {
+  height: 30px;
+}
+
+.history-filters input {
+  width: 150px;
+}
+
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1.5px solid var(--warn);
+  border-radius: 6px;
+  background: #fffaf0;
+  font-size: 13px;
+}
+
+.htable {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1.5px solid var(--ink);
+  border-radius: 8px;
+}
+
+.hrow {
+  display: grid;
+  grid-template-columns: 70px 90px 64px minmax(0, 1fr) minmax(0, 1.4fr) 84px;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 2px 10px;
+  border-bottom: 1px solid #eee;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.hrow.hhead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f7f6f3;
+  color: #555;
+  cursor: default;
+  border-bottom: 1.5px solid var(--ink);
+}
+
+.hrow.child {
+  background: #fcfbf9;
+}
+
+.hrow.on {
+  background: var(--accent-soft);
+}
+
+.hbatch.alert > .hrow:first-child {
+  background: #fdecec;
+}
+
+.hrow > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hrow button {
+  visibility: hidden;
+}
+
+.hrow:hover button,
+.hbatch > .hrow:first-child button {
+  visibility: visible;
+}
+
+.kind {
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: #eeede9;
+  font-size: 11px;
+}
+
+.kind-delete {
+  background: #fdecec;
+  color: var(--danger);
+}
+
+.kind-revert {
+  background: #efe7fb;
+  color: #8a5cd6;
+}
+
+.hempty {
+  padding: 16px;
+}
+
+.history-side {
+  width: 330px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.timeline {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.timeline .link {
+  margin-left: 6px;
+}
+
+.snapshots {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.snap-item {
+  width: 100%;
+  height: auto;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  text-align: left;
+  font-size: 13px;
+}
+
+.snapshots li.on .snap-item {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.snap-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.snap-detail .row {
+  display: flex;
+  gap: 6px;
+  width: auto;
+}
+
+.modal-back {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.modal {
+  width: min(720px, 92vw);
+  max-height: 80vh;
+  background: #fff;
+  overflow: hidden;
+}
+
+.diff-table {
+  overflow: auto;
+  font-size: 13px;
+}
+
+.drow {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.drow.dhead {
+  position: sticky;
+  top: 0;
+  background: #f7f6f3;
+  color: #555;
+}
+
+/* 지난 취합 이어서 하기(앱을 다시 켰을 때) */
+.content {
+  flex-direction: column;
+}
+
+.content > .screen-slot,
+.content > .screen {
+  min-height: 0;
+}
+
+.recovery-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin: 12px 22px 0;
+  padding: 10px 14px;
+  border: 1.5px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}

@@ -1,0 +1,6 @@
+pnpm-lock.yaml
+packages/shared/src/generated/
+design/
+fixtures/
+src-tauri/gen/
+release/

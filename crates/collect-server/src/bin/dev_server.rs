@@ -1,0 +1,72 @@
+//! Tauri·Excel 없이 참여자 서버만 띄우는 개발용 바이너리.
+//!
+//! ```text
+//! cargo run -p collect-server --bin collect-dev-server -- --fixture fixtures/budget.sheet.json
+//!     [--port 8080] [--bind 0.0.0.0] [--slug q4] [--title 제목] [--requester 박지훈]
+//!     [--required F,H] [--others-hidden] [--dev-admin]
+//! ```
+//! 설정은 `CollectConfig::suggest`로 만든 초안에 위 옵션을 더한다. `--dev-admin`은 `/__dev/*`(승인·거절·연결 끊기·잠금 해제·설정·수식 결과)를 켠다.
+
+use std::net::IpAddr;
+
+use anyhow::Context;
+use collect_core::SheetModel;
+use collect_core::a1::col_from_letters;
+use collect_core::config::{CollectConfig, OthersRows};
+use collect_server::{ServerConfig, SessionHandle, SessionInit, lan_addresses, start};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())).init();
+
+    let mut fixture = None;
+    let mut server = ServerConfig { bind: IpAddr::from([0, 0, 0, 0]), port: 8080, slug: "q4".into(), dev_admin: false };
+    let mut title = "2026년 부서별 예산 신청".to_string();
+    let mut requester = "박지훈".to_string();
+    let mut required: Vec<String> = Vec::new();
+    let mut others_hidden = false;
+    let mut args = std::env::args().skip(1);
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--dev-admin" => server.dev_admin = true,
+            "--others-hidden" => others_hidden = true,
+            _ => {
+                let value = args.next().with_context(|| format!("{flag} 값이 없습니다"))?;
+                match flag.as_str() {
+                    "--fixture" => fixture = Some(value),
+                    "--port" => server.port = value.parse()?,
+                    "--bind" => server.bind = value.parse()?,
+                    "--slug" => server.slug = value,
+                    "--title" => title = value,
+                    "--requester" => requester = value,
+                    "--required" => required = value.split(',').map(|s| s.trim().to_string()).collect(),
+                    other => anyhow::bail!("알 수 없는 옵션 {other}"),
+                }
+            }
+        }
+    }
+
+    let path = fixture.context("--fixture <시트 JSON>이 필요합니다")?;
+    let model: SheetModel = serde_json::from_slice(&std::fs::read(&path).with_context(|| path.clone())?)?;
+    let mut config = CollectConfig::suggest(&model);
+    config.title = title;
+    config.requester = requester;
+    config.description = "부서별 담당 비목의 신청 금액과 산출 근거를 입력해 주세요.".into();
+    if others_hidden {
+        config.permissions.others_rows = OthersRows::Hidden;
+    }
+    for letters in &required {
+        let c = col_from_letters(letters).with_context(|| format!("열 이름이 잘못되었습니다: {letters}"))?;
+        let rule = config.columns.get_mut(c as usize).with_context(|| format!("없는 열: {letters}"))?;
+        rule.required = true;
+    }
+
+    let handle = start(server.clone(), SessionHandle::spawn(SessionInit::new(model, config))).await?;
+    for lan in lan_addresses() {
+        println!("  {} → http://{}:{}/{}", lan.name, lan.ip, handle.local_addr.port(), server.slug);
+    }
+    println!("  로컬 → http://127.0.0.1:{}/{}   (Ctrl+C로 종료)", handle.local_addr.port(), server.slug);
+    tokio::signal::ctrl_c().await?;
+    handle.stop().await;
+    Ok(())
+}

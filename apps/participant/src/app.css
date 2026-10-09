@@ -1,0 +1,438 @@
+:root {
+  --ink: #222;
+  --muted: #777;
+  --line: #cfcdc6;
+  --paper: #f7f6f3;
+  --accent: #2a78d6;
+  --ok: #2f9e6b;
+  --warn: #a86a00;
+  --danger: #d64545;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font:
+    14px/1.4 "맑은 고딕",
+    "Malgun Gothic",
+    system-ui,
+    sans-serif;
+  color: var(--ink);
+  background: #fff;
+}
+
+.page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 8px 16px;
+  border-bottom: 1.5px solid var(--ink);
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.eyebrow {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.status {
+  font-size: 13px;
+}
+
+.status-open {
+  color: var(--ok);
+}
+
+.status-connecting {
+  color: var(--muted);
+}
+
+.status-closed {
+  color: var(--warn);
+}
+
+.pill {
+  padding: 1px 10px;
+  border: 1.5px solid var(--ink);
+  border-radius: 20px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+input,
+button {
+  font: inherit;
+  height: 30px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #fff;
+}
+
+button {
+  background: var(--ink);
+  color: #fff;
+  cursor: pointer;
+}
+
+.name {
+  width: 110px;
+}
+
+.chat-form {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 6px 16px;
+  background: #eef4fc;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.formula-bar {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.formula-bar .addr {
+  width: 80px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid var(--line);
+  font:
+    12px ui-monospace,
+    Menlo,
+    monospace;
+}
+
+.formula-bar .fx {
+  width: 34px;
+  text-align: center;
+  color: #999;
+  font-style: italic;
+}
+
+.formula-bar .value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.formula-bar .meta {
+  padding: 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.grid-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.grid-host .mmg-scroller {
+  flex: 1;
+}
+
+.empty {
+  margin: auto;
+  color: var(--muted);
+}
+
+.bench {
+  margin: 0;
+  padding: 6px 16px;
+  border-top: 1px solid var(--line);
+  font:
+    12px ui-monospace,
+    Menlo,
+    monospace;
+}
+
+@media (max-width: 640px) {
+  .top {
+    padding: 8px 12px;
+  }
+  .chat-form input {
+    width: 140px;
+  }
+}
+
+/* ---------------------------------------------------------------- 1e 접속 화면 */
+.join-wrap {
+  min-height: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 24px 32px;
+  padding: 24px 16px;
+  background: var(--paper);
+}
+
+.join-card {
+  width: 460px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 26px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: #fff;
+  font-size: 16px;
+}
+
+.join-card h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.join-card .chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.join-card .desc {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #f4f3ef;
+  line-height: 1.35;
+}
+
+.name-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.name-field input {
+  height: 42px;
+  border: 2px solid var(--accent);
+  font-size: 18px;
+}
+
+.join-card .hint,
+.join-card .note {
+  color: #666;
+  font-size: 14px;
+}
+
+.join-card .note {
+  text-align: center;
+  color: #888;
+}
+
+button.primary {
+  height: 44px;
+  border-radius: 8px;
+  font-size: 18px;
+}
+
+.join-card .error {
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.join-side {
+  width: 320px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.state-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  border: 1.5px dashed var(--ink);
+  border-radius: 10px;
+  background: #fff;
+  line-height: 1.35;
+}
+
+.state-card .row {
+  display: flex;
+  gap: 6px;
+}
+
+.state-card button.primary {
+  height: 32px;
+  font-size: 14px;
+}
+
+button.link {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  text-align: left;
+}
+
+.bar {
+  height: 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+}
+
+.bar.indeterminate > span {
+  width: 35%;
+  animation: slide 1.4s ease-in-out infinite;
+}
+
+@keyframes slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}
+
+/* ---------------------------------------------------------------- 1f 작업 화면 */
+.mine-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.mine-progress .bar {
+  width: 120px;
+}
+
+.avatars {
+  display: flex;
+}
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  margin-left: -6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: #fff;
+  font-size: 13px;
+}
+
+.avatar:first-child {
+  margin-left: 0;
+}
+
+.avatar.away {
+  opacity: 0.5;
+}
+
+.avatar.me {
+  color: #fff;
+}
+
+.cell-tags {
+  display: flex;
+  gap: 4px;
+  padding-right: 10px;
+}
+
+.tag {
+  padding: 0 6px;
+  border-radius: 3px;
+  background: #eeede9;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.tag-required {
+  background: #fdecec;
+  color: var(--danger);
+}
+
+.tag-mine {
+  background: #efe7fb;
+  color: #8a5cd6;
+}
+
+.hint-bar {
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #fffdf2;
+  color: #6b5b00;
+  font-size: 13px;
+}
+
+.status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-height: 30px;
+  padding: 4px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: #666;
+}
+
+.status .ok {
+  color: var(--ok);
+}
+
+.status .warn {
+  color: var(--warn);
+}
+
+.muted {
+  color: var(--muted);
+}

@@ -1,0 +1,16 @@
+node_modules/
+dist/
+target/
+*.log
+.vite/
+.DS_Store
+# 스크립트가 생성하는 픽스처 산출물
+fixtures/generated/
+# 에디터
+.vscode/*
+!.vscode/extensions.json
+.idea/
+test-results/
+playwright-report/
+src-tauri/gen/
+release/

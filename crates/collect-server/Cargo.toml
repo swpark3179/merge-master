@@ -1,0 +1,36 @@
+[package]
+name = "collect-server"
+description = "참여자용 HTTP/WebSocket 서버 (axum) + 세션 액터"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "collect-dev-server"
+path = "src/bin/dev_server.rs"
+
+[dependencies]
+collect-core.workspace = true
+axum.workspace = true
+chrono.workspace = true
+collect-store.workspace = true
+futures-util = "0.3"
+if-addrs.workspace = true
+mime_guess.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+ts-rs.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+# dev 바이너리 전용
+anyhow.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+base64 = "0.23"
+tokio = { workspace = true, features = ["test-util"] }
+tokio-tungstenite = "0.30"
