@@ -619,7 +619,10 @@ textarea.detail-text:focus {
 }
 
 .side-panel {
+  position: relative;
   width: 310px;
+  /* 창이 좁아져도 그리드 쪽을 남긴다(끈 너비는 SidePanel의 clampSideWidth와 같은 기준). */
+  max-width: max(260px, calc(100vw - 360px));
   flex: none;
   display: flex;
   flex-direction: column;
@@ -628,6 +631,31 @@ textarea.detail-text:focus {
   border-left: 1.5px solid var(--ink);
   background: #fff;
   min-height: 0;
+}
+
+/* 왼쪽 경계 손잡이: 끌어서 너비를 바꾼다. 경계선 위로 조금 넘쳐 잡기 쉽게 한다. */
+.side-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  width: 9px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.side-resize:hover,
+.side-resize:focus-visible,
+.side-resize.dragging {
+  outline: none;
+  background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 6px, transparent 6px);
+}
+
+/* 끄는 동안 글자가 선택되거나 커서가 바뀌지 않게 */
+body.side-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .side-tabs {
@@ -761,5 +789,5 @@ button.cell-ref {
 
 /* 오른쪽 패널이 열려 있으면 알림을 패널 왼쪽에 띄운다(채팅 입력을 가리지 않게). */
 .toasts.with-panel {
-  right: 326px;
+  right: calc(min(var(--side-w, 310px), max(260px, 100vw - 360px)) + 16px);
 }

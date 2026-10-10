@@ -467,9 +467,6 @@ function RoleBar({ s }: { s: ConfigState }) {
       >
         <span className="tag tag-filter">조회</span>조회조건
       </button>
-      <button className="ghost role eraser" aria-label="지우개" disabled={disabled} onClick={() => brush("erase")}>
-        지우개
-      </button>
     </div>
   );
 }

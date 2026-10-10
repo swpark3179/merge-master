@@ -277,16 +277,28 @@ test("서식 정책: 배경색만 허용하면 채우기만 쓸 수 있다", asy
   await request.post("/__dev/config", { data: { format: "none" } });
 });
 
-test("마감이 지나면 읽기 전용이 된다", async ({ browser, request }) => {
+test("마감까지 남은 시간이 오른쪽 위에 보이고, 지나면 읽기 전용이 된다", async ({ browser, request }) => {
   const hidden = "http://127.0.0.1:8098";
   const a = await open(browser, "김민지", `${hidden}/q4`);
+  // 로컬 시각 `YYYY-MM-DDTHH:MM`: 2일 3시간 30분 뒤(분이 넘어가도 '2일 3시간'으로 보인다).
+  const at = new Date(Date.now() + ((2 * 24 + 3) * 60 + 30) * 60_000);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const local = `${at.getFullYear()}-${p(at.getMonth() + 1)}-${p(at.getDate())}T${p(at.getHours())}:${p(at.getMinutes())}`;
+  expect((await request.post(`${hidden}/__dev/config`, { data: { deadline: local } })).ok()).toBe(true);
+  const left = a.locator(".top .deadline-left");
+  await expect(left).toContainText("2일 3시간 남음");
+  await expect(left).toContainText(`마감 ${at.getMonth() + 1}/${at.getDate()}`);
+  await expect(left).not.toHaveClass(/urgent/);
   expect((await request.post(`${hidden}/__dev/config`, { data: { deadline: "2000-01-01T09:00" } })).ok()).toBe(true);
+  await expect(left.locator("b")).toHaveText("마감 지남");
+  await expect(left).toHaveClass(/urgent/);
   await expect(a.locator(".readonly-bar")).toContainText("마감 시각이 지났습니다 — 읽기 전용입니다");
   await cell(a, 12, F).click();
   await a.keyboard.type("1");
   await expect(a.locator(".toast")).toContainText("마감되어 입력할 수 없습니다");
   await request.post(`${hidden}/__dev/config`, { data: { deadline: "" } });
   await expect(a.locator(".readonly-bar")).toHaveCount(0);
+  await expect(left).toHaveCount(0);
 });
 
 test("호스트가 취합을 마감하면 사유와 함께 읽기 전용이 되고, 다시 열 수 있다", async ({ browser, request }) => {

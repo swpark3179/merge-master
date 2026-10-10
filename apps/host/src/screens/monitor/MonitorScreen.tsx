@@ -15,6 +15,7 @@ import type {
   MonitorData,
   NoticeTarget,
   ProgressStats,
+  RangeAssignment,
   SheetModel,
 } from "@mm/shared";
 import { a1, colLetters, decodeFlags, displayValue, FLAG, personColor, remaining, splitCellRefs } from "@mm/shared";
@@ -404,14 +405,22 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
   const left = remaining(view?.config.deadline, new Date(now));
   const people = snapshot?.participants ?? [];
   const unread = (comms?.chat ?? []).filter((m) => !m.host && m.id > chatSeen).length;
-  const sel = selection
-    ? {
-        row: Math.min(selection.anchor.row, selection.focus.row),
-        col: Math.min(selection.anchor.col, selection.focus.col),
-        rows: Math.abs(selection.anchor.row - selection.focus.row) + 1,
-        cols: Math.abs(selection.anchor.col - selection.focus.col) + 1,
-      }
-    : null;
+  const sel = useMemo(
+    () =>
+      selection
+        ? {
+            row: Math.min(selection.anchor.row, selection.focus.row),
+            col: Math.min(selection.anchor.col, selection.focus.col),
+            rows: Math.abs(selection.anchor.row - selection.focus.row) + 1,
+            cols: Math.abs(selection.anchor.col - selection.focus.col) + 1,
+          }
+        : null,
+    [selection],
+  );
+  const owners = useMemo(
+    () => (sel && view ? ownersOf(sel, view.rowOwner, view.config.assignment.ranges, roster) : null),
+    [sel, view, roster],
+  );
 
   if (!model || !view || !viewModel) {
     return (
@@ -455,18 +464,20 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
           </span>
         )}
         <span className="spacer" />
-        <button className="ghost small" onClick={() => setPanel("notice")}>
-          공지 보내기
-        </button>
-        <button className="ghost small" onClick={() => setPanel("highlight")}>
-          선택 셀 강조
-        </button>
-        <button className="ghost small" onClick={() => setPanel("chat")}>
-          채팅{unread > 0 ? ` ${unread}` : ""}
-        </button>
-        <button className="ghost small" onClick={() => void run(() => api.snapshotTake(""), "스냅샷을 남겼습니다")}>
-          스냅샷
-        </button>
+        <div className="mon-actions">
+          <button className="ghost small" onClick={() => setPanel("notice")}>
+            공지 보내기
+          </button>
+          <button className="ghost small" onClick={() => setPanel("highlight")}>
+            선택 셀 강조
+          </button>
+          <button className="ghost small" onClick={() => setPanel("chat")}>
+            채팅{unread > 0 ? ` ${unread}` : ""}
+          </button>
+          <button className="ghost small" onClick={() => void run(() => api.snapshotTake(""), "스냅샷을 남겼습니다")}>
+            스냅샷
+          </button>
+        </div>
       </div>
 
       <div className="filter-bar">
@@ -626,7 +637,7 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
             <HighlightPanel
               comms={comms}
               selection={sel}
-              ownerNames={sel ? ownersOf(sel, view.rowOwner, roster) : []}
+              owners={owners}
               rangeLabel={rangeLabel}
               onReveal={reveal}
               onError={setError}
@@ -648,13 +659,28 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
   );
 }
 
-function ownersOf(r: CellRange, rowOwner: number[], roster: string[]): string[] {
+/** 강조 '담당자'에게 보일 사람: 칸마다 행 담당자 + 범위 배정. 담당자 없는 칸이 섞여 있으면 `open`(모두에게 보인다). */
+function ownersOf(
+  r: CellRange,
+  rowOwner: number[],
+  ranges: RangeAssignment[],
+  roster: string[],
+): { names: string[]; open: boolean } {
+  // 서버(`MAX_HIGHLIGHT_CELLS`)처럼 너무 큰 범위는 칸마다 보지 않는다(담당자에게 보낼 수 없다).
+  if (r.rows * r.cols > 10_000) return { names: [], open: false };
+  const inside = (g: CellRange, row: number, col: number) =>
+    g.row <= row && row < g.row + g.rows && g.col <= col && col < g.col + g.cols;
   const out = new Set<string>();
   for (let row = r.row; row < r.row + r.rows; row++) {
     const o = rowOwner[row] ?? -1;
     if (o >= 0 && roster[o]) out.add(roster[o]!);
+    for (let col = r.col; col < r.col + r.cols; col++) {
+      const assigned = ranges.filter((a) => inside(a.range, row, col));
+      for (const a of assigned) out.add(a.person.trim());
+      if (o < 0 && assigned.length === 0) return { names: [], open: true };
+    }
   }
-  return [...out];
+  return { names: [...out], open: false };
 }
 
 // ------------------------------------------------------------ 패널들
@@ -836,12 +862,12 @@ function NoticePanel({
 function HighlightPanel(props: {
   comms: CommsSnapshot | null;
   selection: CellRange | null;
-  ownerNames: string[];
+  owners: { names: string[]; open: boolean } | null;
   rangeLabel: (r: CellRange) => string;
   onReveal: (r: CellRange) => void;
   onError: (e: string) => void;
 }) {
-  const { comms, selection, ownerNames, rangeLabel, onReveal, onError } = props;
+  const { comms, selection, owners, rangeLabel, onReveal, onError } = props;
   const [note, setNote] = useState("");
   const [audience, setAudience] = useState<HighlightAudience>("owners");
   const add = async () => {
@@ -869,7 +895,8 @@ function HighlightPanel(props: {
         보일 사람{" "}
         <label className="radio-inline">
           <input type="radio" checked={audience === "owners"} onChange={() => setAudience("owners")} />
-          담당자{ownerNames.length > 0 ? `(${ownerNames.join(", ")})` : ""}
+          담당자
+          {owners?.open ? "(담당자 없는 칸이 있어 모두)" : owners?.names.length ? `(${owners.names.join(", ")})` : ""}
         </label>
         <label className="radio-inline">
           <input type="radio" checked={audience === "all"} onChange={() => setAudience("all")} />
@@ -892,7 +919,7 @@ function HighlightPanel(props: {
                 {h.note}
               </div>
               <div className="small">
-                {h.recipients.length === 0 && <span className="warn">보일 사람이 없습니다(담당자 없음)</span>}
+                {h.recipients.length === 0 && <span className="warn">보일 사람이 없습니다</span>}
                 {h.recipients.map((r) => {
                   const ack = h.acked.find(([n]) => n === r);
                   return (
@@ -916,7 +943,7 @@ function HighlightPanel(props: {
 }
 
 function chatTarget(m: ChatMessage): ReactNode {
-  if (m.to.kind === "host") return <span className="muted small"> → 호스트</span>;
+  if (m.to.kind === "host") return <span className="muted small"> → 나</span>;
   if (m.to.kind === "person") return <span className="muted small"> → {m.to.name}</span>;
   return null;
 }
@@ -955,7 +982,7 @@ function ChatPanel(props: {
         {messages.map((m) => (
           <div key={m.id} className={`chat-msg${m.host ? " mine" : ""}`}>
             <div className="small">
-              <b style={{ color: m.host ? "#222" : colorOf(m.from) }}>{m.host ? "나(호스트)" : m.from}</b>
+              <b style={{ color: m.host ? "#222" : colorOf(m.from) }}>{m.host ? `${m.from} (나)` : m.from}</b>
               {chatTarget(m)} <span className="muted">· {time(m.atMs, false)}</span>
             </div>
             <div>

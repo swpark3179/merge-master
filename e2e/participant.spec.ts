@@ -87,6 +87,38 @@ test("선택과 키보드 이동이 사이드바 '셀 내용'에 반영된다", 
   await expect(page.locator(".cell-detail .addr")).toHaveText("C8");
 });
 
+test("사이드바 왼쪽 경계를 끌어 너비를 바꾸고, 새로 고쳐도 기억한다", async ({ page }) => {
+  await enterAs(page, "최도윤");
+  const panel = page.locator(".side-panel");
+  const handle = page.getByRole("separator", { name: "사이드바 너비" });
+  const width = async () => Math.round((await panel.boundingBox())!.width);
+  expect(await width()).toBe(310);
+  const box = (await handle.boundingBox())!;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(box.x + box.width / 2, y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 - 150, y, { steps: 5 });
+  await page.mouse.up();
+  expect(await width()).toBe(460);
+  await expect(handle).toHaveAttribute("aria-valuenow", "460");
+  // 그리드 쪽은 360px 남긴다(1280 - 360 = 920).
+  const wide = (await handle.boundingBox())!;
+  await page.mouse.move(wide.x + wide.width / 2, y);
+  await page.mouse.down();
+  await page.mouse.move(10, y, { steps: 5 });
+  await page.mouse.up();
+  expect(await width()).toBe(720);
+  await handle.focus();
+  await page.keyboard.press("ArrowRight");
+  expect(await width()).toBe(704);
+
+  await page.reload();
+  await inWorkspace(page);
+  expect(await width()).toBe(704);
+  await handle.dblclick();
+  expect(await width()).toBe(310);
+});
+
 test("다른 사람의 커서가 이름표로 보인다", async ({ browser }) => {
   const a = await (await browser.newContext()).newPage();
   const b = await (await browser.newContext()).newPage();

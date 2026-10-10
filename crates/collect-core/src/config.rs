@@ -148,7 +148,8 @@ impl Default for Permissions {
 pub struct CollectConfig {
     pub title: String,
     pub description: String,
-    /// 요청자(1e '박지훈 (기획팀) 님의 엑셀 취합 요청').
+    /// 요청자(1c '내 이름', 필수). 1e '박지훈 (기획팀) 님의 엑셀 취합 요청'이고, 호스트 PC가 IP 명단에 없으면
+    /// 공지·강조·채팅의 보낸 사람 이름이다.
     #[serde(default)]
     pub requester: String,
     /// 마감(로컬 시각 `YYYY-MM-DDTHH:MM`).
