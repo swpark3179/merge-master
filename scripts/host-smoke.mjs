@@ -228,8 +228,9 @@ try {
   const columnPanel = cfg.getByRole("region", { name: "열 속성" });
   check(
     (await roleBar.getByRole("button", { name: "필수" }).count()) === 0 &&
-      (await roleBar.getByRole("button", { name: "담당자 배정" }).count()) === 0,
-    "역할 줄: 입력/잠금 · 조회조건 · 지우개(필수·담당자 배정 버튼 없음)",
+      (await roleBar.getByRole("button", { name: "담당자 배정" }).count()) === 0 &&
+      (await roleBar.getByRole("button", { name: "지우개" }).count()) === 0,
+    "역할 줄: 입력/잠금 · 조회조건(필수·담당자 배정·지우개 버튼 없음)",
   );
   await colHead("F").click();
   await expect(formula.locator(".addr")).toHaveText("F3:F1002");
@@ -351,12 +352,12 @@ try {
   console.log("[1c 서비스]");
   await page.getByRole("button", { name: "다음: 서비스 →" }).click();
   const svc = page.locator(".service-screen");
-  await svc.getByLabel("요청자").fill("박지훈 (기획팀)");
+  await svc.getByLabel("내 이름").fill("박지훈 (기획팀)");
   await expect(svc.getByLabel("취합 제목")).toHaveValue("variants");
   check(true, "취합 제목 기본값 = 엑셀 파일 이름(variants)");
   await svc.getByLabel("취합 제목").fill("하반기 교육 수요 조사");
   await svc.getByRole("button", { name: /네트워크 설정/ }).click(); // 접힌 네트워크 설정 펼치기
-  await svc.getByLabel("포트").fill(String(SERVICE_PORT)); // 앞 칸의 blur로 제목·요청자 저장
+  await svc.getByLabel("포트").fill(String(SERVICE_PORT)); // 앞 칸의 blur로 제목·내 이름 저장
   await expect(svc.getByRole("row")).toHaveCount(5, { timeout: 10_000 });
   check(true, "서비스 전: 명단 4명이 미접속으로 보임");
   await svc.getByRole("button", { name: "공유 시작", exact: true }).click();

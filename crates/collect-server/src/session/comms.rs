@@ -45,7 +45,7 @@ pub enum NoticeTarget {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub enum HighlightAudience {
-    /// 그 칸을 맡은 사람(행 담당자 + 범위 배정).
+    /// 그 칸을 맡은 사람(행 담당자 + 범위 배정). 담당자 없는 칸(누구나 입력)이 섞여 있으면 모두.
     Owners,
     All,
 }
@@ -233,6 +233,11 @@ impl State {
             HighlightAudience::Owners => {
                 if range.len() <= MAX_HIGHLIGHT_CELLS {
                     for at in range.cells() {
+                        // 담당자가 없는 칸은 누구나 입력하므로 모두에게 보인다.
+                        if self.access.is_open(at) {
+                            people.extend(0..roster.len());
+                            break;
+                        }
                         people.extend(self.access.owners(at));
                     }
                 }

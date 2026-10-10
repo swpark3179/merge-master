@@ -313,6 +313,23 @@ button.link {
   display: flex;
 }
 
+/* 오른쪽 위: 마감 시각과 남은 시간(1시간 안쪽·지나면 경고색) */
+.deadline-left {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.deadline-left b {
+  font-size: 15px;
+}
+
+.deadline-left.urgent b {
+  color: var(--warn);
+}
+
 .avatar {
   width: 30px;
   height: 30px;

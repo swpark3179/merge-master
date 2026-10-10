@@ -135,6 +135,29 @@ async fn highlights_go_to_owners_and_can_be_cleared() {
 }
 
 #[tokio::test]
+async fn owners_highlight_on_unowned_cells_goes_to_everyone() {
+    let mut init = fixture();
+    init.config.assignment.key_col = None;
+    init.config.assignment.extra_people = vec!["가".into(), "나".into()];
+    let r = init.model.header_rows;
+    init.config.assignment.ranges.push(collect_core::config::RangeAssignment {
+        range: CellRange::new(r, F, 1, 1),
+        person: "가".into(),
+        note: String::new(),
+    });
+    let (mut st, mut c) = setup_with(init, &["가", "나"]);
+    let got = |c: &mut Client| c.take().iter().any(|m| matches!(m, ServerMsg::Highlight(_)));
+
+    host(&mut st, move |s| s.highlight(CellRange::new(r, F, 1, 1), "", HighlightAudience::Owners));
+    assert!(got(&mut c[0]));
+    assert!(!got(&mut c[1]), "범위 배정된 칸은 그 사람에게만");
+
+    host(&mut st, move |s| s.highlight(CellRange::new(r, F, 2, 1), "", HighlightAudience::Owners));
+    assert!(got(&mut c[0]) && got(&mut c[1]), "담당자 없는 칸이 섞여 있으면 모두에게");
+    assert_eq!(st.comms_snapshot().highlights.last().unwrap().recipients, ["가", "나"]);
+}
+
+#[tokio::test]
 async fn hidden_policy_limits_highlight_audience() {
     let mut init = fixture();
     init.config.permissions.others_rows = OthersRows::Hidden;

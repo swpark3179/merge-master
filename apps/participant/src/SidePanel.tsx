@@ -1,5 +1,6 @@
 import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
 import { a1, splitCellRefs } from "@mm/shared";
+import type { KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
 import { CellDetail } from "./CellDetail";
@@ -7,6 +8,16 @@ import { sameValue } from "./edits";
 import type { SessionState } from "./useSession";
 
 export type PanelTab = "cell" | "alerts" | "chat" | "history";
+
+/** 사이드바 기본 너비. 왼쪽 경계를 끌어 바꾼다(그리드 쪽은 적어도 360px 남긴다). */
+export const SIDE_WIDTH = 310;
+const SIDE_MIN = 260;
+const SIDE_MAX = 720;
+
+export function clampSideWidth(w: number): number {
+  const max = Math.max(SIDE_MIN, Math.min(SIDE_MAX, window.innerWidth - 360));
+  return Math.round(Math.min(max, Math.max(SIDE_MIN, w)));
+}
 
 function time(ms: number): string {
   const d = new Date(ms);
@@ -28,6 +39,9 @@ interface Props {
   tab: PanelTab;
   onTab: (t: PanelTab) => void;
   onClose: () => void;
+  /** 너비(px). 끄는 동안은 화면에서만 바꾸고, 놓으면 `onWidth`로 알린다. */
+  width: number;
+  onWidth: (w: number) => void;
   /** 지금 고른 칸(셀 내용·셀 이력). */
   at: CellRef | null;
   labels: string[];
@@ -45,16 +59,69 @@ interface Props {
   onChatSeen: (id: number) => void;
 }
 
-/** 1f 오른쪽 사이드바: 셀 내용(고른 칸의 위치·내용 보기·고치기), 알림(강조된 셀·공지), 채팅(전체·호스트에게), 셀 이력. */
+/** 1f 오른쪽 사이드바: 셀 내용(고른 칸의 위치·내용 보기·고치기), 알림(강조된 셀·공지), 채팅(전체·취합을 연 사람에게), 셀 이력. */
 export function SidePanel(props: Props) {
   const { s, tab, onTab, onClose, at, labels, canEdit, onReveal, onChatSeen } = props;
   const w = s.welcome!;
   const origin = s.sheet!.model.origin;
   const addr = (r: CellRef) => a1(origin.row + r.row, origin.col + r.col);
   const unreadAlerts = s.highlights.filter((h) => !h.acked).length + s.announcements.filter((n) => !n.read).length;
+  const panel = useRef<HTMLElement>(null);
+  const { width, onWidth } = props;
+
+  // 왼쪽 경계 끌기: 끄는 동안은 DOM 너비만 바꿔 작업 화면을 다시 그리지 않는다(그리드는 크기 변화를 스스로 잰다).
+  const startResize = (e: PointerEvent<HTMLDivElement>) => {
+    const el = panel.current;
+    if (e.button !== 0 || !el) return;
+    e.preventDefault();
+    const handle = e.currentTarget;
+    const x0 = e.clientX;
+    const w0 = el.getBoundingClientRect().width;
+    let w = w0;
+    const move = (ev: globalThis.PointerEvent) => {
+      w = clampSideWidth(w0 + x0 - ev.clientX);
+      el.style.width = `${w}px`;
+    };
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      handle.classList.remove("dragging");
+      document.body.classList.remove("side-resizing");
+      onWidth(w);
+    };
+    handle.setPointerCapture(e.pointerId);
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+    handle.classList.add("dragging");
+    document.body.classList.add("side-resizing");
+  };
+  const resizeKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const step = e.shiftKey ? 64 : 16;
+    if (e.key === "ArrowLeft") onWidth(clampSideWidth(width + step));
+    else if (e.key === "ArrowRight") onWidth(clampSideWidth(width - step));
+    else if (e.key === "Home") onWidth(clampSideWidth(SIDE_WIDTH));
+    else return;
+    e.preventDefault();
+  };
 
   return (
-    <aside className="side-panel" aria-label="사이드바">
+    <aside className="side-panel" aria-label="사이드바" ref={panel} style={{ width }}>
+      <div
+        className="side-resize"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="사이드바 너비"
+        aria-valuenow={width}
+        aria-valuemin={SIDE_MIN}
+        aria-valuemax={SIDE_MAX}
+        tabIndex={0}
+        title="끌어서 사이드바 너비 조절 · 두 번 누르면 기본 너비"
+        onPointerDown={startResize}
+        onDoubleClick={() => onWidth(clampSideWidth(SIDE_WIDTH))}
+        onKeyDown={resizeKey}
+      />
       <div className="side-tabs" role="tablist">
         <button role="tab" aria-selected={tab === "cell"} onClick={() => onTab("cell")}>
           셀 내용
@@ -91,6 +158,7 @@ export function SidePanel(props: Props) {
         <Chat
           s={s}
           me={w.name}
+          host={s.presence.find((x) => x.host)?.name || w.session.requester || "요청자"}
           onRef={(r) => onReveal({ row: r.row - origin.row, col: r.col - origin.col, rows: r.rows, cols: r.cols })}
           onSeen={onChatSeen}
         />
@@ -141,11 +209,14 @@ function Alerts({ s, addr, onReveal }: { s: SessionState; addr: (r: CellRef) => 
 function Chat({
   s,
   me,
+  host,
   onRef,
   onSeen,
 }: {
   s: SessionState;
   me: string;
+  /** 취합을 연 사람의 이름(1c '내 이름'). */
+  host: string;
   onRef: (r: CellRange) => void;
   onSeen: (id: number) => void;
 }) {
@@ -167,13 +238,13 @@ function Chat({
     <div className="side-body chat">
       <div className="chat-list" ref={list} aria-label="채팅 내용">
         {s.chat.length === 0 && (
-          <div className="muted small">아직 채팅이 없습니다. 호스트에게 물어볼 것이 있으면 적어 주세요.</div>
+          <div className="muted small">아직 채팅이 없습니다. {host} 님에게 물어볼 것이 있으면 적어 주세요.</div>
         )}
         {s.chat.map((m) => (
           <div key={m.id} className={`chat-msg${m.from === me && !m.host ? " mine" : ""}`}>
             <div className="small">
-              <b>{m.host ? (m.from === "호스트" ? "호스트" : `${m.from} · 호스트`) : m.from === me ? "나" : m.from}</b>
-              {m.to.kind === "host" && <span className="muted"> → 호스트</span>}
+              <b>{m.from === me && !m.host ? "나" : m.from}</b>
+              {m.to.kind === "host" && <span className="muted"> → {host}</span>}
               {m.to.kind === "person" && <span className="muted"> → 나에게</span>}
               <span className="muted"> · {time(m.atMs)}</span>
             </div>
@@ -193,7 +264,7 @@ function Chat({
       </div>
       <label className="check small">
         <input type="checkbox" checked={toHost} onChange={(e) => setToHost(e.target.checked)} />
-        호스트에게만
+        {host} 님에게만
       </label>
       <div className="chat-input">
         <input

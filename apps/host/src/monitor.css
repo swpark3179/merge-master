@@ -28,9 +28,16 @@
   color: var(--warn);
 }
 
+/* 오른쪽 위 버튼(공지·강조·채팅·스냅샷)은 통계 사이 간격과 따로 촘촘하게 묶는다. */
+.mon-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .mon-head .ghost.small {
-  height: 32px;
-  padding: 0 12px;
+  height: 30px;
+  padding: 0 10px;
   font-size: 13px;
 }
 

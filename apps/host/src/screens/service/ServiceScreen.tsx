@@ -37,6 +37,12 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   const [recalc, setRecalc] = useState<RecalcStatus | null>(null);
   /** IP 명단이 바뀌었다(승인하며 'IP 명단에 저장'). */
   const [ipRev, setIpRev] = useState(0);
+  /** 내 이름(설정의 요청자): 공지·강조·채팅에 이 이름으로 보인다. 공유를 시작하려면 있어야 한다. */
+  const [myName, setMyName] = useState("");
+  const savedName = config?.requester;
+  useEffect(() => {
+    if (savedName !== undefined) setMyName(savedName);
+  }, [savedName]);
 
   // 수식 재계산(Excel 계산 사본) 상태
   useEffect(() => {
@@ -96,10 +102,19 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
     setConfig(v.config);
   };
 
+  /** 내 이름을 저장한다. 비우면 저장하지 않고 앞의 이름으로 돌린다(필수). */
+  const saveName = async () => {
+    if (!config) return;
+    const name = myName.trim();
+    if (!name) return setMyName(config.requester);
+    if (name !== config.requester) await saveMeta({ requester: name });
+  };
+
   const start = async () => {
     setBusy(true);
     setError(null);
     try {
+      await saveName();
       onService(await api.serverStart(Number(port), slug.trim() || "q4"));
       setSince(new Date().toTimeString().slice(0, 5));
       toast("공유를 시작했어요");
@@ -167,14 +182,16 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
                 </label>
                 <label className="field">
                   <span>
-                    <b>요청자</b> <span className="muted">(선택)</span>
+                    <b>내 이름</b> <span className="muted">(필수)</span>
                   </span>
                   <input
-                    aria-label="요청자"
+                    aria-label="내 이름"
+                    aria-required="true"
                     placeholder="예: 박지훈 (기획팀)"
-                    defaultValue={config.requester}
-                    key={`r${config.requester}`}
-                    onBlur={(e) => e.target.value !== config.requester && void saveMeta({ requester: e.target.value })}
+                    title="공지·셀 강조·채팅에 이 이름으로 보입니다"
+                    value={myName}
+                    onChange={(e) => setMyName(e.target.value)}
+                    onBlur={() => void saveName()}
                   />
                 </label>
               </div>
@@ -307,9 +324,16 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
                 <div className="muted-2">시작하면 아래 주소로 참여자가 접속할 수 있어요.</div>
               </div>
               <code className="url pending-url">{preview}</code>
-              <button className="big-btn" onClick={() => void start()} disabled={busy || !port || !hasSheet}>
+              <button
+                className="big-btn"
+                onClick={() => void start()}
+                disabled={busy || !port || !hasSheet || !myName.trim()}
+              >
                 {busy ? "시작하는 중…" : "공유 시작"}
               </button>
+              {hasSheet && config && !myName.trim() && (
+                <div className="warn small">접속 조건에 내 이름을 입력하면 공유를 시작할 수 있어요.</div>
+              )}
             </>
           )}
           <div className="small muted">

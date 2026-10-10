@@ -76,6 +76,14 @@ test("셀 강조: 노란 표시·말풍선과 '셀로 이동', 확인 집계, �
   const id = (await (await request.get("/__dev/comms")).json()).highlights.at(-1).id;
   await request.post("/__dev/highlight/clear", { data: { id } });
   await expect(cell(a, 19, H)).not.toHaveClass(/deco-highlight/);
+
+  // 메모가 없으면 말풍선 없이 강조색만 보인다.
+  await request.post("/__dev/highlight", { data: { range: "H21", note: "", audience: "owners" } });
+  await expect(cell(a, 20, H)).toHaveClass(/deco-highlight/);
+  await expect(a.locator(".callout")).toHaveCount(0);
+  const plain = (await (await request.get("/__dev/comms")).json()).highlights.at(-1).id;
+  await request.post("/__dev/highlight/clear", { data: { id: plain } });
+  await expect(cell(a, 20, H)).not.toHaveClass(/deco-highlight/);
 });
 
 test("채팅: 전체·호스트에게, 호스트의 1:1 답장과 #셀 참조", async ({ browser, request }) => {
@@ -88,8 +96,8 @@ test("채팅: 전체·호스트에게, 호스트의 1:1 답장과 #셀 참조", 
   await expect(a.getByLabel("채팅 내용")).toContainText("출장비 행 제가 실수로 지웠어요");
   // 다른 참여자에게도 보인다(패널을 열면 안 읽은 수가 사라진다).
   await expect(b.locator(".side-panel").getByRole("tab", { name: /^채팅\s*1/ })).toBeVisible();
-  // 호스트에게만
-  await a.getByLabel("호스트에게만").check();
+  // 호스트(1c '내 이름': 박지훈)에게만
+  await a.getByLabel("박지훈 님에게만").check();
   await input.fill("호스트님 질문");
   await input.press("Enter");
   await expect
@@ -102,7 +110,8 @@ test("채팅: 전체·호스트에게, 호스트의 1:1 답장과 #셀 참조", 
     data: { to: { kind: "person", name: "최도윤" }, text: "히스토리에서 복원했습니다 #F9" },
   });
   const reply = a.getByLabel("채팅 내용").locator(".chat-msg").last();
-  await expect(reply).toContainText("박지훈 · 호스트");
+  // 호스트 글은 이름만 보인다('호스트'라고 붙이지 않는다).
+  await expect(reply.locator("b")).toHaveText("박지훈");
   await reply.getByRole("button", { name: "#F9" }).click();
   await a.locator(".side-panel").getByRole("tab", { name: "셀 내용" }).click();
   await expect(a.locator(".cell-detail .addr")).toHaveText("F9");

@@ -1101,7 +1101,7 @@ input.invalid {
   font-weight: 400;
 }
 
-/* 역할 지정 줄: 고른 범위 안내 + 입력/잠금 + 조회조건 + 지우개 */
+/* 역할 지정 줄: 고른 범위 안내 + 입력/잠금 + 조회조건 */
 .role-bar {
   flex: none;
   display: flex;
@@ -1223,11 +1223,6 @@ button.role {
 .grid-card-head .viewer-pick {
   flex: none;
   white-space: nowrap;
-}
-
-button.role.eraser {
-  border-style: dashed;
-  color: var(--muted);
 }
 
 .role-sw {

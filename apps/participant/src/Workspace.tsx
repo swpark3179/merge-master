@@ -1,8 +1,18 @@
 import type { CellDecoration, EditorState, GridSelection, Move, SheetGridHandle } from "@mm/grid";
 import { CellEditor, fitRowHeights, parseTsv, SheetGrid, toTsv } from "@mm/grid";
 import type { CellRange, CellRef, SheetModel, StylePatch } from "@mm/shared";
-import { a1, dday, displayValue, editText, FLAG, formatDeadline, normalize, personColor } from "@mm/shared";
-import type { ClipboardEvent, KeyboardEvent } from "react";
+import {
+  a1,
+  displayValue,
+  editText,
+  FLAG,
+  formatDeadline,
+  normalize,
+  parseDeadline,
+  personColor,
+  remaining,
+} from "@mm/shared";
+import type { ClipboardEvent, CSSProperties, KeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { BenchResult } from "./bench";
@@ -13,7 +23,7 @@ import type { BulkResult, EditContext } from "./gridOps";
 import { canEdit, clearRange, copyRange, pasteRange } from "./gridOps";
 import { RowForm } from "./RowForm";
 import type { PanelTab } from "./SidePanel";
-import { SidePanel } from "./SidePanel";
+import { clampSideWidth, SIDE_WIDTH, SidePanel } from "./SidePanel";
 import type { Notice, SessionState } from "./useSession";
 
 const FILLS: { label: string; rgb: number | null }[] = [
@@ -66,6 +76,25 @@ function saveSide(open: boolean) {
   }
 }
 
+/** 사이드바 너비(끌어서 바꾼 것, 주소 경로마다 기억). */
+function loadSideWidth(): number {
+  try {
+    const v = Number(localStorage.getItem(`${sideKey()}.width`));
+    if (v > 0) return clampSideWidth(v);
+  } catch {
+    // 기억하지 못해도 동작은 한다.
+  }
+  return SIDE_WIDTH;
+}
+
+function saveSideWidth(w: number) {
+  try {
+    localStorage.setItem(`${sideKey()}.width`, String(w));
+  } catch {
+    // 사생활 보호 모드 등
+  }
+}
+
 function clock(ms: number): string {
   const d = new Date(ms);
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
@@ -92,6 +121,11 @@ export function Workspace({ s }: { s: SessionState }) {
     setSideOpenState(open);
     saveSide(open);
   }, []);
+  const [sideWidth, setSideWidthState] = useState(loadSideWidth);
+  const setSideWidth = useCallback((w: number) => {
+    setSideWidthState(w);
+    saveSideWidth(w);
+  }, []);
   /** 사이드바를 열고 그 탭을 보인다. */
   const showPanel = useCallback(
     (tab: PanelTab) => {
@@ -101,6 +135,13 @@ export function Workspace({ s }: { s: SessionState }) {
     [setSideOpen],
   );
   const [chatSeen, setChatSeen] = useState(0);
+  /** 마감까지 남은 시간(분 단위로 보이므로 30초마다 다시 센다). */
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!w.session.deadline) return;
+    const id = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, [w.session.deadline]);
   const onChatSeen = useCallback((id: number) => setChatSeen((x) => Math.max(x, id)), []);
   const editorRef = useRef<ActiveEdit | null>(null);
   editorRef.current = editor;
@@ -432,7 +473,7 @@ export function Workspace({ s }: { s: SessionState }) {
 
   const colorOf = (name: string) => personColor(Math.max(0, w.roster.indexOf(name)));
 
-  // 호스트가 강조한 칸: 칸 → (메모, 왼쪽 위 칸인지)
+  // 강조된 칸: 칸 → (메모, 왼쪽 위 칸인지)
   const highlighted = useMemo(() => {
     const map = new Map<string, { note: string; head: boolean }>();
     for (const h of s.highlights) {
@@ -475,9 +516,10 @@ export function Workspace({ s }: { s: SessionState }) {
     const hl = highlighted.get(`${r}:${c}`);
     if (hl) {
       cls.push("deco-highlight");
-      if (hl.head) {
+      // 메모가 있으면 왼쪽 위 칸에 말풍선으로 보인다(없으면 강조색만).
+      if (hl.head && hl.note) {
         cls.push("deco-peer");
-        adornment = <span className="callout">{hl.note || "호스트가 강조한 칸"}</span>;
+        adornment = <span className="callout">{hl.note}</span>;
       }
     }
     if (lockedBy) {
@@ -569,7 +611,10 @@ export function Workspace({ s }: { s: SessionState }) {
   const others = s.presence.filter((p) => p.name !== w.name);
   const p = s.progress ?? w.progress;
   const pct = p.required > 0 ? Math.round((p.filled / p.required) * 100) : 100;
-  const due = dday(w.session.deadline);
+  const left = remaining(w.session.deadline, new Date(now));
+  const overdue = left === "마감 지남";
+  const dueAt = parseDeadline(w.session.deadline)?.getTime();
+  const urgent = !overdue && dueAt !== undefined && dueAt - now < 3_600_000;
   const waiting = sheet.outbox.reduce((n, b) => n + b.cells.length, 0);
   const shownRows = model.rows - model.headerRows - view.hiddenRows.filter((r) => r >= model.headerRows).length;
 
@@ -616,11 +661,6 @@ export function Workspace({ s }: { s: SessionState }) {
           <div className="eyebrow">{w.session.requester ? `${w.session.requester} 님의 취합 요청` : "취합 요청"}</div>
           <h1>{w.session.title}</h1>
         </div>
-        {due && (
-          <span className="pill" title={formatDeadline(w.session.deadline)}>
-            마감 {due}
-          </span>
-        )}
         <span className="spacer" />
         {p.required > 0 && (
           <span className="mine-progress">
@@ -652,6 +692,16 @@ export function Workspace({ s }: { s: SessionState }) {
             나
           </span>
         </span>
+        {left && (
+          <div
+            className={`deadline-left${overdue || urgent ? " urgent" : ""}`}
+            role="timer"
+            aria-label={overdue ? "마감 지남" : `마감까지 ${left} 남음`}
+          >
+            <div className="eyebrow">마감 {formatDeadline(w.session.deadline)}</div>
+            <b>{overdue ? left : `${left} 남음`}</b>
+          </div>
+        )}
       </header>
 
       {s.readOnly && (
@@ -849,6 +899,8 @@ export function Workspace({ s }: { s: SessionState }) {
                 tab={panel}
                 onTab={setPanelTab}
                 onClose={() => setSideOpen(false)}
+                width={sideWidth}
+                onWidth={setSideWidth}
                 at={at}
                 labels={labels}
                 columns={columns}
@@ -893,7 +945,11 @@ export function Workspace({ s }: { s: SessionState }) {
         )}
       </footer>
 
-      <div className={`toasts${sideOpen && mode === "grid" ? " with-panel" : ""}`} aria-live="polite">
+      <div
+        className={`toasts${sideOpen && mode === "grid" ? " with-panel" : ""}`}
+        style={{ "--side-w": `${sideWidth}px` } as CSSProperties}
+        aria-live="polite"
+      >
         {s.notices.map((n) => (
           <Toast key={n.id} notice={n} onDone={s.dismiss} onAction={(a) => revealRange(a.range, a.highlight)} />
         ))}
