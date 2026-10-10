@@ -35,6 +35,8 @@ export interface ImportForm {
   items: ImportItems;
 }
 
+export const EXCEL_EXTENSIONS = ["xlsx", "xlsm", "xlsb", "xls"];
+
 type Busy = "list" | "open" | "inspect" | "read" | "commit" | null;
 
 /** 범위·항목을 고친 뒤 다시 읽기까지 기다리는 시간(입력 중에는 읽지 않는다). */
@@ -62,6 +64,13 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
     setSheet(b.activeSheet || b.sheets[0] || null);
   }, []);
 
+  /** '다른 파일': 고른 통합문서를 놓고 목록으로 돌아간다. */
+  const unpick = useCallback(() => {
+    readToken.current++;
+    setBookId(null);
+    setSheet(null);
+  }, []);
+
   const refresh = useCallback(async () => {
     setBusy("list");
     setError(null);
@@ -69,11 +78,11 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
       const st = await api.listWorkbooks();
       setStatus(st);
       onExcelStatus(st.running);
+      // 고른 통합문서가 아직 열려 있으면 그대로 두고, 아니면 사용자가 다시 고르게 한다.
       setBookId((current) => {
         if (current && st.workbooks.some((b) => b.id === current)) return current;
-        const first = st.workbooks[0];
-        setSheet(first ? first.activeSheet || first.sheets[0] || null : null);
-        return first?.id ?? null;
+        setSheet(null);
+        return null;
       });
     } catch (e) {
       setError(errorText(e));
@@ -82,26 +91,32 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
     }
   }, [onExcelStatus]);
 
-  const openFile = useCallback(async () => {
-    const path = await open({
-      multiple: false,
-      filters: [{ name: "Excel 통합문서", extensions: ["xlsx", "xlsm", "xlsb", "xls"] }],
-    });
-    if (typeof path !== "string") return;
-    setBusy("open");
-    setError(null);
-    try {
-      const info = await api.openFile(path);
-      const st = await api.listWorkbooks();
-      setStatus(st);
-      onExcelStatus(st.running);
-      pick(info);
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(null);
-    }
-  }, [onExcelStatus, pick]);
+  /** `dropped`가 없으면 파일 대화상자로 고른다. */
+  const openFile = useCallback(
+    async (dropped?: string) => {
+      const path =
+        dropped ??
+        (await open({
+          multiple: false,
+          filters: [{ name: "Excel 통합문서", extensions: EXCEL_EXTENSIONS }],
+        }));
+      if (typeof path !== "string") return;
+      setBusy("open");
+      setError(null);
+      try {
+        const info = await api.openFile(path);
+        const st = await api.listWorkbooks();
+        setStatus(st);
+        onExcelStatus(st.running);
+        pick(info);
+      } catch (e) {
+        setError(errorText(e));
+      } finally {
+        setBusy(null);
+      }
+    },
+    [onExcelStatus, pick],
+  );
 
   // 시트를 고르면 사전 감지 → 감지값으로 바로 읽는다.
   useEffect(() => {
@@ -214,17 +229,24 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
 
   const stale = key !== null && key !== resultKey;
 
+  /** 마지막으로 확정한 읽기 결과 + 머리글·틀 고정. 같으면 다시 확정하지 않는다(설정이 초기화되지 않게). */
+  const [committedSig, setCommittedSig] = useState<string | null>(null);
+  const sig = form && resultKey ? JSON.stringify([resultKey, form.headerRows, form.frozenCols]) : null;
+  const changedSinceCommit = sig === null || sig !== committedSig;
+
   const commit = useCallback(async () => {
     if (!form || stale) return;
     setBusy("commit");
     try {
-      onCommitted(await api.commitImport(form.headerRows, form.frozenCols));
+      const m = await api.commitImport(form.headerRows, form.frozenCols);
+      setCommittedSig(sig);
+      onCommitted(m);
     } catch (e) {
       setError(errorText(e));
     } finally {
       setBusy(null);
     }
-  }, [form, stale, onCommitted]);
+  }, [form, stale, sig, onCommitted]);
 
   return {
     status,
@@ -232,6 +254,7 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
     sheet,
     setSheet,
     pick,
+    unpick,
     refresh,
     openFile,
     inspection,
@@ -246,6 +269,7 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
     error,
     cancel,
     commit,
+    changedSinceCommit,
   };
 }
 

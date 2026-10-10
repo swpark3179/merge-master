@@ -1,9 +1,9 @@
 import type { CellDecoration } from "@mm/grid";
 import { countCells, SheetGrid } from "@mm/grid";
 import type { Brush, CellRange, ColumnRule, HAlign, SheetModel, StylePatch } from "@mm/shared";
-import { FLAG, formatRange, formatValue, personColor, rgbHex } from "@mm/shared";
+import { colLetters, FLAG, formatRange, formatValue, personColor, rgbHex } from "@mm/shared";
 import type { ReactNode } from "react";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import { AssignmentPanel, ColumnPanel, ExceptionsPanel, PermissionsPanel } from "./panels";
 import type { ConfigState } from "./useConfig";
@@ -13,8 +13,6 @@ interface Props {
   model: SheetModel;
   /** 화면이 보이는 중인지(다시 보일 때 설정을 새로 읽는다). */
   active: boolean;
-  onBack: () => void;
-  onNext: () => void;
 }
 
 const FONTS = ["맑은 고딕", "굴림", "돋움", "바탕", "Arial", "Calibri"];
@@ -36,9 +34,10 @@ export function formatLabel(rule: ColumnRule | undefined): string {
 }
 
 /** 1b 취합 설정. */
-export function ConfigScreen({ model: initial, active, onBack, onNext }: Props) {
+export function ConfigScreen({ model: initial, active }: Props) {
   const s = useConfig(initial, active);
   const assignRef = useRef<HTMLSelectElement>(null);
+  const [fmt, setFmt] = useState(false);
   const { model, view, flags, viewer } = s;
   const hr = model.headerRows;
 
@@ -133,25 +132,37 @@ export function ConfigScreen({ model: initial, active, onBack, onNext }: Props) 
   return (
     <div className="screen config-screen">
       <div className="config-main">
-        <FormatBar s={s} />
         <RoleBar s={s} onAssign={() => assignRef.current?.focus()} />
-        <FormulaBar s={s} />
-        {viewer && view && <ViewerBanner s={s} />}
-        <div className="config-grid">
-          {view ? (
-            <SheetGrid
-              model={shown}
-              decorate={decorate}
-              rowMarker={rowMarker}
-              selection={s.selection}
-              onSelectionChange={s.setSelection}
-              className="preview-grid"
-            />
-          ) : (
-            <div className="placeholder muted">설정을 불러오는 중…</div>
-          )}
+        <div className="grid-card">
+          <div className="grid-card-head">
+            <span className="muted">
+              {model.sheet} · {(model.rows - hr).toLocaleString()}행 {model.cols}열
+            </span>
+            <span className="spacer" />
+            <ViewerPick s={s} />
+            <button className={`ghost small${fmt ? " on" : ""}`} aria-pressed={fmt} onClick={() => setFmt((v) => !v)}>
+              서식 편집
+            </button>
+          </div>
+          {fmt && <FormatBar s={s} />}
+          <FormulaBar s={s} />
+          {viewer && view && <ViewerBanner s={s} />}
+          <div className="config-grid">
+            {view ? (
+              <SheetGrid
+                model={shown}
+                decorate={decorate}
+                rowMarker={rowMarker}
+                selection={s.selection}
+                onSelectionChange={s.setSelection}
+                className="preview-grid"
+              />
+            ) : (
+              <div className="placeholder muted">설정을 불러오는 중…</div>
+            )}
+          </div>
         </div>
-        <Legend s={s} onBack={onBack} onNext={onNext} />
+        <Legend s={s} />
       </div>
       {view && (
         <aside className="config-side" aria-label="설정 패널">
@@ -283,26 +294,63 @@ function FormatBar({ s }: { s: ConfigState }) {
         <option value="center">가운데</option>
         <option value="right">오른쪽</option>
       </select>
-      <span className="spacer" />
-      <label className="viewer-pick">
-        참여자 시점으로 보기
-        <select
-          aria-label="참여자 시점"
-          value={s.viewer ?? ""}
-          disabled={s.busy}
-          onChange={(e) => void s.setViewer(e.target.value || null)}
-        >
-          <option value="">선택 안 함</option>
-          {s.view?.roster.map((p) => (
-            <option key={p}>{p}</option>
-          ))}
-        </select>
-      </label>
     </div>
   );
 }
 
+function ViewerPick({ s }: { s: ConfigState }) {
+  return (
+    <label className="viewer-pick">
+      참여자 시점으로 보기
+      <select
+        aria-label="참여자 시점"
+        value={s.viewer ?? ""}
+        disabled={s.busy}
+        onChange={(e) => void s.setViewer(e.target.value || null)}
+      >
+        <option value="">선택 안 함</option>
+        {s.view?.roster.map((p) => (
+          <option key={p}>{p}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 const BRUSHES: { brush: Brush; name: string; label: ReactNode; title: string }[] = [
+  {
+    brush: "input",
+    name: "입력 영역",
+    label: (
+      <>
+        <span className="role-sw input" />
+        입력으로 지정
+      </>
+    ),
+    title: "참여자가 쓸 수 있는 칸으로",
+  },
+  {
+    brush: "required",
+    name: "필수",
+    label: (
+      <>
+        <span className="role-sw req" />
+        필수로 지정
+      </>
+    ),
+    title: "반드시 채워야 하는 칸으로(다시 누르면 해제)",
+  },
+  {
+    brush: "locked",
+    name: "입력 금지",
+    label: (
+      <>
+        <span className="role-sw lock" />
+        잠금으로 지정
+      </>
+    ),
+    title: "보기만 가능한 칸으로",
+  },
   {
     brush: "filter",
     name: "조회조건",
@@ -313,50 +361,25 @@ const BRUSHES: { brush: Brush; name: string; label: ReactNode; title: string }[]
     ),
     title: "열을 참여자 화면의 조회조건(드롭다운 필터)으로",
   },
-  {
-    brush: "input",
-    name: "입력 영역",
-    label: (
-      <>
-        <span className="chip-swatch input" />
-        입력 영역
-      </>
-    ),
-    title: "입력 영역으로",
-  },
-  {
-    brush: "locked",
-    name: "입력 금지",
-    label: (
-      <>
-        <span className="chip-swatch locked" />
-        입력 금지
-      </>
-    ),
-    title: "입력 금지로",
-  },
-  {
-    brush: "required",
-    name: "필수",
-    label: (
-      <>
-        <span className="req">*</span>필수
-      </>
-    ),
-    title: "필수로(다시 누르면 해제)",
-  },
 ];
 
+/** 범위(열 머리글 = 데이터 행 전체)를 고르고 역할을 누른다. */
 function RoleBar({ s, onAssign }: { s: ConfigState; onAssign: () => void }) {
   const disabled = !s.range || s.busy;
   const brush = (b: Brush) => s.range && void s.apply({ op: "brush", range: s.range, brush: b });
+  const r = s.range;
+  const hint = !r
+    ? "열 머리글(A, B, C…)을 누르거나 범위를 끌어 고르세요. Shift로 여러 열을 함께 고를 수 있어요."
+    : r.row <= s.model.headerRows && r.row + r.rows >= s.model.rows
+      ? `${colSpan(s.model, r)}열을 골랐어요.`
+      : `${rangeLabel(s.model, r)}을 골랐어요.`;
   return (
-    <div className="toolbar roles" role="toolbar" aria-label="역할 지정">
-      <b>역할 지정</b>
+    <div className="role-bar" role="toolbar" aria-label="역할 지정">
+      <span className="role-hint">{hint}</span>
       {BRUSHES.map((b) => (
         <button
           key={b.brush}
-          className="role"
+          className="ghost role"
           aria-label={b.name}
           title={b.title}
           disabled={disabled}
@@ -365,15 +388,19 @@ function RoleBar({ s, onAssign }: { s: ConfigState; onAssign: () => void }) {
           {b.label}
         </button>
       ))}
-      <button className="role" aria-label="담당자 배정" disabled={disabled} onClick={onAssign}>
+      <button className="ghost role" aria-label="담당자 배정" disabled={disabled} onClick={onAssign}>
         담당자 배정
       </button>
-      <button className="role eraser" aria-label="지우개" disabled={disabled} onClick={() => brush("erase")}>
+      <button className="ghost role eraser" aria-label="지우개" disabled={disabled} onClick={() => brush("erase")}>
         지우개
       </button>
-      <span className="muted small hint">범위 드래그 → 역할 클릭 · 열 머리글 = 데이터 행 전체</span>
     </div>
   );
+}
+
+function colSpan(model: SheetModel, r: CellRange): string {
+  const a = colLetters(model.origin.col + r.col);
+  return r.cols === 1 ? a : `${a}–${colLetters(model.origin.col + r.col + r.cols - 1)}`;
 }
 
 function rangeLabel(model: SheetModel, r: CellRange): string {
@@ -429,40 +456,59 @@ function ViewerBanner({ s }: { s: ConfigState }) {
   );
 }
 
-function Legend({ s, onBack, onNext }: { s: ConfigState; onBack: () => void; onNext: () => void }) {
+function Legend({ s }: { s: ConfigState }) {
   const l = s.view?.legend;
   const unassigned = s.view?.progress.unassigned ?? 0;
+  const perms = s.view?.config.permissions;
   return (
     <footer className="legend">
       {l && (
         <>
-          <span>
-            <span className="chip-swatch input" />
-            입력 {l.inputCols}열
+          <span className="legend-item">
+            <span className="role-sw input" />
+            <b>입력</b>
+            <span className="muted">참여자가 쓸 수 있음 · {l.inputCols}열</span>
           </span>
-          <span>
-            <span className="chip-swatch locked" />
-            입력 금지 {l.lockedCols}열
+          <span className="legend-item">
+            <span className="role-sw req" />
+            <b>필수</b>
+            <span className="muted">반드시 채워야 함 · 비어 있음 {l.requiredMissing.toLocaleString()}</span>
           </span>
-          <span>
-            <span className="chip-swatch missing" />
-            필수 미입력 {l.requiredMissing.toLocaleString()}
+          <span className="legend-item">
+            <span className="role-sw lock" />
+            <b>잠금</b>
+            <span className="muted">보기만 가능 · {l.lockedCols}열</span>
           </span>
-          <span>
-            <span className="tag tag-filter">조회</span>조회 {l.filterCols}열
-          </span>
-          <span>
-            <span className="chip-swatch exception" />
-            예외 {l.exceptions}
-          </span>
+          {l.filterCols > 0 && (
+            <span className="legend-item">
+              <span className="tag tag-filter">조회</span>
+              <span className="muted">조회조건 {l.filterCols}열</span>
+            </span>
+          )}
+          {l.exceptions > 0 && (
+            <span className="legend-item">
+              <span className="chip-swatch exception" />
+              <span className="muted">예외 {l.exceptions}</span>
+            </span>
+          )}
           {unassigned > 0 && <span className="warn">배정되지 않은 필수 {unassigned.toLocaleString()}칸</span>}
         </>
       )}
       <span className="spacer" />
-      <button className="ghost" onClick={onBack}>
-        ← 다시 불러오기
-      </button>
-      <button onClick={onNext}>다음: 서비스 시작 →</button>
+      {perms && (
+        <button
+          className="switch"
+          role="switch"
+          aria-checked={perms.addRows}
+          disabled={s.busy}
+          onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, addRows: !perms.addRows } })}
+        >
+          참여자가 새 행을 추가할 수 있게 하기
+          <span className="track">
+            <span className="knob" />
+          </span>
+        </button>
+      )}
     </footer>
   );
 }

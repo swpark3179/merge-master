@@ -360,20 +360,34 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
   return (
     <div className="screen monitor-screen">
       <div className="mon-head">
-        <b className="big">{snapshot?.closed ? "취합 마감됨" : running ? "실시간 취합 중" : "서비스 중지됨"}</b>
-        <span className="mon-progress" aria-label="전체 필수 진행률">
-          필수 입력{" "}
+        <span className="stat">
           <b>
-            {(p?.filled ?? 0).toLocaleString()} / {(p?.required ?? 0).toLocaleString()}
-          </b>{" "}
-          {pct}%
-          <span className="bar">
-            <span style={{ width: `${pct}%` }} />
-          </span>
+            {snapshot?.online ?? 0}/{snapshot?.roster ?? people.length}
+          </b>
+          명 접속
+        </span>
+        <span className="stat" aria-label="전체 필수 진행률">
+          <b>
+            {(p?.filled ?? 0).toLocaleString()}/{(p?.required ?? 0).toLocaleString()}
+          </b>
+          필수 칸 채움 <span className="muted">{pct}%</span>
         </span>
         {left && (
-          <span className={left === "마감 지남" ? "warn" : "muted"}>
-            {left === "마감 지남" ? left : `마감까지 ${left}`}
+          <span className={`stat${left === "마감 지남" ? " warn" : ""}`}>
+            {left === "마감 지남" ? (
+              <b>{left}</b>
+            ) : (
+              <>
+                <b>{left}</b>
+                마감까지
+              </>
+            )}
+          </span>
+        )}
+        {/* 공유 중인지는 위쪽 상태 알약이 보여 준다. 마감·중지만 여기서 알린다. */}
+        {(snapshot?.closed || !running) && (
+          <span className={`pill${snapshot?.closed ? " warn-pill" : ""}`}>
+            {snapshot?.closed ? "취합 마감됨" : "공유 중지됨"}
           </span>
         )}
         <span className="spacer" />

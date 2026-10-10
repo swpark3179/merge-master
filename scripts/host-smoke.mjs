@@ -97,10 +97,10 @@ try {
   const first = await launch();
   app = first.proc;
   const { page } = first;
-  await page.getByRole("heading", { name: "엑셀 불러오기" }).waitFor();
+  await page.getByRole("heading", { name: "불러오기" }).waitFor();
   if (release) check(page.url().includes("tauri.localhost"), `release 빌드: 내장 화면 (${page.url()})`);
 
-  const commitButton = page.getByRole("button", { name: "불러오기 → 취합 설정" });
+  const commitButton = page.getByRole("button", { name: "다음: 설정 →" });
   const waitRead = () => expect(commitButton).toBeEnabled({ timeout: 60_000 });
   const invoke = (cmd, args) => page.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a), [cmd, args]);
   const facts = async () =>
@@ -113,6 +113,9 @@ try {
     page.getByLabel(label).evaluate((el) => el.options[el.selectedIndex]?.textContent ?? "");
   const openBook = async (path, name) => {
     await invoke("excel_open_file", { path });
+    // 이미 통합문서를 골랐으면 '다른 파일'로 목록으로 돌아간다.
+    const other = page.getByRole("button", { name: "다른 파일" });
+    if (await other.isVisible()) await other.click();
     await page.getByRole("button", { name: "↻ 다시 찾기" }).click();
     await page.getByRole("button", { name: new RegExp(name.replace(".", "\\.")) }).click();
   };
@@ -150,6 +153,7 @@ try {
   check(true, "배정 기준 후보 · 목록 원본 표시");
   check((await cellBorderColor(2, 4)) === "rgb(191, 191, 191)", "원본 테두리색 표시");
 
+  await page.locator("summary", { hasText: "가져올 항목" }).click(); // 접힌 '가져올 항목' 펼치기
   await page.getByLabel("테두리").uncheck();
   await expect(commitButton).toBeDisabled();
   await waitRead();
@@ -167,7 +171,7 @@ try {
   await page.getByRole("button", { name: "취소" }).click();
   await expect(page.getByText(/^읽는 중 ·/)).toBeHidden();
   check(
-    (await commitButton.isDisabled()) && (await page.locator(".screen-foot .error").count()) === 0,
+    (await commitButton.isDisabled()) && (await page.locator(".import-status .error").count()) === 0,
     "읽기 취소(오류 없이)",
   );
   await page.getByLabel("데이터 범위").fill("A1:I1002");
@@ -180,9 +184,9 @@ try {
   await commitButton.click();
   const cfg = page.locator(".config-screen");
   const legend = cfg.locator(".legend");
-  await expect(legend).toContainText("입력 3열");
+  await expect(legend).toContainText("쓸 수 있음 · 3열");
   check(
-    (await legend.textContent()).includes("입력 금지 6열") && (await legend.textContent()).includes("조회 3열"),
+    (await legend.textContent()).includes("보기만 가능 · 6열") && (await legend.textContent()).includes("조회조건 3열"),
     "기본 제안: 입력 3열(F·H·I) · 입력 금지 6열 · 조회 3열",
   );
   const headCell = (col) => cfg.locator(`.mmg-cell[data-r="1"][data-c="${col}"]`);
@@ -203,7 +207,7 @@ try {
   check((await cfg.getByLabel("단위").inputValue()) === "천원", "열 머리글 클릭 = 데이터 행 전체 선택, 열 속성 표시");
   await roleBar.getByRole("button", { name: "필수", exact: true }).click();
   await expect(headCell(5)).toContainText("필수");
-  const missingF = Number((await legend.textContent()).match(/필수 미입력 ([\d,]+)/)[1].replace(/,/g, ""));
+  const missingF = Number((await legend.textContent()).match(/비어 있음 ([\d,]+)/)[1].replace(/,/g, ""));
   check(missingF > 500 && (await cfg.locator(".mmg-cell.deco-missing").count()) > 0, `F열 필수 → 미입력 ${missingF}`);
 
   await cfg.locator('.mmg-cell[data-r="5"][data-c="5"]').click();
@@ -237,17 +241,18 @@ try {
   await expect(cfg.locator(".viewer-banner")).toHaveCount(0);
 
   await cfg.locator('.mmg-cell[data-r="3"][data-c="7"]').click();
+  await cfg.getByRole("button", { name: "서식 편집" }).click();
   await cfg.getByLabel("굵게").click();
   await expect(cfg.locator('.mmg-cell[data-r="3"][data-c="7"]')).toHaveCSS("font-weight", "700");
   check(true, "서식 도구: 굵게");
   await page.screenshot({ path: join(shots, "host-config.png") });
-  await cfg.getByRole("button", { name: "← 다시 불러오기" }).click();
+  await page.getByRole("button", { name: "← 불러오기" }).click();
 
   // ------------------------------------------------------------ 1a: 변형 통합문서
   console.log("[1a 변형: 제목 행 · 숨김 · 비활성 시트 틀 고정]");
   // 시트를 바꾼 직후엔 이전 결과로 버튼이 잠깐 켜져 있을 수 있어, 감지된 범위가 바뀐 뒤에 읽기 완료를 기다린다.
   await openBook(variants, "variants.xlsx");
-  await expect(page.getByRole("button", { name: "✓ 다른시트" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "다른시트", pressed: true })).toBeVisible();
   await expect(page.getByLabel("데이터 범위")).toHaveValue("A1:A2", { timeout: 30_000 });
   await waitRead();
   await page.getByRole("button", { name: "제목있음", exact: true }).click();
@@ -288,14 +293,15 @@ try {
 
   // ------------------------------------------------------------ 1c 서비스
   console.log("[1c 서비스]");
-  await cfg.getByRole("button", { name: "다음: 서비스 시작 →" }).click();
+  await page.getByRole("button", { name: "다음: 서비스 →" }).click();
   const svc = page.locator(".service-screen");
   await svc.getByLabel("요청자").fill("박지훈 (기획팀)");
   await svc.getByLabel("취합 제목").fill("하반기 교육 수요 조사");
+  await svc.getByRole("button", { name: /네트워크 설정/ }).click(); // 접힌 네트워크 설정 펼치기
   await svc.getByLabel("포트").fill(String(SERVICE_PORT)); // 앞 칸의 blur로 제목·요청자 저장
   await expect(svc.getByRole("row")).toHaveCount(5, { timeout: 10_000 });
   check(true, "서비스 전: 명단 4명이 미접속으로 보임");
-  await svc.getByRole("button", { name: "서비스 시작", exact: true }).click();
+  await svc.getByRole("button", { name: "공유 시작", exact: true }).click();
   const url = (await svc.locator("code.url").textContent()) ?? "";
   check(url.endsWith(`:${SERVICE_PORT}/q4`), `접속 주소 ${url}`);
   await expect(svc.locator('[aria-label="접속 주소 QR"] svg')).toBeVisible();
@@ -353,7 +359,7 @@ try {
   await expect(page.getByLabel("데이터 범위")).toHaveValue("A1:I1002", { timeout: 30_000 });
   await waitRead();
   await commitButton.click();
-  await expect(cfg.locator(".legend")).toContainText("입력 3열", { timeout: 10_000 });
+  await expect(cfg.locator(".legend")).toContainText("쓸 수 있음 · 3열", { timeout: 10_000 });
   await colHead("F").click();
   await roleBar.getByRole("button", { name: "필수", exact: true }).click();
   await expect(headCell(5)).toContainText("필수");
@@ -398,7 +404,7 @@ try {
 
   // ------------------------------------------------------------ 6단계: 4 진행 모니터링(1d) · 1i 소통
   console.log("[4 진행 모니터링 · 소통]");
-  await step("4 진행").click();
+  await step("4 모니터링").click();
   const mon = page.locator(".monitor-screen");
   await expect(mon.getByLabel("전체 필수 진행률")).toContainText("%", { timeout: 15_000 });
   // 뒤에서 이 시점으로 복원한다(5 히스토리).
@@ -521,6 +527,7 @@ try {
   const save = page.locator(".save-screen");
   await expect(save.getByLabel("필수 완료율")).toContainText("%");
   await expect(save.locator(".stat-row")).toContainText("바뀐 칸 1");
+  await save.locator("summary", { hasText: "담당자별 미입력" }).click(); // 접힌 표 펼치기
   await expect(save.getByRole("row", { name: "이서연" })).toContainText("56 / 170");
   check(true, "요약: 필수 완료율 · 바뀐 칸 1 · 담당자별 미입력");
 
@@ -528,9 +535,9 @@ try {
   rmSync(copyPath, { force: true });
   await save.getByLabel("저장할 파일").fill(copyPath);
   await save.getByLabel("바뀐 칸을 노란색으로 표시").check();
-  await save.getByRole("button", { name: "엑셀로 저장" }).click();
+  await save.getByRole("button", { name: "저장하기" }).click();
   const saved = save.locator(".save-result");
-  await expect(saved).toContainText("✓ 저장했습니다", { timeout: 60_000 });
+  await expect(saved).toContainText("저장했어요", { timeout: 60_000 });
   await expect(saved).toContainText("값 1칸");
   await expect(saved).toContainText("‘변경 이력’ 시트");
   await expect(saved).toContainText("다시 읽어 확인함");
@@ -549,21 +556,22 @@ try {
     );
     expectF3 = "1234";
   }
-  await save.getByLabel("원본 통합문서에 반영하고 저장").check();
+  await saved.getByRole("button", { name: "저장 화면으로 돌아가기" }).click();
+  await save.getByLabel("원본 파일에 반영").check();
   await save.getByLabel(/변경 이력.* 시트 추가/).uncheck();
   await save.getByLabel("바뀐 칸을 노란색으로 표시").uncheck();
   await save.getByLabel("읽기 전용으로 전환 (취합 마감)").check();
-  await save.getByRole("button", { name: "엑셀로 저장" }).click();
+  await save.getByRole("button", { name: "저장하기" }).click();
   if (startedExcel) {
     const review = save.getByRole("region", { name: "저장 전 확인" });
-    await expect(review).toContainText("Excel에서도 고친 칸 1개", { timeout: 30_000 });
+    await expect(review).toContainText("같은 칸 1개가 겹칩니다", { timeout: 30_000 });
     await review.getByRole("row", { name: "F3" }).getByLabel("1,234").check();
     await review.getByRole("button", { name: "이대로 저장" }).click();
     await expect(saved).toContainText("Excel 값 유지 1칸", { timeout: 60_000 });
     await expect(pcell(2, 5).locator(".mmg-text")).toHaveText("1,234", { timeout: 10_000 });
     check(true, "원본 충돌: Excel에서 고친 F3 → ‘Excel 값 유지’ → 참여자 화면도 1,234");
   }
-  await expect(saved).toContainText("✓ 저장했습니다", { timeout: 60_000 });
+  await expect(saved).toContainText("저장했어요", { timeout: 60_000 });
   await expect(saved).toContainText("취합을 마감했습니다");
   await expect(p4.locator(".readonly-bar")).toContainText("호스트가 취합을 마감했습니다", { timeout: 10_000 });
   await expect(page.locator(".service-badge")).toContainText("취합 마감됨");
@@ -572,6 +580,7 @@ try {
     f3 === expectF3 && sheets === "3",
     `원본에 반영(파일 다시 열어 F3=${f3}, 시트 ${sheets}개) → 참여자 읽기 전용(마감)`,
   );
+  await saved.getByRole("button", { name: "저장 화면으로 돌아가기" }).click();
   await save.getByRole("button", { name: "취합 다시 열기" }).click();
   await expect(p4.locator(".readonly-bar")).toHaveCount(0, { timeout: 10_000 });
   await expect(save.locator(".stat-row")).toContainText("바뀐 칸 0", { timeout: 10_000 });
@@ -580,7 +589,7 @@ try {
 
   // ------------------------------------------------------------ 7단계: 앱 강제 종료 → 다시 켜서 이어서 하기
   console.log("[7 세션 복구]");
-  await step("4 진행").click();
+  await step("4 모니터링").click();
   await pcell(4, 5).click();
   await p4.keyboard.type("7,700");
   await p4.keyboard.press("Enter");
@@ -618,7 +627,7 @@ try {
   const mcell2 = (r, c) => mon2.locator(`.mmg-cell[data-r="${r}"][data-c="${c}"]`);
   await expect(mon2).toBeVisible();
   await expect(mcell2(4, 5).locator(".mmg-text")).toHaveText("7,700");
-  await expect(page2.locator(".service-badge")).toContainText("● 실행 중");
+  await expect(page2.locator(".service-badge")).toContainText("공유 중");
   check(true, "이어서 하기 → 진행 화면 · 죽기 직전 값(F5 7,700) · 같은 포트로 서비스 다시 시작");
 
   await expect(p4.getByText("● 실시간 동기화")).toBeVisible({ timeout: 30_000 });
@@ -643,7 +652,7 @@ try {
   await expect(pcell(2, 6).locator(".mmg-text")).toHaveText("+7.6%", { timeout: 15_000 });
   check(true, "이어서 입력 F3 = 9,900 → 새 계산 사본이 G3 +7.6%로 다시 계산");
 
-  await step2("4 진행").click();
+  await step2("4 모니터링").click();
   await mon2.getByRole("tab", { name: /^채팅/ }).click();
   await expect(mon2.getByLabel("채팅", { exact: true })).toContainText("금액 확인 부탁드립니다");
   await step2("5 히스토리").click();
@@ -654,7 +663,7 @@ try {
   await page2.screenshot({ path: join(shots, "host-recovered.png") });
 
   await step2("3 서비스").click();
-  await svc2.getByRole("button", { name: "서비스 중지" }).click();
+  await svc2.getByRole("button", { name: "공유 중지" }).click();
   await expect(p4.getByText("서비스가 중지되었습니다")).toBeVisible({ timeout: 10_000 });
   check(true, "서비스 중지 → 참여자에게 안내");
   await second.browser.close();
