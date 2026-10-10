@@ -156,8 +156,6 @@ export const api = {
 
   snapshotRestore: (id: number) => invoke<number>("snapshot_restore", { id }),
 
-  qrSvg: (text: string) => invoke<string>("qr_svg", { text }),
-
   firewallCheck: (port: number) => invoke<FirewallStatus>("firewall_check", { port }),
 
   firewallAdd: (port: number) => invoke<void>("firewall_add", { port }),

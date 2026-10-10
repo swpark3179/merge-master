@@ -1642,38 +1642,6 @@ code.url.pending-url {
   color: var(--muted);
 }
 
-.qr-row {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.qr-row .muted-2 {
-  margin: 0;
-}
-
-.qr {
-  width: 96px;
-  height: 96px;
-  flex: none;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #fff;
-  overflow: hidden;
-}
-
-.qr.placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--chip);
-}
-
-.qr svg {
-  width: 100%;
-  height: 100%;
-}
-
 .grow-btn {
   flex: 1;
 }
