@@ -52,6 +52,8 @@ pub struct SaveReport {
     /// 서식을 바꾼 칸 수.
     pub styled: u32,
     pub merges: u32,
+    /// 크기(열 너비·행 높이)를 바꾼 열·행 수.
+    pub resized: u32,
     /// 더한 '변경 이력' 시트 이름.
     #[ts(optional)]
     pub history_sheet: Option<String>,
@@ -123,6 +125,27 @@ impl Target<'_> {
     fn range(&self, r: CellRange) -> Result<Dispatch> {
         self.ws.obj_call("Range", vec![Var::str(&self.abs(r).to_string())])
     }
+}
+
+/// 열 너비·행 높이(pt). 행은 `RowHeight`(pt)로 바로 쓴다. 열은 글자 단위(`ColumnWidth`)로만 쓸 수 있어
+/// 지금 `Width`(pt)와 `ColumnWidth`의 비로 바꿔 쓰고, `Width`를 다시 읽어 맞을 때까지 몇 번 고친다(여백 때문에 비례하지 않는다).
+fn apply_sizes(t: &Target, plan: &ExportPlan) -> Result<()> {
+    for &(row, pt) in &plan.row_heights {
+        t.range(CellRange::new(row, 0, 1, 1))?.obj("EntireRow")?.put("RowHeight", Var::f64(f64::from(pt)))?;
+    }
+    for &(col, pt) in &plan.col_widths {
+        let column = t.range(CellRange::new(0, col, 1, 1))?.obj("EntireColumn")?;
+        let want = f64::from(pt);
+        for _ in 0..3 {
+            let width = column.get("Width")?.as_f64().unwrap_or(0.0);
+            let chars = column.get("ColumnWidth")?.as_f64().unwrap_or(0.0);
+            if width <= 0.0 || chars <= 0.0 || (width - want).abs() < 0.75 {
+                break;
+            }
+            column.put("ColumnWidth", Var::f64((chars * want / width).clamp(0.1, 255.0)))?;
+        }
+    }
+    Ok(())
 }
 
 fn write_block(t: &Target, b: &ValueBlock) -> Result<()> {
@@ -251,6 +274,8 @@ fn apply(book: &Dispatch, ws: &Dispatch, plan: &ExportPlan, report: &mut SaveRep
         apply_style(&t.range(s.range)?, s.range, &s.style)?;
         report.styled += s.range.len() as u32;
     }
+    apply_sizes(&t, plan)?;
+    report.resized = plan.resized();
     if let Some(rgb) = plan.mark {
         for b in &plan.blocks {
             t.range(b.range)?.obj("Interior")?.put("Color", Var::f64(rgb_to_bgr(rgb)))?;

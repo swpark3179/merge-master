@@ -1,4 +1,4 @@
-//! 1b 서식 도구 줄: 호스트가 불러온 서식을 조정한다(참여자 화면에 그대로 보인다).
+//! 1b 서식 도구 줄: 호스트가 불러온 서식·병합·열 너비·행 높이를 조정한다(참여자 화면에 그대로 보인다).
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -54,10 +54,34 @@ pub struct StylePatch {
 #[serde(tag = "op", rename_all = "camelCase")]
 #[ts(export)]
 pub enum FormatEdit {
-    Style { range: CellRange, patch: StylePatch },
-    Merge { range: CellRange },
-    Unmerge { range: CellRange },
+    Style {
+        range: CellRange,
+        patch: StylePatch,
+    },
+    Merge {
+        range: CellRange,
+    },
+    Unmerge {
+        range: CellRange,
+    },
+    /// `from`부터 `count`개 열의 너비(pt). 숨긴 열은 건너뛴다.
+    ColWidth {
+        from: u32,
+        count: u32,
+        width: f32,
+    },
+    /// `from`부터 `count`개 행의 높이(pt). 숨긴 행은 건너뛴다.
+    RowHeight {
+        from: u32,
+        count: u32,
+        height: f32,
+    },
 }
+
+/// 열 너비 범위(pt). Excel 최대 열 너비(255자)보다 넉넉히 작다.
+pub const COL_WIDTH_PT: (f32, f32) = (2.0, 1000.0);
+/// 행 높이 범위(pt). Excel 최대 행 높이는 409pt.
+pub const ROW_HEIGHT_PT: (f32, f32) = (2.0, 409.0);
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum FormatError {
@@ -69,6 +93,10 @@ pub enum FormatError {
     PartialMerge(CellRange),
     #[error("병합하면 왼쪽 위 값만 남습니다. 다른 칸의 값을 먼저 지워 주세요 ({0})")]
     WouldLoseData(CellRef),
+    #[error("표 밖의 행·열입니다")]
+    OutOfLines,
+    #[error("크기는 숫자로 주세요")]
+    BadSize,
 }
 
 const THIN: BorderEdge = BorderEdge { style: 1, weight: 2, color: 0x000000 };
@@ -110,6 +138,41 @@ pub fn apply_format(model: &mut SheetModel, edit: FormatEdit) -> Result<(), Form
         FormatEdit::Unmerge { range } => {
             let range = clip(range)?;
             model.merges.retain(|m| m.intersect(&range).is_none());
+        }
+        FormatEdit::ColWidth { from, count, width } => {
+            let hidden = model.hidden_cols.clone();
+            resize(&mut model.col_widths, model.cols, &hidden, from, count, width, COL_WIDTH_PT)?;
+        }
+        FormatEdit::RowHeight { from, count, height } => {
+            let hidden = model.hidden_rows.clone();
+            resize(&mut model.row_heights, model.rows, &hidden, from, count, height, ROW_HEIGHT_PT)?;
+        }
+    }
+    Ok(())
+}
+
+/// `sizes[from..from+count]`를 `size`(범위 안으로)로 바꾼다. 숨긴 줄(크기 0으로 둔 줄)은 그대로 둔다.
+fn resize(
+    sizes: &mut Vec<f32>,
+    lines: u32,
+    hidden: &[u32],
+    from: u32,
+    count: u32,
+    size: f32,
+    (min, max): (f32, f32),
+) -> Result<(), FormatError> {
+    if !size.is_finite() {
+        return Err(FormatError::BadSize);
+    }
+    let end = from.saturating_add(count.max(1)).min(lines);
+    if from >= end {
+        return Err(FormatError::OutOfLines);
+    }
+    sizes.resize(lines as usize, 0.0);
+    let size = (size * 4.0).round() / 4.0; // Excel처럼 0.25pt 단위
+    for i in from..end {
+        if !hidden.contains(&i) {
+            sizes[i as usize] = size.clamp(min, max);
         }
     }
     Ok(())
@@ -259,6 +322,42 @@ mod tests {
         apply_format(&mut m, FormatEdit::Style { range: r("H4"), patch: none }).unwrap();
         // H4 아래 선은 H5의 위 선과 같은 선이라 함께 지운다.
         assert!(style_at(&m, "H5").borders.top.is_none() && style_at(&m, "H5").borders.bottom.is_some());
+    }
+
+    #[test]
+    fn resize_columns_and_rows() {
+        let mut m = budget();
+        apply_format(&mut m, FormatEdit::ColWidth { from: 5, count: 2, width: 120.1 }).unwrap();
+        assert_eq!(&m.col_widths[4..8], &[60.0, 120.0, 120.0, 60.0]);
+        apply_format(&mut m, FormatEdit::RowHeight { from: 2, count: 1, height: 1000.0 }).unwrap();
+        assert_eq!(m.row_heights[2], ROW_HEIGHT_PT.1); // 범위 안으로
+        apply_format(&mut m, FormatEdit::ColWidth { from: 0, count: 1, width: 0.0 }).unwrap();
+        assert_eq!(m.col_widths[0], COL_WIDTH_PT.0); // 0(숨김)으로 만들지 않는다
+        // 숨긴 행은 그대로, 표 밖은 거절
+        m.hidden_rows = vec![3];
+        m.row_heights[3] = 0.0;
+        apply_format(&mut m, FormatEdit::RowHeight { from: 3, count: 2, height: 30.0 }).unwrap();
+        assert_eq!((m.row_heights[3], m.row_heights[4]), (0.0, 30.0));
+        assert_eq!(
+            apply_format(&mut m, FormatEdit::ColWidth { from: 9, count: 1, width: 50.0 }),
+            Err(FormatError::OutOfLines)
+        );
+        assert_eq!(
+            apply_format(&mut m, FormatEdit::RowHeight { from: 0, count: 1, height: f32::NAN }),
+            Err(FormatError::BadSize)
+        );
+        // 끝을 넘는 개수는 표 안으로 자른다.
+        apply_format(&mut m, FormatEdit::ColWidth { from: 8, count: 5, width: 80.0 }).unwrap();
+        assert_eq!(m.col_widths.len(), 9);
+        assert_eq!(m.col_widths[8], 80.0);
+    }
+
+    #[test]
+    fn resize_json_shape() {
+        let edit: FormatEdit = serde_json::from_str(r#"{"op":"colWidth","from":2,"count":3,"width":72.5}"#).unwrap();
+        assert_eq!(edit, FormatEdit::ColWidth { from: 2, count: 3, width: 72.5 });
+        let edit: FormatEdit = serde_json::from_str(r#"{"op":"rowHeight","from":0,"count":1,"height":20}"#).unwrap();
+        assert_eq!(edit, FormatEdit::RowHeight { from: 0, count: 1, height: 20.0 });
     }
 
     #[test]

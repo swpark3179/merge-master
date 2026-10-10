@@ -59,7 +59,7 @@ pub fn project(model: &SheetModel, config: &CollectConfig, person: &str) -> Resu
 mod tests {
     use super::*;
     use crate::CellRef;
-    use crate::config::tests::budget;
+    use crate::config::tests::{assigned, budget};
 
     fn text(m: &SheetModel, a: &str) -> CellValue {
         m.cell(CellRef::parse(a).unwrap()).unwrap().v.clone()
@@ -68,7 +68,7 @@ mod tests {
     #[test]
     fn read_only_policy_sends_everything() {
         let m = budget();
-        let cfg = CollectConfig::suggest(&m);
+        let cfg = assigned(&m);
         let p = project(&m, &cfg, "김민지").unwrap();
         assert_eq!(p.model.cells, m.cells);
         assert!(p.model.hidden_rows.is_empty());
@@ -80,7 +80,7 @@ mod tests {
         // A3:A6 '경영지원'을 A3:A8로 넓혀 김민지 행(7·8행)까지 걸치게 한다.
         m.merges.retain(|r| r.to_string() != "A3:A6" && r.to_string() != "A7:A8");
         m.merges.push(crate::CellRange::parse("A3:A8").unwrap());
-        let mut cfg = CollectConfig::suggest(&m);
+        let mut cfg = assigned(&m);
         cfg.permissions.others_rows = OthersRows::Hidden;
         let p = project(&m, &cfg, "김민지").unwrap();
         assert_eq!(p.model.hidden_rows, [2, 3, 4, 5]);

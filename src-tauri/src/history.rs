@@ -16,7 +16,8 @@ use crate::{AppState, CmdResult};
 /// 비교 보기에 보이는 최대 칸 수.
 const DIFF_LIMIT: usize = 500;
 
-fn host_user(requester: &str) -> String {
+/// 호스트가 바꾼 값의 기록 이름: 요청자, 없으면 "호스트".
+pub(crate) fn host_user(requester: &str) -> String {
     let r = requester.trim();
     if r.is_empty() { "호스트".into() } else { r.to_string() }
 }

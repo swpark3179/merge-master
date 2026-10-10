@@ -103,7 +103,11 @@ impl CollectConfig {
         let in_data = |r: CellRange| data.and_then(|d| r.intersect(&d)).ok_or(ConfigError::HeaderOnly);
         match edit {
             ConfigEdit::Brush { range, brush } => self.brush(model, clip(range)?, brush)?,
-            ConfigEdit::SetColumn { col, rule } => {
+            ConfigEdit::SetColumn { col, mut rule } => {
+                // 필수는 입력 영역에만 뜻이 있다(잠금 열은 필수를 끈다).
+                if rule.role == ColumnRole::Locked {
+                    rule.required = false;
+                }
                 *self.columns.get_mut(col as usize).ok_or(ConfigError::BadColumn(col))? = rule;
             }
             ConfigEdit::AddException { range, kind, note } => {
@@ -185,6 +189,9 @@ impl CollectConfig {
                 if whole_columns {
                     for &c in &cols {
                         self.columns[c].role = role;
+                        if role == ColumnRole::Locked {
+                            self.columns[c].required = false;
+                        }
                     }
                 } else if !cols.iter().all(|&c| self.columns[c].role == role) {
                     let kind = if role == ColumnRole::Input { ExceptionKind::Input } else { ExceptionKind::Locked };
@@ -263,6 +270,15 @@ mod tests {
         brush(&mut cfg, &m, "F3:F8", Brush::Required); // 다시 누르면 끈다
         assert!(!cfg.columns[5].required);
         assert!(cfg.exceptions.is_empty());
+        // 잠그면 필수도 꺼진다(필수는 입력 영역에만).
+        brush(&mut cfg, &m, "H1:H8", Brush::Locked);
+        assert_eq!(cfg.columns[7].role, ColumnRole::Locked);
+        assert!(!cfg.columns[7].required);
+        let mut rule = cfg.columns[5].clone();
+        rule.required = true;
+        rule.role = ColumnRole::Locked;
+        cfg.apply(&m, ConfigEdit::SetColumn { col: 5, rule }).unwrap();
+        assert!(!cfg.columns[5].required);
     }
 
     #[test]

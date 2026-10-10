@@ -1,6 +1,8 @@
 import type { KeyboardEvent, RefObject } from "react";
 import { useEffect, useState } from "react";
 
+import "./cell-editor.css";
+
 /** 편집을 끝내고 움직일 방향. `null`이면 그 자리. */
 export type Move = readonly [-1 | 0 | 1, -1 | 0 | 1] | null;
 

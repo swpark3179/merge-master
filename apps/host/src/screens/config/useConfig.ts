@@ -1,11 +1,23 @@
 import type { GridSelection } from "@mm/grid";
 import { selectionRange, buildLayout } from "@mm/grid";
-import type { CellRange, ConfigEdit, ConfigView, FormatEdit, SheetModel } from "@mm/shared";
+import type { CellRange, ConfigEdit, ConfigView, FormatEdit, HostEvent, SheetModel } from "@mm/shared";
 import { decodeFlags } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import type { CellWrite } from "../../api";
 import { api, errorText } from "../../api";
+
+/** 칸 값을 바꾼 새 시트(원래 시트는 그대로 둔다). */
+function withValues(m: SheetModel, cells: { row: number; col: number; value?: CellWrite["value"] }[]): SheetModel {
+  const out = m.cells.slice();
+  for (const u of cells) {
+    const i = u.row * m.cols + u.col;
+    const cell = out[i];
+    if (cell) out[i] = { ...cell, v: u.value ?? null };
+  }
+  return { ...m, cells: out };
+}
 
 /** 1b 상태: 설정 보기(Rust가 계산), 시트(서식 편집으로 바뀜), 선택, 참여자 시점. */
 export function useConfig(initial: SheetModel, active: boolean) {
@@ -36,6 +48,26 @@ export function useConfig(initial: SheetModel, active: boolean) {
     const off = listen("config-changed", refresh);
     return () => void off.then((f) => f());
   }, [refresh]);
+
+  // 공유 중 참여자 입력·되돌리기도 이 화면 시트에 반영한다(옛 값 위에 고쳐 쓰지 않게). `reset`은 이 화면의 동작이
+  // 결과(시트·설정 보기)를 직접 돌려받으므로 무시한다.
+  useEffect(() => {
+    const off = listen<HostEvent>("sheet-changes", (e) => {
+      const ev = e.payload;
+      if (ev.type === "cells") setModel((m) => withValues(m, ev.cells));
+      else if (ev.type === "styles")
+        setModel((m) => {
+          const cells = m.cells.slice();
+          for (const ch of ev.changes) {
+            const i = ch.row * m.cols + ch.col;
+            const cell = cells[i];
+            if (cell) cells[i] = { ...cell, s: ch.s };
+          }
+          return { ...m, styles: ev.styles, cells };
+        });
+    });
+    return () => void off.then((f) => f());
+  }, []);
 
   const run = useCallback(async <T>(f: () => Promise<T>): Promise<T | null> => {
     setBusy(true);
@@ -72,6 +104,21 @@ export function useConfig(initial: SheetModel, active: boolean) {
     [run, viewer],
   );
 
+  /** 호스트가 칸 내용을 바꾼다: 바로 그리고, 세션에 보낸 뒤 설정 보기(범례·명단·열 이름)를 새로 읽는다. */
+  const setCells = useCallback(
+    async (cells: CellWrite[]) => {
+      setModel((m) => withValues(m, cells));
+      setError(null);
+      try {
+        await api.sheetSetCells(cells);
+        refresh();
+      } catch (e) {
+        setError(errorText(e));
+      }
+    },
+    [refresh],
+  );
+
   const setViewer = useCallback(
     async (name: string | null) => {
       const v = await run(() => api.configView(name));
@@ -87,7 +134,23 @@ export function useConfig(initial: SheetModel, active: boolean) {
   const flags = useMemo(() => (view ? decodeFlags(view.flags) : new Uint8Array()), [view]);
   const range: CellRange | null = selection ? selectionRange(layout, selection) : null;
 
-  return { model, view, flags, viewer, setViewer, selection, setSelection, range, layout, apply, format, busy, error };
+  return {
+    model,
+    view,
+    flags,
+    viewer,
+    setViewer,
+    selection,
+    setSelection,
+    range,
+    layout,
+    apply,
+    format,
+    setCells,
+    setError,
+    busy,
+    error,
+  };
 }
 
 export type ConfigState = ReturnType<typeof useConfig>;

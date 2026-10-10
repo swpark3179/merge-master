@@ -116,3 +116,22 @@ async fn host_can_close_and_reopen_collection() {
     assert!(!st.read_only);
     assert!(c[0].take().iter().any(|m| matches!(m, ServerMsg::ReadOnly { read_only: false, reason: None })));
 }
+
+/// 호스트가 칸을 고쳐 명단(행 배정 기준 열)이 바뀌면, 고친 뒤 `changed()`로 다시 계산해야 새 이름이 명단에 들어온다
+/// (같은 작업 안에서는 `changed`가 값 반영보다 먼저 돈다 — 호스트 앱은 두 번 나눠 보낸다).
+#[tokio::test]
+async fn host_edit_of_key_column_updates_roster_after_changed() {
+    let (mut st, _c) = setup(&[]);
+    let key = st.config.assignment.key_col.unwrap();
+    let r = first_row(&st, "이서연");
+    let head = st.model.merges.iter().find(|m| m.contains(CellRef::new(r, key))).map_or(r, |m| m.row);
+    host(&mut st, move |s| {
+        let cells = vec![(CellRef::new(head, key), CellValue::Text("윤새봄".into()))];
+        s.host_set("호스트", collect_core::history::BatchOrigin::Edit, cells);
+    });
+    assert_eq!(st.log.last().map(|e| e.user.as_str()), Some("호스트"));
+    assert!(st.access.person("윤새봄").is_none()); // 아직 옛 명단
+    host(&mut st, |s| s.changed());
+    let p = st.access.person("윤새봄").expect("새 이름이 명단에 들어온다");
+    assert!(st.access.rows_of(p).contains(&r));
+}

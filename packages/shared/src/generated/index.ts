@@ -38,7 +38,6 @@ export type { ExcelStatus } from "./ExcelStatus";
 export type { ExceptionKind } from "./ExceptionKind";
 export type { ExportOptions } from "./ExportOptions";
 export type { FillPatch } from "./FillPatch";
-export type { FirewallStatus } from "./FirewallStatus";
 export type { FormatEdit } from "./FormatEdit";
 export type { FormatPolicy } from "./FormatPolicy";
 export type { FormatResult } from "./FormatResult";

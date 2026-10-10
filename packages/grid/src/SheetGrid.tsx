@@ -42,6 +42,11 @@ export interface SheetGridProps {
   /** 방향키 이동보다 먼저 받는다. `preventDefault()`하면 그리드는 이동하지 않는다. */
   onKey?: (e: KeyboardEvent) => void;
   onCellDoubleClick?: (row: number, col: number) => void;
+  /**
+   * 주면 열 머리글 오른쪽 끝·행 머리글 아래 끝을 끌어 크기를 바꿀 수 있다. 놓을 때 한 번, 새 크기(pt)로 부른다.
+   * 그리드는 크기를 직접 바꾸지 않는다(쓰는 쪽이 `model`을 바꿔 다시 그린다).
+   */
+  onResize?: (axis: "col" | "row", index: number, sizePt: number) => void;
   /** 위·아래로 더 그려 둘 행 수. */
   overscan?: number;
   className?: string;
@@ -96,6 +101,18 @@ interface Viewport {
 
 type Drag = { kind: "cells" | "cols" | "rows"; anchor: number; anchorCell: { row: number; col: number } };
 
+/** 머리글 경계를 끄는 중: 처음 크기·마우스 위치와 지금 크기(px). */
+interface Resize {
+  axis: "col" | "row";
+  index: number;
+  start: number;
+  from: number;
+  size: number;
+}
+
+/** 끌어서 줄일 수 있는 가장 작은 크기(px). 0이면 숨김과 구별할 수 없다. */
+const MIN_RESIZE_PX = 4;
+
 export function SheetGrid({
   model,
   handle,
@@ -107,6 +124,7 @@ export function SheetGrid({
   overlay,
   onKey,
   onCellDoubleClick,
+  onResize,
   overscan = 6,
   className,
   style,
@@ -117,6 +135,7 @@ export function SheetGrid({
   const [vp, setVp] = useState<Viewport>({ top: 0, left: 0, width: 800, height: 600 });
   const frame = useRef(0);
   const drag = useRef<Drag | null>(null);
+  const [resize, setResize] = useState<Resize | null>(null);
 
   const measure = useCallback(() => {
     const el = scroller.current;
@@ -224,6 +243,7 @@ export function SheetGrid({
           style={{ left: GUTTER_W + x, width: layout.colX[c + 1]! - x }}
         >
           {colLetters(model.origin.col + c)}
+          {onResize && <span className="mmg-resize-col" data-resize-col={c} title="끌어서 열 너비 바꾸기" />}
         </div>,
       );
     }
@@ -247,6 +267,7 @@ export function SheetGrid({
         >
           {marker && <span className="mmg-dot" style={{ background: marker }} />}
           {model.origin.row + r + 1}
+          {onResize && <span className="mmg-resize-row" data-resize-row={r} title="끌어서 행 높이 바꾸기" />}
         </div>,
       );
     }
@@ -258,8 +279,55 @@ export function SheetGrid({
   const hit = (e: MouseEvent) =>
     (e.target as HTMLElement).closest<HTMLElement>("[data-r],[data-col-head],[data-row-head]");
 
+  /** 머리글 경계 손잡이를 눌렀으면 크기 바꾸기를 시작한다(선택은 바꾸지 않는다). */
+  const startResize = (e: MouseEvent): boolean => {
+    if (!onResize) return false;
+    const handle = (e.target as HTMLElement).closest<HTMLElement>("[data-resize-col],[data-resize-row]");
+    if (!handle) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    const axis = handle.dataset.resizeCol !== undefined ? "col" : "row";
+    const index = Number(axis === "col" ? handle.dataset.resizeCol : handle.dataset.resizeRow);
+    const offsets = axis === "col" ? layout.colX : layout.rowY;
+    const start = offsets[index + 1]! - offsets[index]!;
+    const from = axis === "col" ? e.clientX : e.clientY;
+    setResize({ axis, index, start, from, size: start });
+    return true;
+  };
+
+  // 끄는 동안은 창 전체에서 마우스를 따라가고, 놓으면 새 크기를 알린다.
+  const resizing = resize !== null;
+  const resizeRef = useRef(resize);
+  resizeRef.current = resize;
+  const onResizeRef = useRef(onResize);
+  onResizeRef.current = onResize;
+  useEffect(() => {
+    if (!resizing) return;
+    const axis = resizeRef.current!.axis;
+    const cursor = document.body.style.cursor;
+    document.body.style.cursor = axis === "col" ? "col-resize" : "row-resize";
+    const move = (ev: globalThis.MouseEvent) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      const pos = r.axis === "col" ? ev.clientX : ev.clientY;
+      setResize({ ...r, size: Math.max(MIN_RESIZE_PX, Math.round(r.start + pos - r.from)) });
+    };
+    const up = () => {
+      const r = resizeRef.current;
+      setResize(null);
+      if (r && r.size !== r.start) onResizeRef.current?.(r.axis, r.index, r.size / PT_TO_PX);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      document.body.style.cursor = cursor;
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+  }, [resizing]);
+
   const onMouseDown = (e: MouseEvent) => {
-    if (e.button !== 0 || !onSelectionChange) return;
+    if (e.button !== 0 || startResize(e) || !onSelectionChange) return;
     const el = hit(e);
     if (!el) return;
     const shift = e.shiftKey && selection != null;
@@ -388,8 +456,36 @@ export function SheetGrid({
             {overlay.node}
           </div>
         )}
+        {resize && <ResizeGuide resize={resize} layout={layout} vp={vp} />}
       </div>
     </div>
+  );
+}
+
+/** 크기를 바꾸는 동안의 안내선과 크기(pt) 표시. 고정 영역의 줄은 스크롤해도 제자리에 있으므로 스크롤만큼 옮긴다. */
+function ResizeGuide({ resize, layout, vp }: { resize: Resize; layout: GridLayout; vp: Viewport }) {
+  const pt = Math.round((resize.size / PT_TO_PX) * 4) / 4;
+  if (resize.axis === "col") {
+    const frozen = resize.index < layout.frozenCols ? vp.left : 0;
+    const x = GUTTER_W + layout.colX[resize.index]! + resize.size + frozen;
+    return (
+      <>
+        <div className="mmg-guide mmg-guide-col" style={{ left: x - 1, top: vp.top, height: vp.height }} />
+        <div className="mmg-guide-label" style={{ left: x + 4, top: vp.top + HEADER_H + 4 }}>
+          너비 {pt}pt
+        </div>
+      </>
+    );
+  }
+  const frozen = resize.index < layout.frozenRows ? vp.top : 0;
+  const y = HEADER_H + layout.rowY[resize.index]! + resize.size + frozen;
+  return (
+    <>
+      <div className="mmg-guide mmg-guide-row" style={{ top: y - 1, left: vp.left, width: vp.width }} />
+      <div className="mmg-guide-label" style={{ top: y + 4, left: vp.left + GUTTER_W + 4 }}>
+        높이 {pt}pt
+      </div>
+    </>
   );
 }
 

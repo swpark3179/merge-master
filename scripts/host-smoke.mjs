@@ -184,6 +184,16 @@ try {
   await commitButton.click();
   const cfg = page.locator(".config-screen");
   const legend = cfg.locator(".legend");
+  const assignTab = cfg.getByRole("tab", { name: /담당자 배정/ });
+  /** 1b 담당자 배정 탭에서 행 배정 기준 열을 고르고 열 역할 탭으로 돌아온다(기본은 배정 없음). */
+  const setKeyColumn = async (letter) => {
+    await assignTab.click();
+    const key = cfg.getByRole("toolbar", { name: "담당자 배정" }).getByLabel("행 배정 기준");
+    const label = (await key.locator("option").allTextContents()).find((o) => o.startsWith(`${letter}열`));
+    await key.selectOption({ label });
+    await expect(assignTab).toContainText(`${letter}열 기준`);
+    await cfg.getByRole("tab", { name: "열 역할" }).click();
+  };
   await expect(legend).toContainText("쓸 수 있음 · 3열");
   check(
     (await legend.textContent()).includes("보기만 가능 · 6열") && (await legend.textContent()).includes("조회조건 3열"),
@@ -191,27 +201,50 @@ try {
   );
   const headCell = (col) => cfg.locator(`.mmg-cell[data-r="1"][data-c="${col}"]`);
   check(
+    (await assignTab.textContent()).includes("배정 안 함") &&
+      (await cfg.locator(".mmg-rowhead .mmg-dot").count()) === 0 &&
+      !(await headCell(2).textContent()).includes("배정 기준"),
+    "기본은 담당자 배정 없음(탭 '배정 안 함', 색 점·배정 기준 태그 없음)",
+  );
+  await assignTab.click();
+  const keyOptions = await cfg.getByLabel("행 배정 기준").locator("option").allTextContents();
+  check(
+    (await cfg.getByLabel("행 배정 기준").inputValue()) === "" &&
+      keyOptions.some((o) => /^C열 담당자.*\(추천\)$/.test(o)),
+    "담당자 배정 탭: '행 배정 없음', C열 담당자 (추천)",
+  );
+  await setKeyColumn("C");
+  check(
     (await headCell(0).textContent()).includes("조회") &&
       (await headCell(2).textContent()).includes("배정 기준") &&
       (await headCell(8).textContent()).includes("목록"),
     "머리글 태그: 본부 조회 · 담당자 배정 기준 · 집행 시기 목록",
   );
-  check((await cfg.locator(".mmg-rowhead .mmg-dot").count()) > 10, "행 번호 옆 담당자 색 점");
+  check((await cfg.locator(".mmg-rowhead .mmg-dot").count()) > 10, "C열을 기준으로 고르면 행 번호 옆 담당자 색 점");
 
   const colHead = (letter) => cfg.locator(".mmg-colhead", { hasText: new RegExp(`^${letter}$`) });
   const formula = cfg.locator(".formula-bar");
   const roleBar = cfg.getByRole("toolbar", { name: "역할 지정" });
+  const columnPanel = cfg.getByRole("region", { name: "열 속성" });
+  check(
+    (await roleBar.getByRole("button", { name: "필수" }).count()) === 0 &&
+      (await roleBar.getByRole("button", { name: "담당자 배정" }).count()) === 0,
+    "역할 줄: 입력/잠금 · 조회조건 · 지우개(필수·담당자 배정 버튼 없음)",
+  );
   await colHead("F").click();
   await expect(formula.locator(".addr")).toHaveText("F3:F1002");
-  await expect(formula.locator(".value")).toHaveText("1,000개 셀 선택됨 · 입력 영역 · 숫자(천원)");
+  await expect(formula.locator(".value")).toHaveText("1,000개 셀 선택됨 · 입력 · 숫자(천원)");
   check((await cfg.getByLabel("단위").inputValue()) === "천원", "열 머리글 클릭 = 데이터 행 전체 선택, 열 속성 표시");
-  await roleBar.getByRole("button", { name: "필수", exact: true }).click();
+  await columnPanel.getByLabel("필수").click();
   await expect(headCell(5)).toContainText("필수");
   const missingF = Number((await legend.textContent()).match(/비어 있음 ([\d,]+)/)[1].replace(/,/g, ""));
   check(missingF > 500 && (await cfg.locator(".mmg-cell.deco-missing").count()) > 0, `F열 필수 → 미입력 ${missingF}`);
 
+  await colHead("E").click();
+  check((await columnPanel.getByLabel("필수").count()) === 0, "잠금 열(E)은 열 속성에 필수 체크가 없음");
+
   await cfg.locator('.mmg-cell[data-r="5"][data-c="5"]').click();
-  await roleBar.getByRole("button", { name: "입력 금지", exact: true }).click();
+  await roleBar.getByRole("button", { name: "잠금", exact: true }).click();
   await expect(legend).toContainText("예외 1");
   await expect(cfg.locator(".exception-row").first()).toContainText("F6");
   check(
@@ -219,12 +252,34 @@ try {
     "셀 예외 F6 입력 금지",
   );
 
+  await assignTab.click();
   await colHead("I").click();
-  await cfg.getByLabel("배정할 사람").selectOption("이서연");
+  await cfg.getByLabel("배정할 사람").fill("이서연");
   await cfg.getByLabel("배정 메모").fill("집행 시기 일괄");
-  await cfg.getByRole("button", { name: "+ 선택 범위 배정" }).click();
-  await expect(cfg.getByRole("region", { name: "담당자 배정" }).getByText("I3:I1002")).toBeVisible();
+  await cfg.getByRole("button", { name: "선택 범위 배정" }).click();
+  await expect(cfg.getByRole("region", { name: "범위 배정" }).getByText("I3:I1002")).toBeVisible();
   check(true, "범위 배정 I3:I1002 → 이서연");
+  await cfg.getByRole("tab", { name: "열 역할" }).click();
+
+  // 크기 조절: H열 머리글 오른쪽 경계를 끌면 너비가 바뀐다.
+  const hWidth = async () => (await colHead("H").boundingBox()).width;
+  const widthBefore = await hWidth();
+  const grip = await colHead("H").locator(".mmg-resize-col").boundingBox();
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(grip.x + 60, grip.y + 5, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(hWidth).toBeGreaterThan(widthBefore + 40);
+  check(true, `열 머리글 경계를 끌어 H열 너비 변경 (${Math.round(widthBefore)} → ${Math.round(await hWidth())}px)`);
+
+  // 칸 편집: 두 번 누르고 고친 뒤 Enter.
+  const h4 = cfg.locator('.mmg-cell[data-r="3"][data-c="7"]');
+  await h4.dblclick();
+  await page.keyboard.press("Control+A");
+  await page.keyboard.insertText("호스트가 고친 근거");
+  await page.keyboard.press("Enter");
+  await expect(h4).toContainText("호스트가 고친 근거");
+  check(true, "1b에서 호스트가 칸 내용 고침(H4)");
 
   await cfg.getByLabel("참여자 시점").selectOption("김민지");
   await expect(cfg.locator(".viewer-banner")).toContainText("김민지 님 시점");
@@ -284,6 +339,7 @@ try {
 
   await commitButton.click();
   await expect(cfg.locator(".legend")).toContainText("입력", { timeout: 10_000 });
+  await setKeyColumn("B");
   await expect(cfg.locator('.mmg-cell[data-r="0"][data-c="1"]')).toContainText("배정 기준");
   const vHeads = await cfg.locator(".mmg-rowhead").allTextContents();
   check(
@@ -296,6 +352,8 @@ try {
   await page.getByRole("button", { name: "다음: 서비스 →" }).click();
   const svc = page.locator(".service-screen");
   await svc.getByLabel("요청자").fill("박지훈 (기획팀)");
+  await expect(svc.getByLabel("취합 제목")).toHaveValue("variants");
+  check(true, "취합 제목 기본값 = 엑셀 파일 이름(variants)");
   await svc.getByLabel("취합 제목").fill("하반기 교육 수요 조사");
   await svc.getByRole("button", { name: /네트워크 설정/ }).click(); // 접힌 네트워크 설정 펼치기
   await svc.getByLabel("포트").fill(String(SERVICE_PORT)); // 앞 칸의 blur로 제목·요청자 저장
@@ -342,9 +400,7 @@ try {
   await expect(leeRow).toContainText("○ 미접속");
   check(true, "호스트가 연결 끊기 → 참여자에게 안내, 표는 미접속");
 
-  await svc.getByRole("button", { name: "방화벽 확인" }).click();
-  await expect(svc.locator(".firewall")).toBeVisible({ timeout: 30_000 });
-  check(true, `방화벽 확인(읽기 전용): ${(await svc.locator(".firewall").textContent()).split("포트")[0].trim()}`);
+  check((await svc.getByText("방화벽").count()) === 0, "1c에 방화벽 확인 없음");
   await page.screenshot({ path: join(shots, "host-service.png") });
 
   // ------------------------------------------------------------ 4단계: 동시 편집 · Excel 재계산 (예산신청서)
@@ -359,8 +415,9 @@ try {
   await waitRead();
   await commitButton.click();
   await expect(cfg.locator(".legend")).toContainText("쓸 수 있음 · 3열", { timeout: 10_000 });
+  await setKeyColumn("C");
   await colHead("F").click();
-  await roleBar.getByRole("button", { name: "필수", exact: true }).click();
+  await columnPanel.getByLabel("필수").click();
   await expect(headCell(5)).toContainText("필수");
   // 서비스 중에 다시 확정: 접속 중이던 명단 밖 참여자(김민수)는 새 명단에 없어 끊긴다.
   await expect(p3.getByText("명단에서 빠졌습니다")).toBeVisible({ timeout: 10_000 });

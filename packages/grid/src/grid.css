@@ -187,3 +187,59 @@
   background-color: #fff3b0 !important;
   box-shadow: inset 0 0 0 2px #e0b400;
 }
+
+/* 머리글 경계 손잡이(크기 바꾸기). 이웃 머리글 위로 조금 넘쳐 잡기 쉽게 한다. */
+.mmg-resize-col,
+.mmg-resize-row {
+  position: absolute;
+  z-index: 1;
+}
+
+.mmg-resize-col {
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+}
+
+.mmg-resize-row {
+  left: 0;
+  bottom: -3px;
+  width: 100%;
+  height: 7px;
+  cursor: row-resize;
+}
+
+.mmg-resize-col:hover,
+.mmg-resize-row:hover {
+  background: rgba(42, 120, 214, 0.35);
+}
+
+/* 끄는 동안의 안내선·크기 표시 */
+.mmg-guide {
+  position: absolute;
+  z-index: 7;
+  pointer-events: none;
+  background: #2a78d6;
+}
+
+.mmg-guide-col {
+  width: 2px;
+}
+
+.mmg-guide-row {
+  height: 2px;
+}
+
+.mmg-guide-label {
+  position: absolute;
+  z-index: 7;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #222;
+  color: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}

@@ -164,15 +164,15 @@ pub struct CollectConfig {
 impl CollectConfig {
     /// 불러온 시트를 보고 설정 초안을 만든다(호스트가 1b에서 고친다).
     ///
-    /// - 행 배정 기준: 배정 기준 열 후보 1순위.
-    /// - 입력 금지: 수식 열, 배정 기준 열, 데이터가 거의 다 채워진 열(본부·부서·비목 같은 키).
+    /// - 제목: 엑셀 파일 이름(확장자 제외).
+    /// - 행 배정 기준: 정하지 않는다(호스트가 '담당자 배정'에서 고른다). 후보 1순위([`suggested_key_col`])는 아래 판단에만 쓴다.
+    /// - 입력 금지: 수식 열, 배정 기준 후보 열, 데이터가 거의 다 채워진 열(본부·부서·비목 같은 키).
     /// - 입력 영역: 30% 이상 비어 있는 열.
-    /// - 조회조건: 입력 금지인 글자 열 중 값이 2~50가지로 반복되는 열(배정 기준 열 제외).
+    /// - 조회조건: 입력 금지인 글자 열 중 값이 2~50가지로 반복되는 열(배정 기준 후보 열 제외).
     /// - 형식: 목록 유효성 → 목록, 숫자가 있거나 숫자 표시 형식 → 숫자(머리글 괄호 안을 단위로), 날짜 형식 → 날짜.
     pub fn suggest(model: &SheetModel) -> Self {
         let index = MergeIndex::new(model);
-        let table = TableGuess { range: model.bounds(), header_rows: model.header_rows };
-        let key_col = assignee_candidates(model, &table).first().map(|c| c.col);
+        let key_col = suggested_key_col(model);
         let hidden: BTreeSet<u32> = model.hidden_rows.iter().copied().collect();
         let data_rows: Vec<u32> = (model.header_rows..model.rows).filter(|r| !hidden.contains(r)).collect();
 
@@ -220,16 +220,32 @@ impl CollectConfig {
             .collect();
 
         CollectConfig {
-            title: model.sheet.clone(),
+            title: default_title(model),
             description: String::new(),
             requester: String::new(),
             deadline: None,
             columns,
             exceptions: Vec::new(),
-            assignment: Assignment { key_col, extra_people: Vec::new(), ranges: Vec::new() },
+            assignment: Assignment::default(),
             permissions: Permissions::default(),
         }
     }
+}
+
+/// 행 배정 기준 열 후보 1순위(담당·작성자 같은 머리글, 사람 이름 모양의 값).
+pub fn suggested_key_col(model: &SheetModel) -> Option<u32> {
+    let table = TableGuess { range: model.bounds(), header_rows: model.header_rows };
+    assignee_candidates(model, &table).first().map(|c| c.col)
+}
+
+/// 엑셀 파일 이름에서 확장자를 뺀 것(`budget.xlsx` → `budget`). 비면 시트 이름.
+fn default_title(model: &SheetModel) -> String {
+    let name = model.workbook.trim();
+    let stem = match name.rfind('.') {
+        Some(i) if i > 0 => &name[..i],
+        _ => name,
+    };
+    if stem.trim().is_empty() { model.sheet.clone() } else { stem.trim().to_string() }
 }
 
 /// 열의 모든 머리글 행 글자(병합 고려, 위에서부터).
@@ -358,11 +374,20 @@ pub(crate) mod tests {
         }
     }
 
+    /// 설정 초안 + 행 배정 기준을 추천 열(C 담당자)로 정한 것(배정이 필요한 시험용).
+    pub(crate) fn assigned(m: &SheetModel) -> CollectConfig {
+        let mut cfg = CollectConfig::suggest(m);
+        cfg.assignment.key_col = suggested_key_col(m);
+        cfg
+    }
+
     #[test]
     fn suggests_wireframe_like_defaults() {
         let m = budget();
         let cfg = CollectConfig::suggest(&m);
-        assert_eq!(cfg.assignment.key_col, Some(2));
+        assert_eq!(cfg.title, "budget");
+        assert_eq!(cfg.assignment.key_col, None); // 담당자 배정은 호스트가 정한다
+        assert_eq!(suggested_key_col(&m), Some(2));
         let roles: Vec<_> = cfg.columns.iter().map(|c| c.role).collect();
         use ColumnRole::*;
         // A~E 키·실적은 입력 금지, F 신청 금액 입력, G 수식 금지, H 산출 근거·I 집행 시기 입력
@@ -375,6 +400,18 @@ pub(crate) mod tests {
         assert_eq!(cfg.columns[7].format, InputFormat::Text);
         assert!(cfg.columns.iter().all(|c| !c.required));
         assert_eq!(cfg.permissions, Permissions::default());
+    }
+
+    #[test]
+    fn title_is_file_stem() {
+        let mut m = budget();
+        assert_eq!(default_title(&m), "budget");
+        m.workbook = "2026 예산.v2.xlsm".into();
+        assert_eq!(default_title(&m), "2026 예산.v2");
+        m.workbook = "통합 문서1".into(); // 저장 안 한 통합문서
+        assert_eq!(default_title(&m), "통합 문서1");
+        m.workbook = String::new();
+        assert_eq!(default_title(&m), "예산신청서");
     }
 
     #[test]
@@ -391,7 +428,7 @@ pub(crate) mod tests {
         let json = serde_json::to_value(&cfg).unwrap();
         assert_eq!(json["columns"][5]["format"], serde_json::json!({"kind": "number", "unit": "천원"}));
         assert_eq!(json["permissions"]["othersRows"], "readOnly");
-        assert_eq!(json["assignment"]["keyCol"], 2);
+        assert!(json["assignment"]["keyCol"].is_null());
         let back: CollectConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back, cfg);
     }

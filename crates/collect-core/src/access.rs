@@ -317,7 +317,7 @@ pub struct ProgressStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::tests::budget;
+    use crate::config::tests::{assigned, budget};
     use crate::config::{CellException, RangeAssignment};
 
     fn at(a: &str) -> CellRef {
@@ -326,7 +326,7 @@ mod tests {
 
     fn setup() -> (SheetModel, CollectConfig) {
         let m = budget();
-        let mut cfg = CollectConfig::suggest(&m);
+        let mut cfg = assigned(&m);
         cfg.columns[5].required = true; // F 신청 금액
         cfg.columns[7].required = true; // H 산출 근거
         (m, cfg)

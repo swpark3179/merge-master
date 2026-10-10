@@ -12,7 +12,7 @@ use std::net::IpAddr;
 use anyhow::Context;
 use collect_core::SheetModel;
 use collect_core::a1::col_from_letters;
-use collect_core::config::{CollectConfig, OthersRows};
+use collect_core::config::{CollectConfig, OthersRows, suggested_key_col};
 use collect_server::{ServerConfig, SessionHandle, SessionInit, lan_addresses, start};
 
 #[tokio::main]
@@ -49,6 +49,8 @@ async fn main() -> anyhow::Result<()> {
     let path = fixture.context("--fixture <시트 JSON>이 필요합니다")?;
     let model: SheetModel = serde_json::from_slice(&std::fs::read(&path).with_context(|| path.clone())?)?;
     let mut config = CollectConfig::suggest(&model);
+    // 개발 서버는 담당자 열(후보 1순위)로 행을 배정해 둔다(호스트 앱은 1b에서 고른다).
+    config.assignment.key_col = suggested_key_col(&model);
     config.title = title;
     config.requester = requester;
     config.description = "부서별 담당 비목의 신청 금액과 산출 근거를 입력해 주세요.".into();

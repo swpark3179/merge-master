@@ -168,6 +168,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
             값 {result.report.written.toLocaleString()}칸
             {result.report.styled > 0 ? ` · 서식 ${result.report.styled.toLocaleString()}칸` : ""}
             {result.report.merges > 0 ? ` · 병합 ${result.report.merges}` : ""}
+            {result.report.resized > 0 ? ` · 크기 ${result.report.resized}줄` : ""}
             {result.report.historySheet ? ` · ‘${result.report.historySheet}’ 시트` : ""}
             {result.kept > 0 ? ` · Excel 값 유지 ${result.kept}칸` : ""} ·{" "}
             {ok ? "다시 읽어 확인함" : `다시 읽었더니 다른 칸 ${result.report.mismatched.length}개`} ·{" "}
@@ -394,11 +395,18 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
                 <input type="checkbox" checked={mark} onChange={(e) => setMark(e.target.checked)} />
                 바뀐 칸을 노란색으로 표시
               </label>
-              {s && (s.styleCells > 0 || s.mergeChanges > 0) && (
+              {s && (s.styleCells > 0 || s.mergeChanges > 0 || s.sizeChanges > 0) && (
                 <label className="check">
                   <input type="checkbox" checked={styles} onChange={(e) => setStyles(e.target.checked)} />
-                  앱에서 바꾼 서식·병합도 반영 (서식 {s.styleCells.toLocaleString()}칸
-                  {s.mergeChanges > 0 ? ` · 병합 ${s.mergeChanges}` : ""})
+                  앱에서 바꾼 서식·병합·크기도 반영 (
+                  {[
+                    s.styleCells > 0 ? `서식 ${s.styleCells.toLocaleString()}칸` : "",
+                    s.mergeChanges > 0 ? `병합 ${s.mergeChanges}` : "",
+                    s.sizeChanges > 0 ? `열 너비·행 높이 ${s.sizeChanges}줄` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                  )
                 </label>
               )}
               <span className="muted small">
