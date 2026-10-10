@@ -28,11 +28,11 @@ fn setup_with(init: SessionInit, names: &[&str]) -> (State, Vec<Client>) {
 }
 
 fn first_row(st: &State, name: &str) -> u32 {
-    st.access.rows_of(st.access.person(name).unwrap())[0]
+    st.rt[0].access.rows_of(st.rt[0].access.person(name).unwrap())[0]
 }
 
 fn set(st: &mut State, c: &Client, batch: &str, cells: Vec<CellEdit>, origin: BatchOrigin) {
-    let msg = ClientMsg::SetCells { batch: batch.into(), cells, origin: Some(origin) };
+    let msg = ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: Some(origin) };
     st.handle(Command::Client { conn: c.conn, msg });
 }
 
@@ -64,10 +64,10 @@ use crate::protocol::{ChatMessage, NoticeView};
 async fn notices_reach_targets_and_count_reads() {
     let (mut st, mut c) = setup(&["이서연", "최도윤"]);
     // 이서연의 필수 칸을 모두 채워 '미완료자'에서 빠지게 한다.
-    let lee = st.access.person("이서연").unwrap();
-    let rows: Vec<u32> = st.access.rows_of(lee);
+    let lee = st.rt[0].access.person("이서연").unwrap();
+    let rows: Vec<u32> = st.rt[0].access.rows_of(lee);
     let cells: Vec<(CellRef, CellValue)> = rows.iter().map(|&r| (CellRef::new(r, F), CellValue::Number(1.0))).collect();
-    host(&mut st, move |s| s.host_set("호스트", BatchOrigin::Revert, cells));
+    host(&mut st, move |s| s.host_set("호스트", BatchOrigin::Revert, 0, cells));
     for x in &mut c {
         x.take();
     }
@@ -110,7 +110,7 @@ async fn highlights_go_to_owners_and_can_be_cleared() {
     let (mut st, mut c) = setup(&["이서연", "최도윤"]);
     let r = first_row(&st, "이서연");
     let range = CellRange::new(r, 7, 1, 1);
-    host(&mut st, move |s| s.highlight(range, "교육 과정명과 인원을 적어 주세요", HighlightAudience::Owners));
+    host(&mut st, move |s| s.highlight(0, range, "교육 과정명과 인원을 적어 주세요", HighlightAudience::Owners));
     let lee = c[0].take();
     let h = lee
         .iter()
@@ -127,7 +127,7 @@ async fn highlights_go_to_owners_and_can_be_cleared() {
     assert_eq!(snap.highlights[0].acked[0].0, "이서연");
     assert!(st.welcome("이서연").unwrap().highlights[0].acked);
 
-    host(&mut st, move |s| s.highlight(range, "모두 보세요", HighlightAudience::All));
+    host(&mut st, move |s| s.highlight(0, range, "모두 보세요", HighlightAudience::All));
     assert!(c[1].take().iter().any(|m| matches!(m, ServerMsg::Highlight(_))));
     host(&mut st, move |s| s.clear_highlight(h.id));
     assert!(c[0].take().iter().any(|m| matches!(m, ServerMsg::HighlightCleared { id } if *id == h.id)));
@@ -137,10 +137,10 @@ async fn highlights_go_to_owners_and_can_be_cleared() {
 #[tokio::test]
 async fn owners_highlight_on_unowned_cells_goes_to_everyone() {
     let mut init = fixture();
-    init.config.assignment.key_col = None;
-    init.config.assignment.extra_people = vec!["가".into(), "나".into()];
-    let r = init.model.header_rows;
-    init.config.assignment.ranges.push(collect_core::config::RangeAssignment {
+    init.sheets[0].1.assignment.key_col = None;
+    init.sheets[0].1.assignment.extra_people = vec!["가".into(), "나".into()];
+    let r = init.sheets[0].0.header_rows;
+    init.sheets[0].1.assignment.ranges.push(collect_core::config::RangeAssignment {
         range: CellRange::new(r, F, 1, 1),
         person: "가".into(),
         note: String::new(),
@@ -148,11 +148,11 @@ async fn owners_highlight_on_unowned_cells_goes_to_everyone() {
     let (mut st, mut c) = setup_with(init, &["가", "나"]);
     let got = |c: &mut Client| c.take().iter().any(|m| matches!(m, ServerMsg::Highlight(_)));
 
-    host(&mut st, move |s| s.highlight(CellRange::new(r, F, 1, 1), "", HighlightAudience::Owners));
+    host(&mut st, move |s| s.highlight(0, CellRange::new(r, F, 1, 1), "", HighlightAudience::Owners));
     assert!(got(&mut c[0]));
     assert!(!got(&mut c[1]), "범위 배정된 칸은 그 사람에게만");
 
-    host(&mut st, move |s| s.highlight(CellRange::new(r, F, 2, 1), "", HighlightAudience::Owners));
+    host(&mut st, move |s| s.highlight(0, CellRange::new(r, F, 2, 1), "", HighlightAudience::Owners));
     assert!(got(&mut c[0]) && got(&mut c[1]), "담당자 없는 칸이 섞여 있으면 모두에게");
     assert_eq!(st.comms_snapshot().highlights.last().unwrap().recipients, ["가", "나"]);
 }
@@ -160,10 +160,10 @@ async fn owners_highlight_on_unowned_cells_goes_to_everyone() {
 #[tokio::test]
 async fn hidden_policy_limits_highlight_audience() {
     let mut init = fixture();
-    init.config.permissions.others_rows = OthersRows::Hidden;
+    init.sheets[0].1.permissions.others_rows = OthersRows::Hidden;
     let (mut st, mut c) = setup_with(init, &["이서연", "최도윤"]);
     let r = first_row(&st, "이서연");
-    host(&mut st, move |s| s.highlight(CellRange::new(r, F, 1, 1), "", HighlightAudience::All));
+    host(&mut st, move |s| s.highlight(0, CellRange::new(r, F, 1, 1), "", HighlightAudience::All));
     assert!(c[0].take().iter().any(|m| matches!(m, ServerMsg::Highlight(_))));
     assert!(
         !c[1].take().iter().any(|m| matches!(m, ServerMsg::Highlight(_))),
@@ -260,8 +260,8 @@ async fn snapshots_restore_and_can_be_undone() {
 
     let id = manual.id;
     assert_eq!(host_get(&mut st, move |s| s.restore(id, "호스트")), Ok(2));
-    assert_eq!(st.model.cell(CellRef::new(r, F)).unwrap().v, CellValue::Number(9800.0));
-    assert_eq!(st.model.cell(CellRef::new(r + 1, F)).unwrap().v, CellValue::Empty);
+    assert_eq!(st.sheets[0].model.cell(CellRef::new(r, F)).unwrap().v, CellValue::Number(9800.0));
+    assert_eq!(st.sheets[0].model.cell(CellRef::new(r + 1, F)).unwrap().v, CellValue::Empty);
     assert_eq!(st.snapshots.list.last().unwrap().0.kind, SnapshotKind::BeforeRestore);
     assert!(st.log.iter().rev().take(2).all(|e| e.origin == BatchOrigin::Restore && e.kind == ChangeKind::Revert));
     assert!(c[0].take().iter().any(|m| matches!(m, ServerMsg::Cells { by, .. } if by == "호스트")));
@@ -271,7 +271,7 @@ async fn snapshots_restore_and_can_be_undone() {
     host(&mut st, move |s| {
         s.restore(before, "호스트").unwrap();
     });
-    assert_eq!(st.model.cell(CellRef::new(r, F)).unwrap().v, CellValue::Number(1.0));
+    assert_eq!(st.sheets[0].model.cell(CellRef::new(r, F)).unwrap().v, CellValue::Number(1.0));
     assert!(host_get(&mut st, |s| s.restore(999, "호스트")).is_err());
 }
 
@@ -329,7 +329,7 @@ async fn host_feed_carries_cell_changes_and_resets() {
     let r = first_row(&st, "이서연");
     set(&mut st, &c[0], "a", vec![edit(r, CellValue::Text("9,800".into()))], BatchOrigin::Edit);
     match feed.try_recv().unwrap() {
-        HostEvent::Cells { by, cells } => {
+        HostEvent::Cells { by, cells, .. } => {
             assert_eq!(by, "이서연");
             assert_eq!(cells[0].value, CellValue::Number(9800.0));
         }
@@ -337,6 +337,6 @@ async fn host_feed_carries_cell_changes_and_resets() {
     }
     host(&mut st, |s| s.changed());
     assert_eq!(feed.try_recv().unwrap(), HostEvent::Reset);
-    st.handle(Command::Formulas(vec![(CellRef::new(r, 6), CellValue::Number(0.5))]));
+    st.handle(Command::Formulas(vec![(0, CellRef::new(r, 6), CellValue::Number(0.5))]));
     assert!(matches!(feed.try_recv().unwrap(), HostEvent::Cells { by, .. } if by.is_empty()));
 }

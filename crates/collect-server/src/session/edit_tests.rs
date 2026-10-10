@@ -24,20 +24,23 @@ fn cell(row: u32, col: u32, value: CellValue, base: u32) -> CellEdit {
 }
 
 fn set(st: &mut State, c: &Client, batch: &str, cells: Vec<CellEdit>) {
-    st.handle(Command::Client { conn: c.conn, msg: ClientMsg::SetCells { batch: batch.into(), cells, origin: None } });
+    st.handle(Command::Client {
+        conn: c.conn,
+        msg: ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: None },
+    });
 }
 
 fn lock(st: &mut State, c: &Client, row: u32, col: u32) {
-    st.handle(Command::Client { conn: c.conn, msg: ClientMsg::Lock { at: CellRef::new(row, col) } });
+    st.handle(Command::Client { conn: c.conn, msg: ClientMsg::Lock { sheet: 0, at: CellRef::new(row, col) } });
 }
 
 /// 그 사람이 맡은 첫 데이터 행.
 fn first_row(st: &State, name: &str) -> u32 {
-    st.access.rows_of(st.access.person(name).unwrap())[0]
+    st.rt[0].access.rows_of(st.rt[0].access.person(name).unwrap())[0]
 }
 
 fn value(st: &State, row: u32, col: u32) -> CellValue {
-    st.model.cell(CellRef::new(row, col)).unwrap().v.clone()
+    st.sheets[0].model.cell(CellRef::new(row, col)).unwrap().v.clone()
 }
 
 type AppliedMsg = (Vec<CellUpdate>, Vec<CellRef>, Vec<Rejection>);
@@ -56,7 +59,7 @@ fn applied(msgs: &[ServerMsg]) -> AppliedMsg {
 fn cells_from(msgs: &[ServerMsg]) -> Vec<(String, Vec<CellUpdate>)> {
     msgs.iter()
         .filter_map(|m| match m {
-            ServerMsg::Cells { by, cells } => Some((by.clone(), cells.clone())),
+            ServerMsg::Cells { by, cells, .. } => Some((by.clone(), cells.clone())),
             _ => None,
         })
         .collect()
@@ -65,7 +68,7 @@ fn cells_from(msgs: &[ServerMsg]) -> Vec<(String, Vec<CellUpdate>)> {
 fn lock_changes(msgs: &[ServerMsg]) -> Vec<(CellRef, Option<String>)> {
     msgs.iter()
         .filter_map(|m| match m {
-            ServerMsg::LockChanged { at, by } => Some((*at, by.clone())),
+            ServerMsg::LockChanged { at, by, .. } => Some((*at, by.clone())),
             _ => None,
         })
         .collect()
@@ -110,9 +113,9 @@ fn setup_with(init: SessionInit, names: &[&str]) -> (State, Vec<Client>) {
 /// 김민지 행의 F열을 이서연에게도 범위 배정한다(두 사람이 같은 칸을 편집할 수 있게).
 fn shared_cell_init() -> (SessionInit, u32) {
     let mut init = fixture();
-    let access = Access::compile(&init.model, &init.config);
+    let access = Access::compile(&init.sheets[0].0, &init.sheets[0].1);
     let kim_row = access.rows_of(access.person("김민지").unwrap())[0];
-    init.config.assignment.ranges.push(RangeAssignment {
+    init.sheets[0].1.assignment.ranges.push(RangeAssignment {
         range: CellRange::new(kim_row, F, 1, 1),
         person: "이서연".into(),
         note: String::new(),
@@ -134,14 +137,14 @@ async fn set_cells_normalizes_applies_and_broadcasts() {
     assert!(conflicts.is_empty() && rejected.is_empty());
     // 진행률 증분: 내 진행률이 오고 호스트 표도 바뀐다.
     let progress = mine.iter().find_map(|m| match m {
-        ServerMsg::Progress { progress } => Some(progress.clone()),
+        ServerMsg::Progress { progress, .. } => Some(progress.clone()),
         _ => None,
     });
     let lee_before = before.participants.iter().find(|p| p.name == "이서연").unwrap().filled;
     assert_eq!(progress.map(|p| p.filled), Some(lee_before + 1));
     let after = st.snapshot();
     assert_eq!(after.filled, before.filled + 1);
-    assert_eq!(st.progress, st.access.progress(&st.model), "증분 계산이 다시 센 값과 같아야 함");
+    assert_eq!(st.rt[0].progress, st.rt[0].access.progress(&st.sheets[0].model), "증분 계산이 다시 센 값과 같아야 함");
 
     // 다른 사람에게는 누가 바꿨는지와 함께 간다.
     assert_eq!(cells_from(&c[1].take()), [("이서연".into(), cells)]);
@@ -193,7 +196,7 @@ async fn locks_block_others_until_commit() {
     assert_eq!(lock_result(&c[0].take()), (true, None, None));
     assert_eq!(lock_changes(&c[1].take()), [(at, Some("김민지".into()))]);
     let kim = st.snapshot().participants.into_iter().find(|p| p.name == "김민지").unwrap();
-    assert_eq!(kim.editing, Some(at));
+    assert_eq!(kim.editing, Some(SheetCell::new(0, at)));
 
     lock(&mut st, &c[1], k, F);
     assert_eq!(lock_result(&c[1].take()), (false, Some("김민지".into()), None));
@@ -206,7 +209,7 @@ async fn locks_block_others_until_commit() {
     let seen = c[1].take();
     assert_eq!(lock_changes(&seen), [(at, None)]);
     assert_eq!(cells_from(&seen)[0].1[0].value, num(3600.0));
-    assert!(st.locks.is_empty());
+    assert!(st.rt[0].locks.is_empty());
 
     // 남의 칸·입력 금지 칸은 잠글 수 없다.
     let own = first_row(&st, "이서연");
@@ -220,12 +223,12 @@ async fn one_lock_per_person_and_unlock() {
     let (mut st, mut c) = setup_with(init, &["김민지", "이서연"]);
     lock(&mut st, &c[0], k, F);
     lock(&mut st, &c[0], k, H); // 다른 칸으로 옮기면 앞 잠금은 풀린다
-    assert_eq!(st.locks.len(), 1);
+    assert_eq!(st.rt[0].locks.len(), 1);
     let (f, h) = (CellRef::new(k, F), CellRef::new(k, H));
     let kim = Some("김민지".to_string());
     assert_eq!(lock_changes(&c[1].take()), [(f, kim.clone()), (f, None), (h, kim)]);
-    st.handle(Command::Client { conn: c[0].conn, msg: ClientMsg::Unlock { at: CellRef::new(k, H) } });
-    assert!(st.locks.is_empty());
+    st.handle(Command::Client { conn: c[0].conn, msg: ClientMsg::Unlock { sheet: 0, at: CellRef::new(k, H) } });
+    assert!(st.rt[0].locks.is_empty());
 }
 
 #[tokio::test]
@@ -272,19 +275,19 @@ async fn orphaned_lock_survives_short_disconnect_then_expires() {
     st.handle(Command::Disconnect { conn: kim.conn });
     tokio::time::advance(Duration::from_secs(10)).await;
     st.handle(Command::Tick);
-    assert_eq!(st.locks.len(), 1, "유예 시간 안에는 남는다");
+    assert_eq!(st.rt[0].locks.len(), 1, "유예 시간 안에는 남는다");
     // 다시 붙으면 그대로 이어서 편집한다.
     let mut again = connect(&mut st, 11);
     join(&mut st, &again, "김민지", Some(&token));
     again.welcome();
     tokio::time::advance(LOCK_GRACE + Duration::from_secs(1)).await;
     st.handle(Command::Tick);
-    assert_eq!(st.locks.len(), 1);
+    assert_eq!(st.rt[0].locks.len(), 1);
 
     st.handle(Command::Disconnect { conn: again.conn });
     tokio::time::advance(LOCK_GRACE + Duration::from_secs(1)).await;
     st.handle(Command::Tick);
-    assert!(st.locks.is_empty());
+    assert!(st.rt[0].locks.is_empty());
     assert_eq!(lock_changes(&c[0].take()), [(CellRef::new(k, F), None)]);
 }
 
@@ -295,7 +298,7 @@ async fn abandoned_editor_lock_is_released() {
     lock(&mut st, &c[0], k, F);
     tokio::time::advance(LOCK_MAX + Duration::from_secs(1)).await;
     st.handle(Command::Tick);
-    assert!(st.locks.is_empty());
+    assert!(st.rt[0].locks.is_empty());
     assert_eq!(lock_changes(&c[0].take()), [(CellRef::new(k, F), None)]);
 }
 
@@ -319,7 +322,7 @@ async fn deadline_makes_session_read_only() {
     let (mut st, mut c) = setup(&["이서연"]);
     let r = first_row(&st, "이서연");
     host(&mut st, |s| {
-        s.config.deadline = Some("2000-01-01T09:00".into());
+        s.sheets[0].config.deadline = Some("2000-01-01T09:00".into());
         s.changed();
     });
     assert!(st.read_only && st.snapshot().read_only);
@@ -331,15 +334,15 @@ async fn deadline_makes_session_read_only() {
 
     // '마감 후 자동 읽기 전용'을 끄면 다시 입력할 수 있다.
     host(&mut st, |s| {
-        s.config.permissions.lock_after_deadline = false;
+        s.sheets[0].config.permissions.lock_after_deadline = false;
         s.changed();
     });
     assert!(!st.read_only);
 
     // 시간이 지나 마감되면 주기 점검이 알린다.
     host(&mut st, |s| {
-        s.config.permissions.lock_after_deadline = true;
-        s.config.deadline = Some("2999-01-01".into());
+        s.sheets[0].config.permissions.lock_after_deadline = true;
+        s.sheets[0].config.deadline = Some("2999-01-01".into());
         s.changed();
     });
     c[0].take();
@@ -360,7 +363,7 @@ fn deadline_formats() {
 #[tokio::test]
 async fn hidden_policy_keeps_other_rows_private() {
     let mut init = fixture();
-    init.config.permissions.others_rows = OthersRows::Hidden;
+    init.sheets[0].1.permissions.others_rows = OthersRows::Hidden;
     let (mut st, mut c) = setup_with(init, &["이서연", "최도윤"]);
     let r = first_row(&st, "이서연");
     lock(&mut st, &c[0], r, F);
@@ -368,14 +371,14 @@ async fn hidden_policy_keeps_other_rows_private() {
     applied(&c[0].take());
     let seen = c[1].take();
     assert!(cells_from(&seen).is_empty() && lock_changes(&seen).is_empty(), "{seen:?}");
-    st.handle(Command::Client { conn: c[1].conn, msg: ClientMsg::RowHistory { row: r } });
+    st.handle(Command::Client { conn: c[1].conn, msg: ClientMsg::RowHistory { sheet: 0, row: r } });
     assert!(matches!(&c[1].take()[..], [ServerMsg::History { entries, .. }] if entries.is_empty()));
     // 다시 들어와도 남의 행 버전은 받지 않는다.
     let mut again = connect(&mut st, 9);
     join(&mut st, &again, "최도윤", None);
     assert!(again.take().iter().any(|m| matches!(m, ServerMsg::DupName { .. })));
     st.handle(Command::Client { conn: 9, msg: ClientMsg::SwitchDevice { name: "최도윤".into() } });
-    assert!(again.welcome().versions.is_empty());
+    assert!(again.welcome().sheets[0].versions.is_empty());
 }
 
 #[tokio::test]
@@ -385,9 +388,9 @@ async fn row_history_lists_changes_in_order() {
     set(&mut st, &c[0], "b1", vec![cell(r, F, num(9800.0), 0)]);
     set(&mut st, &c[0], "b2", vec![cell(r, H, text("간담회 4회"), 0), cell(r, F, num(9900.0), 1)]);
     c[0].take();
-    st.handle(Command::Client { conn: c[0].conn, msg: ClientMsg::RowHistory { row: r } });
+    st.handle(Command::Client { conn: c[0].conn, msg: ClientMsg::RowHistory { sheet: 0, row: r } });
     let msgs = c[0].take();
-    let [ServerMsg::History { row, entries }] = &msgs[..] else { panic!("{msgs:?}") };
+    let [ServerMsg::History { row, entries, .. }] = &msgs[..] else { panic!("{msgs:?}") };
     assert_eq!(*row, r);
     let got: Vec<_> = entries.iter().map(|e| (e.batch.as_str(), e.col, e.new.clone())).collect();
     assert_eq!(got, [("b1", F, num(9800.0)), ("b2", H, text("간담회 4회")), ("b2", F, num(9900.0))]);
@@ -403,14 +406,14 @@ async fn format_follows_policy() {
     let fill = StylePatch { fill: Some(FillPatch::Color { rgb: 0xFFF3B0 }), ..Default::default() };
     let bold = StylePatch { bold: Some(true), ..Default::default() };
     let format = |st: &mut State, c: &Client, range: CellRange, patch: &StylePatch| {
-        st.handle(Command::Client { conn: c.conn, msg: ClientMsg::Format { range, patch: patch.clone() } });
+        st.handle(Command::Client { conn: c.conn, msg: ClientMsg::Format { sheet: 0, range, patch: patch.clone() } });
     };
 
     format(&mut st, &c[0], mine, &fill);
     assert!(errors(&c[0].take())[0].contains("서식을 바꿀 수 없습니다"));
 
     host(&mut st, |s| {
-        s.config.permissions.format = FormatPolicy::FillOnly;
+        s.sheets[0].config.permissions.format = FormatPolicy::FillOnly;
         s.changed();
     });
     c[0].take();
@@ -421,8 +424,8 @@ async fn format_follows_policy() {
     format(&mut st, &c[0], other, &fill);
     assert!(errors(&c[0].take())[0].contains("입력할 수 있는 칸만"));
     format(&mut st, &c[0], mine, &fill);
-    let s = st.model.cell(CellRef::new(r, F)).unwrap().s;
-    assert_eq!(st.model.styles[s as usize].fill, Some(0xFFF3B0));
+    let s = st.sheets[0].model.cell(CellRef::new(r, F)).unwrap().s;
+    assert_eq!(st.sheets[0].model.styles[s as usize].fill, Some(0xFFF3B0));
     for client in &mut c {
         let msgs = client.take();
         let changes = msgs.iter().find_map(|m| match m {
@@ -433,7 +436,7 @@ async fn format_follows_policy() {
     }
 
     host(&mut st, |s| {
-        s.config.permissions.format = FormatPolicy::All;
+        s.sheets[0].config.permissions.format = FormatPolicy::All;
         s.changed();
     });
     c[0].take();
@@ -449,18 +452,18 @@ async fn recalc_requests_and_formula_results() {
     let r = first_row(&st, "이서연");
     set(&mut st, &c[0], "b1", vec![cell(r, F, num(9800.0), 0)]);
     let req = rx.try_recv().expect("재계산 요청");
-    assert_eq!(req.writes, [(CellRef::new(r, F), num(9800.0))]);
+    assert_eq!(req.writes, [(0, CellRef::new(r, F), num(9800.0))]);
     c[0].take();
     c[1].take();
 
     let g = CellRef::new(r, G);
-    st.handle(Command::Formulas(vec![(g, num(0.065)), (CellRef::new(r, H), text("수식 아님"))]));
+    st.handle(Command::Formulas(vec![(0, g, num(0.065)), (0, CellRef::new(r, H), text("수식 아님"))]));
     for client in &mut c {
         let seen = cells_from(&client.take());
         assert_eq!(seen, [(String::new(), vec![CellUpdate { row: r, col: G, value: num(0.065), ver: 1 }])]);
     }
     assert!(value(&st, r, H).is_empty(), "수식이 아닌 칸은 바꾸지 않는다");
-    st.handle(Command::Formulas(vec![(g, num(0.065))]));
+    st.handle(Command::Formulas(vec![(0, g, num(0.065))]));
     assert!(cells_from(&c[0].take()).is_empty(), "같은 값이면 보내지 않는다");
     assert_eq!(st.log.len(), 1, "수식 결과는 이력에 남기지 않는다");
 }
@@ -474,21 +477,21 @@ async fn welcome_carries_versions_and_locks_and_replace_resets_them() {
     let mut d = connect(&mut st, 7);
     join(&mut st, &d, "최도윤", None);
     let w = d.welcome();
-    let i = k * st.model.cols + F;
-    assert_eq!(w.versions, [(i, 1)]);
-    assert_eq!(w.locks, [LockEntry { at: CellRef::new(k, F), by: "김민지".into() }]);
+    let i = k * st.sheets[0].model.cols + F;
+    assert_eq!(w.sheets[0].versions, [(i, 1)]);
+    assert_eq!(w.sheets[0].locks, [LockEntry { at: CellRef::new(k, F), by: "김민지".into() }]);
 
     host(&mut st, |s| {
-        let (model, config) = (s.model.clone(), s.config.clone());
-        s.replace(model, config);
+        let (model, config) = (s.sheets[0].model.clone(), s.sheets[0].config.clone());
+        s.replace(vec![(model, config)]);
     });
-    assert!(st.locks.is_empty() && st.log.is_empty());
+    assert!(st.rt[0].locks.is_empty() && st.log.is_empty());
     let w = d.welcome();
-    assert!(w.versions.is_empty() && w.locks.is_empty());
+    assert!(w.sheets[0].versions.is_empty() && w.sheets[0].locks.is_empty());
 }
 
 fn add_rows(st: &mut State, c: &Client, count: u32) {
-    st.handle(Command::Client { conn: c.conn, msg: ClientMsg::AddRows { count } });
+    st.handle(Command::Client { conn: c.conn, msg: ClientMsg::AddRows { sheet: 0, count } });
 }
 
 #[tokio::test]
@@ -500,39 +503,39 @@ async fn participants_add_rows_when_allowed() {
     join(&mut st, &b, "최도윤", None);
     a.take();
     b.take();
-    let rows = st.model.rows;
+    let rows = st.sheets[0].model.rows;
     add_rows(&mut st, &a, 1);
     assert!(
         a.take()
             .iter()
             .any(|m| matches!(m, ServerMsg::Error { message } if message.contains("행을 추가할 수 없습니다")))
     );
-    assert_eq!(st.model.rows, rows);
+    assert_eq!(st.sheets[0].model.rows, rows);
 
     host(&mut st, |s| {
-        s.config.permissions.add_rows = true;
+        s.sheets[0].config.permissions.add_rows = true;
         s.changed();
     });
     a.take();
     b.take();
     let mut feed = st.host_feed.subscribe();
     add_rows(&mut st, &a, 2);
-    assert_eq!(st.model.rows, rows + 2);
-    assert_eq!(st.versions.len(), st.model.cells.len());
-    let (r0, key) = (rows, st.config.assignment.key_col.unwrap());
+    assert_eq!(st.sheets[0].model.rows, rows + 2);
+    assert_eq!(st.rt[0].versions.len(), st.sheets[0].model.cells.len());
+    let (r0, key) = (rows, st.sheets[0].config.assignment.key_col.unwrap());
     // 행 배정 기준 열에 추가한 사람 이름 → 그 사람의 행. 수식(G)은 위 행에서 내려 쓴다.
     assert_eq!(value(&st, r0, key), text("정하늘"));
-    assert_eq!(st.access.row_owner(r0), st.access.person("정하늘"));
-    assert!(st.model.cell(CellRef::new(r0, G)).unwrap().f.is_some());
+    assert_eq!(st.rt[0].access.row_owner(r0), st.rt[0].access.person("정하늘"));
+    assert!(st.sheets[0].model.cell(CellRef::new(r0, G)).unwrap().f.is_some());
     assert_eq!(st.log.last().map(|e| e.origin), Some(BatchOrigin::AddRow));
     let msgs = a.take();
     let w = msgs.iter().find_map(|m| match m {
         ServerMsg::Welcome(w) => Some(w),
         _ => None,
     });
-    assert_eq!(w.map(|w| w.model.rows), Some(rows + 2), "모두에게 새 시트");
+    assert_eq!(w.map(|w| w.sheets[0].model.rows), Some(rows + 2), "모두에게 새 시트");
     assert!(msgs.iter().any(
-        |m| matches!(m, ServerMsg::RowsAdded { by, range } if by == "정하늘" && range.row == r0 && range.rows == 2)
+        |m| matches!(m, ServerMsg::RowsAdded { by, range, .. } if by == "정하늘" && range.row == r0 && range.rows == 2)
     ));
     assert!(b.take().iter().any(|m| matches!(m, ServerMsg::RowsAdded { .. })));
     assert!(matches!(feed.try_recv(), Ok(HostEvent::Reset)));
@@ -547,18 +550,22 @@ async fn participants_add_rows_when_allowed() {
     set(&mut st, &a, "n1b", vec![cell(r0, key, text("최도윤"), 0), cell(r0, G, num(1.0), 0)]);
     assert_eq!(applied(&a.take()).2.len(), 2);
     assert!(
-        !st.access
-            .can_edit(collect_core::access::Viewer::Person(st.access.person("정하늘").unwrap()), CellRef::new(5, 3))
+        !st.rt[0].access.can_edit(
+            collect_core::access::Viewer::Person(st.rt[0].access.person("정하늘").unwrap()),
+            CellRef::new(5, 3)
+        )
     );
     set(&mut st, &b, "n2", vec![cell(r0, H, text("남의 새 행"), 0)]);
     assert_eq!(applied(&b.take()).2.len(), 1);
     // 예외는 한 벌(입력 가능 + 기준 칸 입력 금지)이고, 이어서 추가하면 범위가 늘어난다.
-    let added: Vec<_> = st.config.exceptions.iter().filter(|e| e.note == super::edit::ADDED_ROWS_NOTE).collect();
+    let added: Vec<_> =
+        st.sheets[0].config.exceptions.iter().filter(|e| e.note == super::edit::ADDED_ROWS_NOTE).collect();
     assert_eq!(added.len(), 2);
     add_rows(&mut st, &a, 1);
-    let added: Vec<_> = st.config.exceptions.iter().filter(|e| e.note == super::edit::ADDED_ROWS_NOTE).collect();
+    let added: Vec<_> =
+        st.sheets[0].config.exceptions.iter().filter(|e| e.note == super::edit::ADDED_ROWS_NOTE).collect();
     assert_eq!(added.len(), 2);
-    assert_eq!(added[0].range, CellRange::new(r0, 0, 3, st.model.cols));
+    assert_eq!(added[0].range, CellRange::new(r0, 0, 3, st.sheets[0].model.cols));
     a.take();
     b.take();
 
@@ -567,15 +574,15 @@ async fn participants_add_rows_when_allowed() {
     a.take();
     add_rows(&mut st, &a, 1);
     assert!(a.take().iter().any(|m| matches!(m, ServerMsg::Error { .. })));
-    assert_eq!(st.model.rows, rows + 3);
+    assert_eq!(st.sheets[0].model.rows, rows + 3);
 }
 
 #[tokio::test]
 async fn added_rows_without_key_column_are_open_to_everyone_and_capped() {
     let mut init = fixture();
-    init.config.assignment.key_col = None;
-    init.config.assignment.extra_people = vec!["가".into(), "나".into()];
-    init.config.permissions.add_rows = true;
+    init.sheets[0].1.assignment.key_col = None;
+    init.sheets[0].1.assignment.extra_people = vec!["가".into(), "나".into()];
+    init.sheets[0].1.permissions.add_rows = true;
     let mut st = State::new(init);
     let mut a = connect(&mut st, 1);
     let mut b = connect(&mut st, 2);
@@ -583,14 +590,14 @@ async fn added_rows_without_key_column_are_open_to_everyone_and_capped() {
     join(&mut st, &b, "나", None);
     a.take();
     add_rows(&mut st, &a, 500); // 한 번에 MAX_ADD_ROWS까지만
-    let r0 = st.model.rows - super::edit::MAX_ADD_ROWS;
-    assert_eq!(st.baseline.rows + super::edit::MAX_ADD_ROWS, st.model.rows);
+    let r0 = st.sheets[0].model.rows - super::edit::MAX_ADD_ROWS;
+    assert_eq!(st.sheets[0].baseline.rows + super::edit::MAX_ADD_ROWS, st.sheets[0].model.rows);
     b.take();
     set(&mut st, &b, "x", vec![cell(r0, F, text("5"), 0)]);
     assert!(applied(&b.take()).2.is_empty(), "담당자 없는 새 행은 누구나");
     for _ in 0..(super::edit::MAX_ADDED_ROWS / super::edit::MAX_ADD_ROWS) {
         add_rows(&mut st, &a, super::edit::MAX_ADD_ROWS);
     }
-    assert_eq!(st.model.rows - st.baseline.rows, super::edit::MAX_ADDED_ROWS);
+    assert_eq!(st.sheets[0].model.rows - st.sheets[0].baseline.rows, super::edit::MAX_ADDED_ROWS);
     assert!(a.take().iter().any(|m| matches!(m, ServerMsg::Error { message } if message.contains("까지 추가"))));
 }

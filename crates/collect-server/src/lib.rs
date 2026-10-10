@@ -173,10 +173,21 @@ fn dev_result<T: serde::Serialize>(r: Result<T, String>) -> Response {
     }
 }
 
+/// 개발 서버의 시트 주소(`H10`, `인력계획!E5:E9`) → (시트 순번, 범위). 개발 서버의 시트는 A1부터라 모델 좌표와 같다.
+async fn dev_range(state: &AppState, text: &str) -> Result<(u32, CellRange), String> {
+    let names = state.session.with(|s| s.sheets.iter().map(|x| x.model.sheet.clone()).collect::<Vec<_>>()).await?;
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (sheet, range) = collect_core::a1::parse_sheet_range(text, &names, 0).map_err(|e| e.to_string())?;
+    Ok((sheet as u32, range))
+}
+
 async fn dev_approve(State(state): State<Arc<AppState>>, Json(req): Json<DevName>) -> Response {
-    let range = match req.range.as_deref().map(CellRange::parse).transpose() {
-        Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    let range = match req.range.as_deref() {
+        Some(text) => match dev_range(&state, text).await {
+            Ok(r) => Some(r),
+            Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+        },
+        None => None,
     };
     dev_result(state.session.approve(&req.name, range, "").await.map(|_| "ok"))
 }
@@ -205,25 +216,33 @@ struct DevConfig {
     /// 참여자 행 추가 허용.
     #[serde(default)]
     add_rows: Option<bool>,
+    /// 서식 정책·행 추가를 바꿀 시트(기본 첫 시트). 마감은 모든 시트가 같다.
+    #[serde(default)]
+    sheet: usize,
 }
 
 async fn dev_config(State(state): State<Arc<AppState>>, Json(req): Json<DevConfig>) -> Response {
     let r = state
         .session
         .with(move |s| {
-            if let Some(d) = req.deadline {
-                s.config.deadline = (!d.is_empty()).then_some(d);
+            if req.sheet >= s.sheets.len() {
+                return Err("없는 시트입니다".to_string());
             }
+            if let Some(d) = req.deadline {
+                s.sheets[0].config.deadline = (!d.is_empty()).then_some(d);
+            }
+            let config = &mut s.sheets[req.sheet].config;
             if let Some(f) = req.format {
-                s.config.permissions.format = f;
+                config.permissions.format = f;
             }
             if let Some(on) = req.add_rows {
-                s.config.permissions.add_rows = on;
+                config.permissions.add_rows = on;
             }
             s.changed();
+            Ok("ok")
         })
         .await;
-    dev_result(r.map(|_| "ok"))
+    dev_result(r.and_then(|r| r))
 }
 
 /// IP 명단 바꾸기(E2E: 이 PC를 명단에 올리면 이름 없이 바로 들어온다). 본문은 명단 JSON 파일 내용.
@@ -237,16 +256,16 @@ async fn dev_ip_names(State(state): State<Arc<AppState>>, body: String) -> Respo
     }
 }
 
-/// 수식 결과 밀어 넣기(E2E: Excel 없이 재계산 결과 알림 경로를 확인). `[["G3", 0.05], ...]`
+/// 수식 결과 밀어 넣기(E2E: Excel 없이 재계산 결과 알림 경로를 확인). `[["G3", 0.05], ["인력계획!E3", 1], ...]`
 async fn dev_formulas(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Vec<(String, collect_core::CellValue)>>,
 ) -> Response {
     let mut values = Vec::new();
     for (a1, v) in req {
-        match collect_core::CellRef::parse(&a1) {
-            Ok(at) => values.push((at, v)),
-            Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        match dev_range(&state, &a1).await {
+            Ok((sheet, r)) => values.push((sheet, r.top_left(), v)),
+            Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
         }
     }
     state.session.formula_results(values);
@@ -277,7 +296,7 @@ async fn dev_notice(State(state): State<Arc<AppState>>, Json(req): Json<DevNotic
 
 #[derive(serde::Deserialize)]
 struct DevHighlight {
-    /// 시트 주소(예: H10). 개발 서버의 시트는 A1부터라 모델 좌표와 같다.
+    /// 시트 주소(예: H10, 인력계획!E5). 개발 서버의 시트는 A1부터라 모델 좌표와 같다.
     range: String,
     #[serde(default)]
     note: String,
@@ -285,11 +304,13 @@ struct DevHighlight {
 }
 
 async fn dev_highlight(State(state): State<Arc<AppState>>, Json(req): Json<DevHighlight>) -> Response {
-    let range = match CellRange::parse(&req.range) {
+    let (sheet, range) = match dev_range(&state, &req.range).await {
         Ok(r) => r,
-        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
-    dev_result(state.session.with(move |s| s.highlight(range, &req.note, req.audience)).await.map(|_| "ok"))
+    dev_result(
+        state.session.with(move |s| s.highlight(sheet as usize, range, &req.note, req.audience)).await.map(|_| "ok"),
+    )
 }
 
 #[derive(serde::Deserialize)]

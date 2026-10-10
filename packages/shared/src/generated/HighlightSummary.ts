@@ -2,7 +2,7 @@
 import type { CellRange } from "./CellRange";
 import type { HighlightAudience } from "./HighlightAudience";
 
-export type HighlightSummary = { id: number, atMs: number, range: CellRange, note: string, audience: HighlightAudience, recipients: Array<string>, 
+export type HighlightSummary = { id: number, atMs: number, sheet: number, range: CellRange, note: string, audience: HighlightAudience, recipients: Array<string>, 
 /**
  * 확인한 사람과 시각.
  */

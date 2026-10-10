@@ -4,9 +4,9 @@ import type { CellRange } from "./CellRange";
 /**
  * 참여자가 받는 셀 강조(노란 표시 + 말풍선).
  */
-export type HighlightView = { id: number, atMs: number, from: string, 
+export type HighlightView = { id: number, atMs: number, from: string, sheet: number, 
 /**
- * 모델 좌표.
+ * 그 시트의 모델 좌표.
  */
 range: CellRange, note: string, 
 /**

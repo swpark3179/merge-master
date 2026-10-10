@@ -34,11 +34,14 @@ pub struct ServerMeta {
     pub running: bool,
 }
 
+/// 메타 `sheets`: 불러온 시트 이름(JSON 배열, 순서 = 세션 안 시트 순번). 여러 시트 전 파일은 메타 `sheet` 하나.
+pub const META_SHEETS: &str = "sheets";
+
 /// 마지막으로 파일에 쓴 것(같으면 다시 쓰지 않는다).
 #[derive(Default)]
 pub(super) struct Persisted {
-    config: Option<CollectConfig>,
-    baseline: Option<SheetModel>,
+    configs: Option<Vec<CollectConfig>>,
+    baselines: Option<Vec<SheetModel>>,
     comms_rev: Option<u64>,
     closed: Option<bool>,
     tokens: Option<BTreeMap<String, String>>,
@@ -48,7 +51,8 @@ pub(super) struct Persisted {
 pub struct Restore {
     pub(super) log: Vec<ChangeEntry>,
     pub(super) snapshots: Vec<(SnapshotMeta, Vec<u8>)>,
-    pub(super) baseline: SheetModel,
+    /// 시트마다 기준 시트.
+    pub(super) baselines: Vec<SheetModel>,
     pub(super) comms: CommsData,
     pub(super) closed: bool,
     /// 호스트가 남긴 메타(서비스 상태).
@@ -60,12 +64,21 @@ pub struct Restore {
 /// [`recover`] 결과.
 pub struct Recovered {
     pub init: SessionInit,
-    /// 원본 통합문서(`FullName`)와 시트.
+    /// 원본 통합문서(`FullName`).
     pub workbook_id: String,
-    pub sheet: String,
+    /// 불러온 시트 이름(세션 안 순번 순서).
+    pub sheets: Vec<String>,
     pub server: Option<ServerMeta>,
     pub meta: HashMap<String, String>,
     pub changes: usize,
+}
+
+/// 기록 파일 메타의 시트 이름들(여러 시트 전 파일은 `sheet` 하나).
+pub fn meta_sheets(meta: &HashMap<String, String>) -> Vec<String> {
+    meta.get(META_SHEETS)
+        .and_then(|v| serde_json::from_str::<Vec<String>>(v).ok())
+        .or_else(|| meta.get("sheet").map(|s| vec![s.clone()]))
+        .unwrap_or_default()
 }
 
 pub(super) fn applied_key(user: &str, batch: &str) -> String {
@@ -81,10 +94,19 @@ impl State {
         self.people.iter().map(|(name, p)| (name.clone(), p.token.clone())).collect()
     }
 
-    /// 시트 전체를 남긴다(그 뒤 기록만 되짚으면 된다).
+    fn configs(&self) -> Vec<CollectConfig> {
+        self.sheets.iter().map(|s| s.config.clone()).collect()
+    }
+
+    fn baselines(&self) -> Vec<SheetModel> {
+        self.sheets.iter().map(|s| s.baseline.clone()).collect()
+    }
+
+    /// 시트 전체(모든 시트)를 남긴다(그 뒤 기록만 되짚으면 된다).
     pub(super) fn persist_sheet(&self) {
         if let Some(store) = &self.store {
-            store.blob(BLOB_SHEET, self.last_seq(), pack_json(&self.model));
+            let models: Vec<&SheetModel> = self.sheets.iter().map(|s| &s.model).collect();
+            store.blob(BLOB_SHEET, self.last_seq(), pack_json(&models));
         }
     }
 
@@ -108,13 +130,23 @@ impl State {
         if !full {
             return;
         }
-        if self.persisted.config.as_ref() != Some(&self.config) {
-            store.blob(BLOB_CONFIG, self.last_seq(), pack_json(&self.config));
-            self.persisted.config = Some(self.config.clone());
+        let same_configs =
+            self.persisted.configs.as_ref().is_some_and(|c| {
+                c.len() == self.sheets.len() && c.iter().zip(&self.sheets).all(|(a, s)| *a == s.config)
+            });
+        if !same_configs {
+            let configs = self.configs();
+            store.blob(BLOB_CONFIG, self.last_seq(), pack_json(&configs));
+            self.persisted.configs = Some(configs);
         }
-        if self.persisted.baseline.as_ref() != Some(&self.baseline) {
-            store.blob(BLOB_BASELINE, self.last_seq(), pack_json(&self.baseline));
-            self.persisted.baseline = Some(self.baseline.clone());
+        let same_baselines =
+            self.persisted.baselines.as_ref().is_some_and(|b| {
+                b.len() == self.sheets.len() && b.iter().zip(&self.sheets).all(|(a, s)| *a == s.baseline)
+            });
+        if !same_baselines {
+            let baselines = self.baselines();
+            store.blob(BLOB_BASELINE, self.last_seq(), pack_json(&baselines));
+            self.persisted.baselines = Some(baselines);
         }
         if self.persisted.closed != Some(self.closed) {
             store.meta(META_CLOSED, if self.closed { "1" } else { "0" });
@@ -136,8 +168,9 @@ impl State {
 
     /// 파일에서 읽은 상태를 세션에 넣는다(버전·마지막으로 바꾼 사람·반영한 묶음은 기록에서 다시 만든다).
     pub(super) fn restore(&mut self, r: Restore) {
-        let cols = self.model.cols.max(1);
-        self.baseline = r.baseline;
+        for (slot, baseline) in self.sheets.iter_mut().zip(r.baselines) {
+            slot.baseline = baseline;
+        }
         self.closed = r.closed;
         self.host_meta = r.host_meta;
         let now = tokio::time::Instant::now();
@@ -146,11 +179,13 @@ impl State {
             self.people.insert(name, person);
         }
         for e in &r.log {
-            let i = (e.row * cols + e.col) as usize;
-            if let Some(v) = self.versions.get_mut(i) {
-                *v += 1;
+            if let Some((slot, rt)) = self.sheets.get(e.sheet as usize).zip(self.rt.get_mut(e.sheet as usize)) {
+                let i = (e.row * slot.model.cols.max(1) + e.col) as usize;
+                if let Some(v) = rt.versions.get_mut(i) {
+                    *v += 1;
+                }
+                rt.writer.insert(i, e.user.clone());
             }
-            self.writer.insert(i, e.user.clone());
             self.applied.insert(applied_key(&e.user, &e.batch));
         }
         self.next_seq = r.log.last().map_or(1, |e| e.seq + 1);
@@ -159,8 +194,8 @@ impl State {
         self.comms = super::comms::Comms::from_data(r.comms);
         // 이미 파일에 있는 것은 다시 쓰지 않는다(시트는 되짚은 결과로 새로 남긴다).
         self.persisted = Persisted {
-            config: Some(self.config.clone()),
-            baseline: Some(self.baseline.clone()),
+            configs: Some(self.configs()),
+            baselines: Some(self.baselines()),
             comms_rev: Some(self.comms.rev),
             closed: Some(self.closed),
             tokens: Some(self.tokens()),
@@ -176,17 +211,35 @@ fn blob<T: serde::de::DeserializeOwned>(
     Ok((*seq, unpack_json(data).map_err(|e| e.to_string())?))
 }
 
+/// 시트마다 남긴 블롭(배열). 여러 시트 전 파일은 하나(객체)였다.
+fn blob_many<T: serde::de::DeserializeOwned>(
+    blobs: &HashMap<String, (u64, Vec<u8>)>,
+    key: &str,
+) -> Result<(u64, Vec<T>), String> {
+    let (seq, value): (u64, serde_json::Value) = blob(blobs, key)?;
+    let out = if value.is_array() {
+        serde_json::from_value(value).map_err(|e| e.to_string())?
+    } else {
+        vec![serde_json::from_value(value).map_err(|e| e.to_string())?]
+    };
+    Ok((seq, out))
+}
+
 /// 기록 파일에서 세션을 되살린다(같은 파일에 이어서 기록한다).
 pub fn recover(path: &Path) -> Result<Recovered, String> {
     let saved = collect_store::load(path).map_err(|e| e.to_string())?;
-    let (sheet_seq, mut model): (u64, SheetModel) = blob(&saved.blobs, BLOB_SHEET)?;
-    let (_, config): (u64, CollectConfig) = blob(&saved.blobs, BLOB_CONFIG)?;
-    let baseline: SheetModel = blob(&saved.blobs, BLOB_BASELINE).map(|(_, b)| b).unwrap_or_else(|_| model.clone());
+    let (sheet_seq, mut models): (u64, Vec<SheetModel>) = blob_many(&saved.blobs, BLOB_SHEET)?;
+    let (_, configs): (u64, Vec<CollectConfig>) = blob_many(&saved.blobs, BLOB_CONFIG)?;
+    let baselines: Vec<SheetModel> =
+        blob_many(&saved.blobs, BLOB_BASELINE).map(|(_, b)| b).unwrap_or_else(|_| models.clone());
+    if models.is_empty() || configs.len() != models.len() || baselines.len() != models.len() {
+        return Err("기록 파일이 손상되었습니다(시트 수가 맞지 않습니다)".into());
+    }
     let comms: CommsData = blob(&saved.blobs, BLOB_COMMS).map(|(_, c)| c).unwrap_or_default();
     let tokens: BTreeMap<String, String> = blob(&saved.blobs, BLOB_PEOPLE).map(|(_, t)| t).unwrap_or_default();
-    // 시트를 남긴 뒤의 기록을 되짚는다.
+    // 시트를 남긴 뒤의 기록을 그 시트에 되짚는다.
     for e in saved.changes.iter().filter(|e| e.seq > sheet_seq) {
-        if let Some(cell) = model.cell_mut(CellRef::new(e.row, e.col)) {
+        if let Some(cell) = models.get_mut(e.sheet as usize).and_then(|m| m.cell_mut(CellRef::new(e.row, e.col))) {
             cell.v = e.new.clone();
         }
     }
@@ -197,11 +250,19 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     let store = Store::open(path).map_err(|e| e.to_string())?;
     let host_meta = meta.get(META_SERVER).map(|v| (META_SERVER.to_string(), v.clone())).into_iter().collect();
     let restore =
-        Restore { log: saved.changes, snapshots: saved.snapshots, baseline, comms, closed, host_meta, tokens };
+        Restore { log: saved.changes, snapshots: saved.snapshots, baselines, comms, closed, host_meta, tokens };
+    let mut sheets = meta_sheets(&meta);
+    if sheets.len() != models.len() {
+        sheets = models.iter().map(|m| m.sheet.clone()).collect();
+    }
     Ok(Recovered {
-        init: SessionInit { model, config, store: Some(store), restore: Some(restore) },
+        init: SessionInit {
+            sheets: models.into_iter().zip(configs).collect(),
+            store: Some(store),
+            restore: Some(restore),
+        },
         workbook_id: meta.get("workbook").cloned().unwrap_or_default(),
-        sheet: meta.get("sheet").cloned().unwrap_or_default(),
+        sheets,
         server,
         meta,
         changes,

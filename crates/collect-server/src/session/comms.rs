@@ -65,6 +65,9 @@ pub(super) struct Notice {
 pub(super) struct Highlight {
     id: u32,
     at_ms: i64,
+    /// 세션 안 시트 순번(여러 시트 전의 기록은 0).
+    #[serde(default)]
+    sheet: u32,
     range: CellRange,
     note: String,
     audience: HighlightAudience,
@@ -135,6 +138,7 @@ pub struct HighlightSummary {
     pub id: u32,
     #[ts(type = "number")]
     pub at_ms: i64,
+    pub sheet: u32,
     pub range: CellRange,
     pub note: String,
     pub audience: HighlightAudience,
@@ -162,7 +166,7 @@ impl State {
         if let Some(name) = self.host_ips.iter().find_map(|ip| self.ip_names.get(*ip)) {
             return name.to_string();
         }
-        let r = self.config.requester.trim();
+        let r = self.sheets[0].config.requester.trim();
         if r.is_empty() { "호스트".into() } else { r.to_string() }
     }
 
@@ -186,6 +190,7 @@ impl State {
             id: h.id,
             at_ms: h.at_ms,
             from: self.host_name(),
+            sheet: h.sheet,
             range: h.range,
             note: h.note.clone(),
             acked: h.acked.contains_key(name),
@@ -199,13 +204,17 @@ impl State {
         if text.is_empty() {
             return;
         }
-        let roster: Vec<String> = self.access.roster().to_vec();
+        let roster: Vec<String> = self.roster.clone();
         let recipients: Vec<String> = match &target {
             NoticeTarget::All => roster,
+            // 필수 진행률은 모든 시트를 더해 본다.
             NoticeTarget::Incomplete => roster
                 .into_iter()
                 .enumerate()
-                .filter(|(i, _)| self.progress.by_person.get(*i).is_some_and(|p| p.filled < p.required))
+                .filter(|(i, _)| {
+                    let p = self.total_progress(*i);
+                    p.filled < p.required
+                })
                 .map(|(_, n)| n)
                 .collect(),
             NoticeTarget::People { names } => {
@@ -224,9 +233,11 @@ impl State {
         self.comms.rev += 1;
     }
 
-    pub(super) fn add_highlight(&mut self, range: CellRange, note: String, audience: HighlightAudience) {
-        let Some(range) = range.intersect(&self.model.bounds()) else { return };
-        let roster = self.access.roster().to_vec();
+    pub(super) fn add_highlight(&mut self, sheet: usize, range: CellRange, note: String, audience: HighlightAudience) {
+        let Some(slot) = self.sheets.get(sheet) else { return };
+        let Some(range) = range.intersect(&slot.model.bounds()) else { return };
+        let access = &self.rt[sheet].access;
+        let roster = self.roster.clone();
         let mut people: HashSet<usize> = HashSet::new();
         match audience {
             HighlightAudience::All => people.extend(0..roster.len()),
@@ -234,11 +245,11 @@ impl State {
                 if range.len() <= MAX_HIGHLIGHT_CELLS {
                     for at in range.cells() {
                         // 담당자가 없는 칸은 누구나 입력하므로 모두에게 보인다.
-                        if self.access.is_open(at) {
+                        if access.is_open(at) {
                             people.extend(0..roster.len());
                             break;
                         }
-                        people.extend(self.access.owners(at));
+                        people.extend(access.owners(at));
                     }
                 }
             }
@@ -247,13 +258,16 @@ impl State {
         let recipients: Vec<String> = roster
             .iter()
             .enumerate()
-            .filter(|(i, _)| people.contains(i) && (range.row..=range.last_row()).any(|r| self.row_visible(*i, r)))
+            .filter(|(i, _)| {
+                people.contains(i) && (range.row..=range.last_row()).any(|r| self.row_visible(sheet, *i, r))
+            })
             .map(|(_, n)| n.clone())
             .collect();
         let id = self.comms.id();
         let h = Highlight {
             id,
             at_ms: now_ms(),
+            sheet: sheet as u32,
             range,
             note: note.trim().chars().take(MAX_NOTE_CHARS).collect(),
             audience,
@@ -345,7 +359,7 @@ impl State {
         let id = self.comms.id();
         let msg = ChatMessage { id, at_ms: now_ms(), from, host, to, text };
         for (conn, p) in self.attached() {
-            let name = &self.access.roster()[p];
+            let name = &self.roster[p];
             if chat_visible(&msg, name) {
                 self.send(conn, ServerMsg::Chat(msg.clone()));
             }
@@ -404,6 +418,7 @@ impl State {
                     HighlightSummary {
                         id: h.id,
                         at_ms: h.at_ms,
+                        sheet: h.sheet,
                         range: h.range,
                         note: h.note.clone(),
                         audience: h.audience,
