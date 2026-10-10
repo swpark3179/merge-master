@@ -6,6 +6,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useEffect, useState } from "react";
 
 import { useStepFooter } from "../../frame";
+import { PreviewModal } from "./PreviewModal";
 import type { ImportState } from "./useImport";
 import { EXCEL_EXTENSIONS, useImport } from "./useImport";
 
@@ -336,17 +337,43 @@ function columnsLabel(cols: number[]): string {
 
 function PreviewCard({ s }: { s: ImportState }) {
   const [selection, setSelection] = useState<GridSelection | null>(null);
+  const [big, setBig] = useState(false);
   const m = s.preview;
   const ins = s.inspection;
   const facts = m ? summarize(m) : null;
   const assignee = ins?.assigneeCandidates[0];
+  const range = s.form ? parseRange(s.form.range) : null;
 
   return (
     <section className="card preview" aria-label="미리보기">
       <div className="card-head">
         <b>미리보기{s.sheet ? ` · ${s.sheet}` : ""}</b>
         {s.stale && m && <span className="muted small">설정이 바뀌어 다시 읽는 중입니다…</span>}
+        <span className="spacer" />
+        <button
+          className="ghost small"
+          onClick={() => setBig(true)}
+          disabled={!m}
+          title="미리보기를 창 가득 크게 봅니다"
+        >
+          ⤢ 크게 보기
+        </button>
       </div>
+      {big && m && s.form && (
+        <PreviewModal
+          model={m}
+          title={s.sheet ?? ""}
+          stale={s.stale}
+          selection={selection}
+          onSelectionChange={setSelection}
+          headerRows={s.form.headerRows}
+          frozenCols={s.form.frozenCols}
+          frozenMax={range ? Math.min(range.cols, MAX_FROZEN_COLS) : 0}
+          onHeaderRows={(headerRows) => s.update({ headerRows })}
+          onFrozenCols={(frozenCols) => s.update({ frozenCols })}
+          onClose={() => setBig(false)}
+        />
+      )}
       {m && facts ? (
         <div className="preview-body">
           <SheetGrid
