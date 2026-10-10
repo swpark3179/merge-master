@@ -3,4 +3,4 @@
 /**
  * 묶음이 어디서 왔나.
  */
-export type BatchOrigin = "edit" | "paste" | "clear" | "undo" | "redo" | "revert" | "restore" | "excel";
+export type BatchOrigin = "edit" | "paste" | "clear" | "undo" | "redo" | "revert" | "restore" | "excel" | "addRow";

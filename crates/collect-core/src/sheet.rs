@@ -233,6 +233,32 @@ impl SheetModel {
         self.cell(src).map(|c| &c.v)
     }
 
+    /// 표 아래에 빈 행을 `count`개 붙이고 그 범위를 돌려준다(참여자 '행 추가').
+    ///
+    /// 새 행은 마지막 데이터 행을 본뜬다: 칸 서식·행 높이를 따르고, 수식 칸은 수식을 한 행씩 내려 쓴다(값은 비움 —
+    /// Excel이 저장할 때 계산한다). 데이터 행이 없으면(머리글뿐) 기본 서식의 빈 행이다. 병합·유효성은 따르지 않는다.
+    pub fn append_rows(&mut self, count: u32) -> CellRange {
+        let start = self.rows;
+        let template = (self.rows > self.header_rows).then(|| self.rows - 1);
+        let height = template.and_then(|r| self.row_heights.get(r as usize).copied()).filter(|h| *h > 0.0);
+        for k in 0..count {
+            for c in 0..self.cols {
+                let cell = match template.and_then(|r| self.cell(CellRef::new(r, c))) {
+                    Some(src) => Cell {
+                        v: CellValue::Empty,
+                        f: src.f.as_deref().map(|f| crate::a1::shift_formula_rows(f, i64::from(k) + 1)),
+                        s: src.s,
+                    },
+                    None => Cell::default(),
+                };
+                self.cells.push(cell);
+            }
+            self.row_heights.push(height.unwrap_or(15.0));
+        }
+        self.rows += count;
+        CellRange::new(start, 0, count, self.cols.max(1))
+    }
+
     /// [`effective_value`](Self::effective_value)와 같지만 미리 만든 색인을 쓴다.
     pub fn effective_value_in(&self, index: &MergeIndex, at: CellRef) -> Option<&CellValue> {
         let src = index.get(at).map_or(at, |i| self.merges[i].top_left());
@@ -275,6 +301,30 @@ mod tests {
         assert_eq!(m.effective_value(CellRef::new(2, 0)), Some(&CellValue::Text("김민지".into())));
         assert_eq!(m.effective_value(CellRef::new(2, 1)), Some(&CellValue::Empty));
         assert_eq!(m.cell(CellRef::new(3, 0)), None);
+    }
+
+    #[test]
+    fn appended_rows_copy_the_last_row_style_and_formulas() {
+        let mut m = tiny();
+        m.cells[5].f = Some("=B2*2".into());
+        m.cells[5].s = 0;
+        m.cells[4].s = 0;
+        m.row_heights[2] = 20.0;
+        let r = m.append_rows(2);
+        assert_eq!((r.row, r.rows, r.cols), (3, 2, 2));
+        assert_eq!((m.rows, m.cells.len(), m.row_heights.len()), (5, 10, 5));
+        assert_eq!(m.cell(CellRef::new(3, 1)).unwrap().f.as_deref(), Some("=B3*2"));
+        assert_eq!(m.cell(CellRef::new(4, 1)).unwrap().f.as_deref(), Some("=B4*2"));
+        assert!(m.cell(CellRef::new(4, 0)).unwrap().v.is_empty());
+        assert_eq!(m.row_heights[4], 20.0);
+        assert_eq!(m.merges.len(), 1, "병합은 따르지 않는다");
+
+        let mut header_only = tiny();
+        header_only.rows = 1;
+        header_only.cells.truncate(2);
+        header_only.row_heights.truncate(1);
+        header_only.append_rows(1);
+        assert_eq!(header_only.cells[2], Cell::default());
     }
 
     #[test]

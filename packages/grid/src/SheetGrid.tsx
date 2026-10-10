@@ -75,7 +75,7 @@ function baseCss(s: CellStyle | undefined): CSSProperties {
     // background 단축 속성은 장식 클래스의 background-image(빗금)까지 지우므로 색만 지정한다.
     backgroundColor: s.fill !== undefined ? rgbHex(s.fill) : undefined,
     alignItems: s.vAlign === "top" ? "flex-start" : s.vAlign === "center" ? "center" : "flex-end",
-    whiteSpace: s.wrap ? "normal" : undefined,
+    whiteSpace: s.wrap ? "pre-wrap" : undefined,
   };
 }
 

@@ -6,4 +6,8 @@ export type HostSnapshot = { participants: Array<ParticipantRow>, pending: Array
 /**
  * 호스트가 취합을 마감했다.
  */
-closed: boolean, };
+closed: boolean, 
+/**
+ * 참여자에게 보이는 호스트 이름(호스트 PC의 IP가 IP 명단에 있으면 그 이름).
+ */
+hostName: string, };

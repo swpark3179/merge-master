@@ -174,9 +174,103 @@ pub fn col_from_letters(s: &str) -> Option<u32> {
     Some(n - 1)
 }
 
+/// Excel 시트의 마지막 행(1부터).
+const MAX_SHEET_ROW: i64 = 1_048_576;
+
+/// 수식 안 상대 행 참조(`F3`, `$F3`, `Sheet1!F3:F9`)의 행을 `delta`만큼 옮긴다(위 행의 수식을 아래로 채울 때).
+///
+/// 절대 행(`F$3`)·문자열(`"A1"`)·시트 이름(`'A1'!`)·표 참조(`[...]`)·함수 이름(`LOG10(`)은 건드리지 않는다.
+/// 행 번호만 보는 간단한 해석이라 화면 표시용이다(실제 계산은 Excel이 한다).
+pub fn shift_formula_rows(formula: &str, delta: i64) -> String {
+    let chars: Vec<char> = formula.chars().collect();
+    let mut out = String::with_capacity(formula.len());
+    let mut i = 0;
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '$';
+    while i < chars.len() {
+        let c = chars[i];
+        // 문자열·따옴표 시트 이름·표 참조는 통째로 그대로 둔다.
+        if let Some(close) = match c {
+            '"' => Some('"'),
+            '\'' => Some('\''),
+            '[' => Some(']'),
+            _ => None,
+        } {
+            let start = i;
+            i += 1;
+            while i < chars.len() {
+                if chars[i] == close {
+                    // 겹친 따옴표("" '')는 글자다.
+                    if close != ']' && chars.get(i + 1) == Some(&close) {
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                i += 1;
+            }
+            i = (i + 1).min(chars.len());
+            out.extend(&chars[start..i]);
+            continue;
+        }
+        let starts_word = word(c) && (i == 0 || !word(chars[i - 1]));
+        if !starts_word {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && word(chars[i]) {
+            i += 1;
+        }
+        let token: String = chars[start..i].iter().collect();
+        let next = chars.get(i).copied();
+        match (next != Some('(') && next != Some('!')).then(|| shift_ref(&token, delta)).flatten() {
+            Some(shifted) => out.push_str(&shifted),
+            None => out.push_str(&token),
+        }
+    }
+    out
+}
+
+/// `[$]열[$]행` 모양의 낱말이면 상대 행을 옮긴 것. 아니면(이름·숫자·절대 행) `None`.
+fn shift_ref(token: &str, delta: i64) -> Option<String> {
+    let body = token.strip_prefix('$').unwrap_or(token);
+    let letters = body.chars().take_while(char::is_ascii_alphabetic).count();
+    if letters == 0 || letters > 3 {
+        return None;
+    }
+    let (col, rest) = body.split_at(letters);
+    col_from_letters(col).filter(|&c| c < 16_384)?;
+    if rest.starts_with('$') {
+        return None; // 절대 행
+    }
+    if rest.is_empty() || !rest.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let row: i64 = rest.parse().ok()?;
+    let moved = row + delta;
+    if row == 0 || row > MAX_SHEET_ROW || !(1..=MAX_SHEET_ROW).contains(&moved) {
+        return None;
+    }
+    let prefix = &token[..token.len() - body.len()];
+    Some(format!("{prefix}{col}{moved}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formulas_shift_relative_rows_only() {
+        assert_eq!(shift_formula_rows("=F3/E3-1", 1), "=F4/E4-1");
+        assert_eq!(shift_formula_rows("=SUM($F3:F$9)+$A$1", 2), "=SUM($F5:F$9)+$A$1");
+        assert_eq!(shift_formula_rows("=LOG10(A2)&\"A1\"", 1), "=LOG10(A3)&\"A1\"");
+        assert_eq!(shift_formula_rows("='A1'!B2+Sheet1!C3", 1), "='A1'!B3+Sheet1!C4");
+        assert_eq!(shift_formula_rows("=표1[@금액]*1.1", 1), "=표1[@금액]*1.1");
+        assert_eq!(shift_formula_rows("=IF(A1>0,\"a\"\"b\",B1)", 1), "=IF(A2>0,\"a\"\"b\",B2)");
+        assert_eq!(shift_formula_rows("=A:A", 1), "=A:A");
+        assert_eq!(shift_formula_rows("=ROUND(F3,0)", 3), "=ROUND(F6,0)");
+    }
 
     #[test]
     fn letters_round_trip() {

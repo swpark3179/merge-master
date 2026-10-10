@@ -1138,7 +1138,42 @@ button.role {
   padding: 0 14px;
 }
 
-/* 담당자 배정 줄 */
+/* 담당자 배정: 첫 줄 행 배정 기준, 둘째 줄 고른 칸의 담당자 */
+.role-bar.assign-bar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+}
+
+.assign-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+}
+
+.assign-row + .assign-row {
+  border-top: 1px solid var(--line);
+}
+
+.assign-label {
+  flex: none;
+  width: 96px;
+  color: var(--ink);
+}
+
+.assign-field b {
+  width: 88px;
+  color: var(--ink);
+}
+
+.assign-range {
+  min-width: 90px;
+  color: var(--ink-2);
+}
+
 .assign-field {
   display: flex;
   align-items: center;
@@ -1163,7 +1198,7 @@ button.role {
 }
 
 .assign-person {
-  width: 110px;
+  width: 140px;
   height: 32px;
 }
 
@@ -1474,6 +1509,34 @@ button.role.eraser {
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+/* 그리드 아래: 고른 칸을 편집할 수 있는 사람 */
+.access-footer {
+  min-height: 30px;
+}
+
+.access-footer .editors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.access-footer .person {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+}
+
+.access-footer .person.anyone {
+  border-color: var(--role-input-ink);
+  background: var(--role-input);
+  font-weight: 600;
 }
 
 /* 오른쪽 패널 */
@@ -1811,6 +1874,80 @@ button.big-btn {
 .approve-form input {
   height: 28px;
   width: 150px;
+}
+
+.approve-form .check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.approve-form .check input {
+  width: auto;
+  height: auto;
+}
+
+/* 1c IP 명단 */
+.ipnames {
+  flex: none;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ipnames .card-head {
+  flex-wrap: wrap;
+}
+
+.host-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.iptable {
+  max-width: 720px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.ipr {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) 90px 60px;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.ipr:last-child {
+  border-bottom: 0;
+}
+
+.ipr.iphead {
+  min-height: 32px;
+  border-bottom: 1px solid var(--line);
+  background: var(--head);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ipr input {
+  height: 28px;
+}
+
+.ipr.ipadd {
+  background: var(--chrome);
+}
+
+.ipempty {
+  padding: 10px 12px;
 }
 
 .ptable {

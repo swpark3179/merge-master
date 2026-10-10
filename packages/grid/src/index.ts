@@ -3,7 +3,15 @@ export type { EditorState, Move } from "./CellEditor";
 export { SheetGrid } from "./SheetGrid";
 export type { CellDecoration, SheetGridHandle, SheetGridProps } from "./SheetGrid";
 export { parseTsv, toTsv } from "./clipboard";
-export { cellText, effectiveColumn, filterOptions, rowsNotMatching, withHiddenRows } from "./rows";
+export {
+  cellText,
+  effectiveColumn,
+  filterOptions,
+  FIT_MAX_LINES,
+  fitRowHeights,
+  rowsNotMatching,
+  withHiddenRows,
+} from "./rows";
 export {
   boxRect,
   buildLayout,

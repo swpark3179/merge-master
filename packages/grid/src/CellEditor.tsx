@@ -1,5 +1,5 @@
 import type { KeyboardEvent, RefObject } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import "./cell-editor.css";
 
@@ -52,6 +52,15 @@ export function CellEditor({
         : items.filter((i) => i.includes(text.trim()))
       : [];
   const [hi, setHi] = useState(-1);
+  /** 줄바꿈을 넣은 뒤 놓을 커서 위치. 새 글이 그려진 직후(다음 글자를 받기 전에) 맞춘다. 다음 프레임에 맞추면
+   *  그사이 친 글자가 줄바꿈 뒤로 밀려 순서가 뒤바뀐다. */
+  const caret = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (caret.current === null || !el) return;
+    el.setSelectionRange(caret.current, caret.current);
+    caret.current = null;
+  }, [text, inputRef]);
   useEffect(() => {
     setHi(items && text ? items.indexOf(text) : -1);
   }, [items, text, state?.listOpen]);
@@ -78,8 +87,8 @@ export function CellEditor({
           e.preventDefault();
           const el = e.currentTarget;
           const at = el.selectionStart;
+          caret.current = at + 1;
           onText(text.slice(0, at) + "\n" + text.slice(el.selectionEnd));
-          requestAnimationFrame(() => el.setSelectionRange(at + 1, at + 1));
           return;
         }
         return done(e.shiftKey ? [-1, 0] : [1, 0], state.listOpen && hi >= 0 ? filtered[hi] : undefined);

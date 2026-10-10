@@ -302,6 +302,9 @@ pub async fn save_run(
     let styles = options.export.styles;
     let closed = matches!(options.after, AfterSave::ReadOnly);
     let kept_count = kept.len() as u32;
+    let history_entries = snap.history.len() as u32;
+    // 저장 계획을 만든 시트(표 아래에 끼워 넣은 행을 기준 시트에 붙일 때 쓴 값 그대로).
+    let planned = snap.current;
     let session = state.session()?;
     session
         .with(move |s| {
@@ -314,6 +317,8 @@ pub async fn save_run(
                 s.host_set(EXCEL_USER, BatchOrigin::Excel, kept);
             }
             if original {
+                // 표 아래에 끼워 넣은 행은 이제 원본에 있다: 기준 시트에도 붙인다.
+                collect_core::export::adopt_rows(s.baseline, &planned);
                 for (at, v) in written {
                     if let Some(cell) = s.baseline.cell_mut(at) {
                         cell.v = v;
@@ -341,7 +346,7 @@ pub async fn save_run(
         at_ms: chrono::Utc::now().timestamp_millis(),
         path: report.path.clone(),
         original,
-        history_entries: snap.history.len() as u32,
+        history_entries,
     });
     Ok(SaveResult { report, original, kept: kept_count, closed, stopped })
 }

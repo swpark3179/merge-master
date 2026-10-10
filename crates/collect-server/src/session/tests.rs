@@ -48,11 +48,32 @@ impl Client {
 
 pub(super) fn connect(st: &mut State, conn: ConnId) -> Client {
     let (outbox, rx) = mpsc::unbounded_channel();
-    st.handle(Command::Connect { conn, ip: IpAddr::V4(Ipv4Addr::new(192, 168, 0, conn as u8)), outbox });
+    st.handle(Command::Connect { conn, ip: ip_of(conn), outbox });
     Client { conn, rx, closed: false }
 }
 
+pub(super) fn ip_of(conn: ConnId) -> IpAddr {
+    IpAddr::V4(Ipv4Addr::new(192, 168, 0, conn as u8))
+}
+
+/// IP 명단에 이 연결의 IP를 그 이름으로 올린다(호스트가 JSON으로 관리하는 명단).
+pub(super) fn list_ip(st: &mut State, conn: ConnId, name: &str) {
+    let mut entries = st.ip_names.entries();
+    entries.retain(|e| e.ip != ip_of(conn).to_string());
+    entries.push(crate::ipnames::IpEntry { ip: ip_of(conn).to_string(), name: name.into() });
+    st.ip_names = IpNames::from_entries(&entries).unwrap();
+}
+
+/// IP 명단에 있는 사람으로 들어온다(이 연결의 IP를 그 이름으로 올린 뒤 `join`).
 pub(super) fn join(st: &mut State, c: &Client, name: &str, token: Option<&str>) {
+    if !name.trim().is_empty() {
+        list_ip(st, c.conn, name.trim());
+    }
+    join_unlisted(st, c, name, token);
+}
+
+/// IP 명단 밖에서 이름으로 참여한다(호스트 승인이 필요하다).
+pub(super) fn join_unlisted(st: &mut State, c: &Client, name: &str, token: Option<&str>) {
     let msg = ClientMsg::Join { name: name.into(), token: token.map(String::from), protocol: PROTOCOL_VERSION };
     st.handle(Command::Client { conn: c.conn, msg });
 }
@@ -110,7 +131,7 @@ async fn roster_name_gets_projected_welcome() {
 async fn unknown_name_waits_for_host_then_gets_range() {
     let mut st = State::new(fixture());
     let mut a = connect(&mut st, 1);
-    join(&mut st, &a, "김민수", None);
+    join_unlisted(&mut st, &a, "김민수", None);
     assert!(matches!(a.take()[..], [ServerMsg::Pending { .. }]));
     assert_eq!(st.snapshot().pending, [PendingRow { name: "김민수".into(), ip: "192.168.0.1".into() }]);
 
@@ -128,7 +149,7 @@ async fn unknown_name_waits_for_host_then_gets_range() {
 async fn host_can_reject_or_kick() {
     let mut st = State::new(fixture());
     let mut a = connect(&mut st, 1);
-    join(&mut st, &a, "모르는사람", None);
+    join_unlisted(&mut st, &a, "모르는사람", None);
     a.take();
     st.reject("모르는사람").unwrap();
     assert!(matches!(a.take()[..], [ServerMsg::Rejected { .. }]) && a.closed);
@@ -277,4 +298,81 @@ fn summary_compresses_runs() {
     let lee = access.person("이서연").unwrap();
     let s = assignment_summary(&init.model, &init.config, &access, lee);
     assert!(s.starts_with("행 3–7 외 "), "{s}");
+}
+
+#[tokio::test]
+async fn unlisted_ip_needs_approval_even_for_roster_names_then_token_reenters() {
+    let mut st = State::new(fixture());
+    let mut a = connect(&mut st, 1);
+    join_unlisted(&mut st, &a, "김민지", None);
+    assert!(matches!(a.take()[..], [ServerMsg::Pending { .. }]));
+    // 명단에 그 이름이 있어도(설정이 바뀌어도) 승인 없이는 들어오지 않는다.
+    host(&mut st, |s| s.changed());
+    assert!(!a.take().iter().any(|m| matches!(m, ServerMsg::Welcome(_))));
+    st.approve("김민지", None, String::new()).unwrap();
+    let token = a.welcome().token;
+    assert_eq!(st.config.assignment.extra_people, Vec::<String>::new(), "이미 명단에 있는 이름");
+
+    // 같은 브라우저(토큰)는 다시 묻지 않는다. 다른 기기는 다시 승인을 기다리고, 승인하면 앞 기기는 끊긴다.
+    st.handle(Command::Disconnect { conn: 1 });
+    let mut b = connect(&mut st, 2);
+    join_unlisted(&mut st, &b, "김민지", Some(&token));
+    assert_eq!(b.welcome().name, "김민지");
+    let mut c = connect(&mut st, 3);
+    join_unlisted(&mut st, &c, "김민지", None);
+    assert!(matches!(c.take()[..], [ServerMsg::Pending { .. }]), "중복 확인 없이 승인 대기");
+    st.handle(Command::Client { conn: 3, msg: ClientMsg::SwitchDevice { name: "김민지".into() } });
+    assert!(c.take().is_empty(), "IP 명단 밖에서는 기기 전환을 할 수 없다");
+    st.approve("김민지", None, String::new()).unwrap();
+    c.welcome();
+    assert!(b.take().iter().any(|m| matches!(m, ServerMsg::Kicked { reason: KickReason::SwitchedDevice })));
+}
+
+#[tokio::test]
+async fn listed_ip_enters_with_its_name_and_joins_the_roster() {
+    let mut st = State::new(fixture());
+    let mut lee = connect(&mut st, 9);
+    join(&mut st, &lee, "이서연", None);
+    lee.welcome();
+    // 연결하자마자 IP 명단의 이름을 알려 주고, 보낸 이름과 상관없이 그 이름으로 들어온다.
+    list_ip(&mut st, 1, "한도윤");
+    let mut a = connect(&mut st, 1);
+    assert!(matches!(&a.take()[..], [ServerMsg::Known { name }] if name == "한도윤"));
+    join_unlisted(&mut st, &a, "아무개", None);
+    let w = a.welcome();
+    assert_eq!(w.name, "한도윤");
+    assert_eq!(st.config.assignment.extra_people, ["한도윤"], "명단에 없던 이름은 명단에 더한다");
+    assert!(lee.take().iter().any(|m| matches!(m, ServerMsg::Welcome(w) if w.roster.contains(&"한도윤".into()))));
+    assert!(st.snapshot().pending.is_empty());
+}
+
+#[tokio::test]
+async fn new_ip_list_admits_waiting_connections() {
+    let mut st = State::new(fixture());
+    let mut a = connect(&mut st, 1);
+    join_unlisted(&mut st, &a, "최도윤", None);
+    a.take();
+    let mut b = connect(&mut st, 2); // 이름 입력 화면
+    let names = IpNames::parse_json(r#"{"192.168.0.1": "최도윤", "192.168.0.2": "정하늘"}"#).unwrap();
+    st.handle(Command::SetIpNames(names));
+    assert_eq!(a.welcome().name, "최도윤");
+    assert!(st.snapshot().pending.is_empty());
+    assert!(matches!(&b.take()[..], [ServerMsg::Known { name }] if name == "정하늘"));
+}
+
+#[tokio::test]
+async fn host_is_shown_by_the_name_of_its_ip() {
+    let mut st = State::new(fixture());
+    st.host_ips = vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)), IpAddr::V4(Ipv4Addr::LOCALHOST)];
+    assert_eq!(st.snapshot().host_name, "박지훈", "명단에 없으면 요청자");
+    st.handle(Command::SetIpNames(IpNames::parse_json(r#"{"10.0.0.5": "정호스트"}"#).unwrap()));
+    assert_eq!(st.snapshot().host_name, "정호스트");
+    let mut a = connect(&mut st, 1);
+    join(&mut st, &a, "김민지", None);
+    let w = a.welcome();
+    assert_eq!(w.presence[0].name, "정호스트");
+    assert!(w.presence[0].host);
+    assert_eq!(host_get(&mut st, |s| s.host_name().to_string()), "정호스트");
+    host(&mut st, |s| s.chat(ChatTo::All, "안녕하세요"));
+    assert!(a.take().iter().any(|m| matches!(m, ServerMsg::Chat(c) if c.from == "정호스트" && c.host)));
 }

@@ -2,7 +2,8 @@
 //!
 //! - 칸 값: 변경 기록(`changes`)에 칸마다 남는다. 시트 전체(서식·병합·값)는 블롭 `sheet`로 가끔(시트를 확정할 때, 설정·서식이
 //!   바뀔 때, 스냅샷을 남길 때) 남기고, 복구할 때는 그 뒤 기록만 되짚는다.
-//! - 블롭 `baseline`(저장할 때 비교하는 기준 시트), `config`(취합 설정), `comms`(공지·강조·채팅)는 바뀔 때마다 통째로.
+//! - 블롭 `baseline`(저장할 때 비교하는 기준 시트), `config`(취합 설정), `comms`(공지·강조·채팅), `people`(입장한 사람의
+//!   재접속 토큰 — 앱을 다시 켜도 승인받은 브라우저는 다시 승인받지 않는다)는 바뀔 때마다 통째로.
 //! - 메타 `closed`(취합 마감), `server`(서비스 포트·경로·실행 여부: 다시 켜면 같은 포트로 연다).
 
 use std::collections::{BTreeMap, HashMap};
@@ -21,6 +22,7 @@ pub const BLOB_SHEET: &str = "sheet";
 pub const BLOB_BASELINE: &str = "baseline";
 pub const BLOB_CONFIG: &str = "config";
 pub const BLOB_COMMS: &str = "comms";
+pub const BLOB_PEOPLE: &str = "people";
 pub const META_CLOSED: &str = "closed";
 pub const META_SERVER: &str = "server";
 
@@ -39,6 +41,7 @@ pub(super) struct Persisted {
     baseline: Option<SheetModel>,
     comms_rev: Option<u64>,
     closed: Option<bool>,
+    tokens: Option<BTreeMap<String, String>>,
 }
 
 /// 파일에서 읽어 세션에 넘기는 것(시트·설정 밖의 상태).
@@ -50,6 +53,8 @@ pub struct Restore {
     pub(super) closed: bool,
     /// 호스트가 남긴 메타(서비스 상태).
     pub(super) host_meta: BTreeMap<String, String>,
+    /// 입장한 사람의 재접속 토큰(이름 → 토큰).
+    pub(super) tokens: BTreeMap<String, String>,
 }
 
 /// [`recover`] 결과.
@@ -72,6 +77,10 @@ impl State {
         self.next_seq - 1
     }
 
+    fn tokens(&self) -> BTreeMap<String, String> {
+        self.people.iter().map(|(name, p)| (name.clone(), p.token.clone())).collect()
+    }
+
     /// 시트 전체를 남긴다(그 뒤 기록만 되짚으면 된다).
     pub(super) fn persist_sheet(&self) {
         if let Some(store) = &self.store {
@@ -85,6 +94,16 @@ impl State {
         if self.persisted.comms_rev != Some(self.comms.rev) {
             store.blob(BLOB_COMMS, self.last_seq(), pack_json(&self.comms.to_data()));
             self.persisted.comms_rev = Some(self.comms.rev);
+        }
+        // 토큰은 입장할 때만 바뀐다(사람 수만큼만 비교).
+        let tokens_changed = match &self.persisted.tokens {
+            None => !self.people.is_empty(),
+            Some(t) => t.len() != self.people.len() || self.people.iter().any(|(n, p)| t.get(n) != Some(&p.token)),
+        };
+        if tokens_changed {
+            let tokens = self.tokens();
+            store.blob(BLOB_PEOPLE, self.last_seq(), pack_json(&tokens));
+            self.persisted.tokens = Some(tokens);
         }
         if !full {
             return;
@@ -121,6 +140,11 @@ impl State {
         self.baseline = r.baseline;
         self.closed = r.closed;
         self.host_meta = r.host_meta;
+        let now = tokio::time::Instant::now();
+        for (name, token) in r.tokens {
+            let person = super::Person { token, conn: None, last_active: now, cursor: None, ip: None };
+            self.people.insert(name, person);
+        }
         for e in &r.log {
             let i = (e.row * cols + e.col) as usize;
             if let Some(v) = self.versions.get_mut(i) {
@@ -139,6 +163,7 @@ impl State {
             baseline: Some(self.baseline.clone()),
             comms_rev: Some(self.comms.rev),
             closed: Some(self.closed),
+            tokens: Some(self.tokens()),
         };
     }
 }
@@ -158,6 +183,7 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     let (_, config): (u64, CollectConfig) = blob(&saved.blobs, BLOB_CONFIG)?;
     let baseline: SheetModel = blob(&saved.blobs, BLOB_BASELINE).map(|(_, b)| b).unwrap_or_else(|_| model.clone());
     let comms: CommsData = blob(&saved.blobs, BLOB_COMMS).map(|(_, c)| c).unwrap_or_default();
+    let tokens: BTreeMap<String, String> = blob(&saved.blobs, BLOB_PEOPLE).map(|(_, t)| t).unwrap_or_default();
     // 시트를 남긴 뒤의 기록을 되짚는다.
     for e in saved.changes.iter().filter(|e| e.seq > sheet_seq) {
         if let Some(cell) = model.cell_mut(CellRef::new(e.row, e.col)) {
@@ -170,7 +196,8 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     let changes = saved.changes.len();
     let store = Store::open(path).map_err(|e| e.to_string())?;
     let host_meta = meta.get(META_SERVER).map(|v| (META_SERVER.to_string(), v.clone())).into_iter().collect();
-    let restore = Restore { log: saved.changes, snapshots: saved.snapshots, baseline, comms, closed, host_meta };
+    let restore =
+        Restore { log: saved.changes, snapshots: saved.snapshots, baseline, comms, closed, host_meta, tokens };
     Ok(Recovered {
         init: SessionInit { model, config, store: Some(store), restore: Some(restore) },
         workbook_id: meta.get("workbook").cloned().unwrap_or_default(),

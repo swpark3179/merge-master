@@ -3,12 +3,13 @@
 //! - `GET /{slug}`        참여자 웹(SPA) — `apps/participant/dist`를 바이너리에 넣어 서빙
 //! - `GET /assets/*`      SPA 정적 파일
 //! - `GET /api/session`   접속 전 공개 정보(제목·요청자·안내·마감·접속자 수)
-//! - `GET /ws`            WebSocket — [`protocol`] v2. 시트는 입장한 뒤에만, 그 사람 기준으로 보낸다.
+//! - `GET /ws`            WebSocket — [`protocol`]. 시트는 입장한 뒤에만, 그 사람 기준으로 보낸다.
 //!
 //! 상태는 [`session`] 액터 하나가 소유한다. 세션은 시트를 확정할 때 만들어지고([`SessionHandle::spawn`]),
 //! 서버는 서비스를 시작할 때 그 세션에 붙었다가 중지하면 떨어진다(세션과 편집 내용은 그대로 남는다).
 
 mod guard;
+pub mod ipnames;
 mod net;
 pub mod protocol;
 pub mod session;
@@ -28,6 +29,7 @@ use collect_core::CellRange;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+pub use ipnames::{IpEntry, IpNames, IpNamesView};
 pub use net::{LanAddress, lan_addresses};
 pub use protocol::{ClientMsg, ServerMsg};
 pub use session::{
@@ -128,6 +130,7 @@ fn router(state: Arc<AppState>) -> Router {
             .route("/__dev/kick", post(dev_kick))
             .route("/__dev/unlock", post(dev_unlock))
             .route("/__dev/config", post(dev_config))
+            .route("/__dev/ip-names", post(dev_ip_names))
             .route("/__dev/formulas", post(dev_formulas))
             .route("/__dev/close", post(dev_close))
             .route("/__dev/notice", post(dev_notice))
@@ -199,6 +202,9 @@ struct DevConfig {
     deadline: Option<String>,
     #[serde(default)]
     format: Option<collect_core::config::FormatPolicy>,
+    /// 참여자 행 추가 허용.
+    #[serde(default)]
+    add_rows: Option<bool>,
 }
 
 async fn dev_config(State(state): State<Arc<AppState>>, Json(req): Json<DevConfig>) -> Response {
@@ -211,10 +217,24 @@ async fn dev_config(State(state): State<Arc<AppState>>, Json(req): Json<DevConfi
             if let Some(f) = req.format {
                 s.config.permissions.format = f;
             }
+            if let Some(on) = req.add_rows {
+                s.config.permissions.add_rows = on;
+            }
             s.changed();
         })
         .await;
     dev_result(r.map(|_| "ok"))
+}
+
+/// IP 명단 바꾸기(E2E: 이 PC를 명단에 올리면 이름 없이 바로 들어온다). 본문은 명단 JSON 파일 내용.
+async fn dev_ip_names(State(state): State<Arc<AppState>>, body: String) -> Response {
+    match IpNames::parse_json(&body) {
+        Ok(names) => {
+            state.session.set_ip_names(names);
+            dev_result(Ok("ok"))
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, e).into_response(),
+    }
 }
 
 /// 수식 결과 밀어 넣기(E2E: Excel 없이 재계산 결과 알림 경로를 확인). `[["G3", 0.05], ...]`

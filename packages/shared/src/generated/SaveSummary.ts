@@ -4,7 +4,7 @@ import type { PersonMissing } from "./PersonMissing";
 
 export type SaveSummary = { required: number, filled: number, 
 /**
- * 아무에게도 배정되지 않은 필수 칸.
+ * 담당자가 없는 필수 칸(누구나 입력할 수 있다).
  */
 unassigned: number, people: Array<PersonMissing>, 
 /**
@@ -18,4 +18,8 @@ styleCells: number, mergeChanges: number,
 /**
  * 앱에서 크기를 바꾼 열·행 수.
  */
-sizeChanges: number, };
+sizeChanges: number, 
+/**
+ * 참여자가 표 아래에 추가한 행 수(저장할 때 Excel에 끼워 넣는다).
+ */
+addedRows: number, };

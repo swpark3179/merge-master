@@ -7,6 +7,8 @@
 //! - 호스트 화면(1c 접속자 표)에는 [`HostSnapshot`]을, 1i 소통 패널에는 [`CommsSnapshot`]을 `watch` 채널로,
 //!   1d 모니터링 그리드에는 셀 변경([`HostEvent`])을 `broadcast` 채널로 내보낸다.
 //! - 셀 변경 기록과 스냅샷은 저장소([`Store`], SQLite)가 있으면 파일에도 남긴다.
+//! - 접속: 호스트의 IP 명단([`IpNames`])에 있는 IP는 그 이름으로 바로 들어오고, 명단 밖 IP는 이름을 입력한 뒤 호스트가
+//!   승인해야 들어온다. 승인받은 브라우저는 재접속 토큰으로 다시 묻지 않는다(토큰은 기록 파일에도 남아 앱을 다시 켜도 유효).
 
 mod comms;
 mod edit;
@@ -16,13 +18,13 @@ mod snapshots;
 pub use comms::CommsData;
 pub use comms::{CommsSnapshot, HighlightAudience, HighlightSummary, NoticeSummary, NoticeTarget};
 pub use persist::{
-    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_SHEET, META_CLOSED, META_SERVER, Recovered, Restore, ServerMeta,
-    recover,
+    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_SERVER, Recovered, Restore,
+    ServerMeta, recover,
 };
 pub use snapshots::AUTO_SNAPSHOT;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use collect_core::access::{Access, ProgressStats};
@@ -39,6 +41,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::Instant;
 use ts_rs::TS;
 
+use crate::ipnames::IpNames;
 use crate::protocol::{
     CellUpdate, ChangeEntry, ChatTo, ClientMsg, KickReason, LockEntry, PROTOCOL_VERSION, PresenceEntry, PresenceStatus,
     ServerMsg, SessionInfo, StyleChange, Welcome,
@@ -150,6 +153,8 @@ pub struct HostSnapshot {
     pub read_only: bool,
     /// 호스트가 취합을 마감했다.
     pub closed: bool,
+    /// 참여자에게 보이는 호스트 이름(호스트 PC의 IP가 IP 명단에 있으면 그 이름).
+    pub host_name: String,
 }
 
 /// 수식 재계산 요청: 바뀐 입력 칸(모델 좌표)과 값. 호스트(Excel)가 계산해 [`SessionHandle::formula_results`]로 돌려준다.
@@ -180,12 +185,19 @@ pub struct Shared<'a> {
     history: &'a [ChangeEntry],
     snapshots: &'a [(SnapshotMeta, Vec<u8>)],
     closed: bool,
+    host_name: String,
     changed: bool,
     replaced: bool,
     actions: Vec<Action>,
 }
 
 impl Shared<'_> {
+    /// 호스트 이름(변경 기록·공지·채팅에 남는다): 호스트 PC의 IP가 IP 명단에 있으면 그 이름, 없으면 요청자, 그것도
+    /// 없으면 '호스트'.
+    pub fn host_name(&self) -> &str {
+        &self.host_name
+    }
+
     /// 설정·서식을 바꿨다: 권한을 다시 계산하고 접속 중인 참여자에게 새 시트를 보낸다.
     pub fn changed(&mut self) {
         self.changed = true;
@@ -235,9 +247,14 @@ impl Shared<'_> {
         self.snapshots.iter().map(|(m, _)| m.clone()).collect()
     }
 
-    /// 스냅샷의 셀 값(행 우선).
+    /// 스냅샷의 셀 값(행 우선). 스냅샷 뒤에 표 아래에 붙인 행은 빈 칸으로 채워 지금 시트 크기로 돌려준다.
     pub fn snapshot_values(&self, id: u32) -> Option<Vec<CellValue>> {
-        snapshots::values_of(self.snapshots, id)
+        let mut values = snapshots::values_of(self.snapshots, id)?;
+        let cols = self.model.cols.max(1) as usize;
+        if values.len() < self.model.cells.len() && values.len() % cols == 0 {
+            values.resize(self.model.cells.len(), CellValue::Empty);
+        }
+        Some(values)
     }
 
     /// 지금 시트로 스냅샷을 남긴다(작업이 끝난 뒤).
@@ -307,6 +324,7 @@ pub(crate) enum Command {
     Kick { name: String, reply: oneshot::Sender<Result<(), String>> },
     Unlock { name: String, reply: oneshot::Sender<Result<(), String>> },
     With(HostJob),
+    SetIpNames(IpNames),
     SetRecalc(Option<mpsc::UnboundedSender<RecalcRequest>>),
     Formulas(Vec<(CellRef, CellValue)>),
     Tick,
@@ -396,7 +414,8 @@ impl SessionHandle {
         .await
     }
 
-    /// 명단에 없는 이름을 승인한다: 명단에 넣고(범위를 주면 범위 배정도) 기다리던 참여자를 들인다.
+    /// 승인을 기다리는 참여자를 들인다: 명단에 없는 이름이면 명단에 넣고(범위를 주면 범위 배정도) 들인다.
+    /// 같은 이름이 다른 기기에서 접속 중이면 그 연결은 끊는다.
     pub async fn approve(&self, name: &str, range: Option<CellRange>, note: &str) -> Result<(), String> {
         let (name, note) = (name.to_string(), note.to_string());
         self.ask(|reply| Command::Approve { name, range, note, reply }).await?
@@ -416,6 +435,11 @@ impl SessionHandle {
     pub async fn unlock(&self, name: &str) -> Result<(), String> {
         let name = name.to_string();
         self.ask(|reply| Command::Unlock { name, reply }).await?
+    }
+
+    /// IP 명단을 바꾼다(호스트가 고치거나 JSON 파일을 불러옴). 명단에 새로 든 IP에서 기다리던 사람은 바로 들인다.
+    pub fn set_ip_names(&self, names: IpNames) {
+        self.send(Command::SetIpNames(names));
     }
 
     /// 수식 재계산을 맡을 곳(호스트의 Excel). `None`이면 끈다.
@@ -523,6 +547,12 @@ struct State {
     log: Vec<ChangeEntry>,
     next_seq: u64,
     recalc: Option<mpsc::UnboundedSender<RecalcRequest>>,
+    /// 계산 사본에 있는 행 수(재계산을 켤 때의 시트). 그 뒤 붙인 행은 사본에 없어 저장할 때 계산한다.
+    recalc_rows: u32,
+    /// 호스트가 관리하는 IP별 이름: 이 IP에서 오면 이름을 묻지 않고 그 이름으로 들어온다.
+    ip_names: IpNames,
+    /// 이 PC(호스트)의 IP. IP 명단에 있으면 그 이름이 호스트 이름이다.
+    host_ips: Vec<IpAddr>,
     // ---- 6단계
     comms: comms::Comms,
     snapshots: snapshots::Snapshots,
@@ -535,6 +565,14 @@ struct State {
 
 fn new_token() -> String {
     uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// 이 PC의 IP(LAN 주소 + loopback).
+fn local_ips() -> Vec<IpAddr> {
+    let mut out: Vec<IpAddr> = crate::net::lan_addresses().iter().filter_map(|a| a.ip.parse().ok()).collect();
+    out.push(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    out.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    out
 }
 
 fn parse_deadline(text: Option<&str>) -> Option<chrono::NaiveDateTime> {
@@ -572,6 +610,9 @@ impl State {
             log: Vec::new(),
             next_seq: 1,
             recalc: None,
+            recalc_rows: 0,
+            ip_names: IpNames::default(),
+            host_ips: local_ips(),
             comms: comms::Comms::default(),
             snapshots: snapshots::Snapshots::default(),
             store,
@@ -603,11 +644,16 @@ impl State {
         match cmd {
             Command::Connect { conn, ip, outbox } => {
                 self.conns.insert(conn, Conn { outbox, ip, name: None });
+                if let Some(name) = self.known_name(conn) {
+                    self.send(conn, ServerMsg::Known { name });
+                }
             }
             Command::Client { conn, msg } => self.client(conn, msg),
             Command::Disconnect { conn } => self.disconnect(conn),
             Command::Approve { name, range, note, reply } => {
                 let _ = reply.send(self.approve(&name, range, note));
+                self.persist(true); // 명단·범위 배정이 바뀌었다
+                return None;
             }
             Command::Reject { name, reply } => {
                 let _ = reply.send(self.reject(&name));
@@ -623,7 +669,11 @@ impl State {
                 self.persist(true);
                 return Some(done);
             }
-            Command::SetRecalc(tx) => self.recalc = tx,
+            Command::SetIpNames(names) => self.set_ip_names(names),
+            Command::SetRecalc(tx) => {
+                self.recalc = tx;
+                self.recalc_rows = self.model.rows;
+            }
             Command::Formulas(values) => self.formulas(values),
             Command::Tick => {
                 self.expire_locks();
@@ -655,6 +705,7 @@ impl State {
             ClientMsg::AckNotice { id } => self.ack_notice(conn, id),
             ClientMsg::AckHighlight { id } => self.ack_highlight(conn, id),
             ClientMsg::Chat { to, text } => self.chat(conn, to, text),
+            ClientMsg::AddRows { count } => self.add_rows(conn, count),
         }
     }
 
@@ -699,24 +750,32 @@ impl State {
 
     // ------------------------------------------------------------ 접속
 
+    /// 연결한 IP가 IP 명단에 있으면 그 이름.
+    fn known_name(&self, conn: ConnId) -> Option<String> {
+        let c = self.conns.get(&conn)?;
+        self.ip_names.get(c.ip).map(str::to_string)
+    }
+
     fn join(&mut self, conn: ConnId, name: &str, token: Option<String>, protocol: u32) {
         if protocol != PROTOCOL_VERSION {
             self.send(conn, ServerMsg::Rejected { reason: "화면이 오래되었습니다. 새로 고침해 주세요".into() });
             self.close(conn);
             return;
         }
+        if self.conns.get(&conn).is_none_or(|c| c.name.is_some()) {
+            return; // 이미 입장한 연결
+        }
+        let token = token.filter(|t| t.len() <= MAX_TOKEN_CHARS);
+        if let Some(known) = self.known_name(conn) {
+            return self.join_known(conn, &known, token);
+        }
         let name = name.trim();
         if name.is_empty() || name.chars().count() > MAX_NAME_CHARS {
             self.send(conn, ServerMsg::Rejected { reason: format!("이름을 확인해 주세요 (1~{MAX_NAME_CHARS}자)") });
             return;
         }
-        if self.conns.get(&conn).is_none_or(|c| c.name.is_some()) {
-            return; // 이미 입장한 연결
-        }
-        let token = token.filter(|t| t.len() <= MAX_TOKEN_CHARS);
-        let in_roster = self.access.person(name).is_some();
-        // 같은 브라우저의 재접속(토큰 일치): 남아 있던 연결이 있으면 이쪽으로 넘긴다.
-        if in_roster
+        // 승인받은 적 있는 브라우저의 재접속(토큰 일치): 남아 있던 연결이 있으면 이쪽으로 넘긴다.
+        if self.access.person(name).is_some()
             && let (Some(token), Some(p)) = (&token, self.people.get(name))
             && p.token == *token
         {
@@ -726,15 +785,7 @@ impl State {
             self.attach(conn, name, Some(token.clone()));
             return;
         }
-        if in_roster {
-            if self.people.get(name).is_some_and(|p| p.conn.is_some()) {
-                self.send(conn, ServerMsg::DupName { name: name.to_string() });
-            } else {
-                self.attach(conn, name, None);
-            }
-            return;
-        }
-        // 명단에 없는 이름: 호스트 승인을 기다린다. 같은 이름으로 다시 요청하면 앞 요청을 대신한다.
+        // IP 명단 밖: 호스트 승인을 기다린다. 같은 이름으로 다시 요청하면 앞 요청을 대신한다.
         if let Some(i) = self.pending.iter().position(|p| p.name == name) {
             let old = self.pending.remove(i).conn;
             if old != conn {
@@ -742,19 +793,66 @@ impl State {
                 self.close(old);
             }
         }
+        self.pending.retain(|p| p.conn != conn);
         self.pending.push(Pending { name: name.to_string(), conn });
         self.send(conn, ServerMsg::Pending { name: name.to_string() });
     }
 
-    fn switch_device(&mut self, conn: ConnId, name: &str) {
-        let name = name.trim();
-        if self.access.person(name).is_none() || self.conns.get(&conn).is_none_or(|c| c.name.is_some()) {
-            return;
-        }
-        if let Some(old) = self.people.get(name).and_then(|p| p.conn).filter(|&c| c != conn) {
+    /// IP 명단에 있는 IP: 그 이름으로 바로 들어온다(명단에 없던 이름이면 명단에 더한다). 같은 이름이 다른 연결에서
+    /// 접속 중이면 토큰이 맞을 때만 넘기고, 아니면 '이 기기로 전환'을 묻는다.
+    fn join_known(&mut self, conn: ConnId, name: &str, token: Option<String>) {
+        self.pending.retain(|p| p.conn != conn);
+        if let Some(p) = self.people.get(name)
+            && let Some(old) = p.conn.filter(|&c| c != conn)
+        {
+            if token.as_deref() != Some(p.token.as_str()) {
+                self.send(conn, ServerMsg::DupName { name: name.to_string() });
+                return;
+            }
             self.kick_conn(old, KickReason::SwitchedDevice);
         }
-        self.attach(conn, name, None);
+        if self.access.person(name).is_none() {
+            if let Err(e) = self.config.apply(&self.model, ConfigEdit::AddPerson { name: name.into() }) {
+                self.send(conn, ServerMsg::Rejected { reason: e.to_string() });
+                return;
+            }
+            self.recompile();
+            self.resync();
+            self.persist(true);
+        }
+        let token = token.filter(|t| self.people.get(name).is_some_and(|p| p.token == *t));
+        self.attach(conn, name, token);
+    }
+
+    /// IP 명단을 바꾼다. 새로 든 IP에서 기다리던(승인 대기·이름 입력 중) 연결은 그 이름으로 들인다.
+    fn set_ip_names(&mut self, names: IpNames) {
+        self.ip_names = names;
+        let waiting: Vec<(ConnId, String)> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| c.name.is_none())
+            .filter_map(|(id, c)| Some((*id, self.ip_names.get(c.ip)?.to_string())))
+            .collect();
+        for (conn, name) in waiting {
+            if self.pending.iter().any(|p| p.conn == conn) {
+                self.join_known(conn, &name, None);
+            } else {
+                self.send(conn, ServerMsg::Known { name });
+            }
+        }
+        self.refresh_presence(); // 호스트 이름이 바뀌었을 수 있다
+    }
+
+    /// '이 기기로 전환': IP 명단의 이름으로 접속 중인 다른 연결을 끊고 이 연결로 들어온다.
+    fn switch_device(&mut self, conn: ConnId, _name: &str) {
+        let Some(name) = self.known_name(conn) else { return };
+        if self.conns.get(&conn).is_none_or(|c| c.name.is_some()) {
+            return;
+        }
+        if let Some(old) = self.people.get(&name).and_then(|p| p.conn).filter(|&c| c != conn) {
+            self.kick_conn(old, KickReason::SwitchedDevice);
+        }
+        self.join_known(conn, &name, None);
     }
 
     fn kick_conn(&mut self, conn: ConnId, reason: KickReason) {
@@ -847,16 +945,27 @@ impl State {
 
     fn approve(&mut self, name: &str, range: Option<CellRange>, note: String) -> Result<(), String> {
         let name = name.trim();
+        let waiting = self.pending.iter().find(|p| p.name == name).map(|p| p.conn);
+        let mut changed = false;
         if self.access.person(name).is_none() {
             self.config.apply(&self.model, ConfigEdit::AddPerson { name: name.into() }).map_err(|e| e.to_string())?;
+            changed = true;
         }
         if let Some(range) = range {
             let edit = ConfigEdit::AssignRange { range, person: name.into(), note };
             self.config.apply(&self.model, edit).map_err(|e| e.to_string())?;
+            changed = true;
         }
-        self.recompile();
-        self.resync();
-        if let Some(conn) = self.pending.iter().find(|p| p.name == name).map(|p| p.conn) {
+        // 명단에 이미 있는 이름을 그대로 들일 때는 권한이 그대로라 모두에게 시트를 다시 보내지 않는다.
+        if changed {
+            self.recompile();
+            self.resync();
+        }
+        if let Some(conn) = waiting {
+            // 호스트가 이 기기를 들였다: 같은 이름으로 다른 기기에서 접속 중이면 그쪽은 끊는다.
+            if let Some(old) = self.people.get(name).and_then(|p| p.conn).filter(|&c| c != conn) {
+                self.kick_conn(old, KickReason::SwitchedDevice);
+            }
             self.attach(conn, name, None);
         }
         Ok(())
@@ -879,6 +988,7 @@ impl State {
     }
 
     fn host_job(&mut self, job: HostJob) -> Completion {
+        let host_name = self.host_name();
         let (changed, replaced, actions, done) = {
             let mut shared = Shared {
                 model: &mut self.model,
@@ -887,6 +997,7 @@ impl State {
                 history: &self.log,
                 snapshots: &self.snapshots.list,
                 closed: self.closed,
+                host_name,
                 changed: false,
                 replaced: false,
                 actions: Vec::new(),
@@ -1009,16 +1120,7 @@ impl State {
                 }
             }
         }
-        // 명단에 새로 들어온 이름으로 기다리던 사람은 들인다.
-        let ready: Vec<(ConnId, String)> = self
-            .pending
-            .iter()
-            .filter(|p| self.access.person(&p.name).is_some())
-            .map(|p| (p.conn, p.name.clone()))
-            .collect();
-        for (conn, name) in ready {
-            self.attach(conn, &name, None);
-        }
+        // 승인을 기다리던 사람은 명단에 그 이름이 생겨도 호스트가 승인해야 들어온다.
         self.refresh_presence();
     }
 
@@ -1109,9 +1211,8 @@ impl State {
     }
 
     fn presence(&self) -> Vec<PresenceEntry> {
-        let host = if self.config.requester.trim().is_empty() { "호스트" } else { self.config.requester.trim() };
         let mut out = vec![PresenceEntry {
-            name: host.to_string(),
+            name: self.host_name(),
             color: -1,
             status: PresenceStatus::Online,
             cursor: None,
@@ -1200,6 +1301,7 @@ impl State {
             filled: self.progress.filled,
             read_only: self.read_only,
             closed: self.closed,
+            host_name: self.host_name(),
         }
     }
 }

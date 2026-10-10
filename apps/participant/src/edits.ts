@@ -102,8 +102,15 @@ export class EditState {
 
   /** 입장·재접속·설정 변경으로 새 시트를 받았다. 아직 답을 못 받은 내 입력은 그 위에 다시 그린다. */
   load(welcome: Welcome) {
-    // 호스트가 다른 시트로 다시 불러왔으면 되돌리기 기록은 의미가 없다.
-    if (this.model && (this.model.rows !== welcome.model.rows || this.model.cols !== welcome.model.cols)) {
+    // 호스트가 다른 시트로 다시 불러왔으면 되돌리기 기록은 의미가 없다. 표 아래에 행이 붙은 것(행만 늘어남)은 같은
+    // 시트라 좌표가 그대로이므로 기록을 남긴다.
+    const grown =
+      this.model &&
+      this.model.cols === welcome.model.cols &&
+      welcome.model.rows > this.model.rows &&
+      this.model.workbook === welcome.model.workbook &&
+      this.model.sheet === welcome.model.sheet;
+    if (this.model && !grown && (this.model.rows !== welcome.model.rows || this.model.cols !== welcome.model.cols)) {
       this.undoStack = [];
       this.redoStack = [];
     }

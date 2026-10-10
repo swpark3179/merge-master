@@ -4,6 +4,6 @@ import type { PersonProgress } from "./PersonProgress";
 
 export type ProgressStats = { required: number, filled: number, 
 /**
- * 아무에게도 배정되지 않은 필수 셀(누구도 채울 수 없음 → 설정 실수 경고).
+ * 담당자가 없는 필수 셀(누구나 입력할 수 있다). 담당자별 진행률에는 들지 않는다.
  */
 unassigned: number, byPerson: Array<PersonProgress>, byColumn: Array<ColumnProgress>, };

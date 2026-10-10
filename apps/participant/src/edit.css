@@ -513,14 +513,86 @@ button.small {
   min-width: 0;
 }
 
-.panel-tabs {
+/* 오른쪽 사이드바 열기·닫기(셀 내용·알림·채팅·셀 이력) */
+.side-toggle.on {
+  background: var(--ink);
+  color: #fff;
+}
+
+/* 사이드바 '셀 내용': 고른 칸의 위치·형식과 내용 전체(여러 줄) */
+.cell-detail {
+  gap: 8px;
+}
+
+.detail-head {
   display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.detail-head .addr {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.cell-detail .cell-tags {
+  display: flex;
+  flex-wrap: wrap;
   gap: 4px;
 }
 
-.panel-tabs button.on {
-  background: var(--ink);
-  color: #fff;
+.cell-detail .hint-bar {
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+textarea.detail-text {
+  flex: 1;
+  min-height: 160px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+
+textarea.detail-text:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.detail-select {
+  height: 34px;
+}
+
+.detail-value {
+  min-height: 60px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  font-size: 14px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cell-error-text {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.detail-dirty {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .badge {

@@ -7,6 +7,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useToast } from "../../frame";
 import { useHostEditor } from "../../useHostEditor";
+import { cellsRole, rangeAccess } from "./access";
 import {
   AssignBar,
   ColumnPanel,
@@ -203,7 +204,7 @@ export function ConfigScreen({ model: initial, active }: Props) {
                 ? `${colLetters(model.origin.col + keyCol)}열 기준 · ${view?.roster.length ?? 0}명`
                 : view && view.roster.length > 0
                   ? `${view.roster.length}명`
-                  : "배정 안 함"}
+                  : "배정 없음 · 누구나"}
             </span>
           </button>
         </div>
@@ -248,7 +249,7 @@ export function ConfigScreen({ model: initial, active }: Props) {
             )}
           </div>
         </div>
-        <Legend s={s} />
+        {tab === "roles" ? <Legend s={s} /> : <AccessFooter s={s} />}
       </div>
       {view && (
         <aside className="config-side" aria-label="설정 패널">
@@ -417,9 +418,16 @@ function RoleBar({ s }: { s: ConfigState }) {
   const brush = (b: Brush) => s.range && void s.apply({ op: "brush", range: s.range, brush: b });
   const r = s.range;
   const whole = r !== null && r.row <= s.model.headerRows && r.row + r.rows >= s.model.rows;
-  // 고른 열이 모두 같은 역할이면 그 역할을 켠 것으로 보인다(일부 칸만 고르면 셀 예외가 된다).
+  // 열 전체를 골랐으면 그 열들의 역할, 일부 칸만 골랐으면 그 칸들의 실제 역할(셀 예외 반영)을 켠 것으로 보인다.
   const cols = r ? s.view!.config.columns.slice(r.col, r.col + r.cols) : [];
-  const role = whole && cols.length > 0 && cols.every((c) => c.role === cols[0]!.role) ? cols[0]!.role : null;
+  const role = !r
+    ? null
+    : whole
+      ? cols.length > 0 && cols.every((c) => c.role === cols[0]!.role)
+        ? cols[0]!.role
+        : null
+      : (cellsRole(s.flags, s.model.cols, r) ??
+        (cols.length > 0 && cols.every((c) => c.role === cols[0]!.role) ? cols[0]!.role : null));
   const hint = !r
     ? "열 머리글(A, B, C…)을 누르거나 범위를 끌어 고르세요. Shift로 여러 열을 함께 고를 수 있어요."
     : whole
@@ -526,10 +534,55 @@ function ViewerBanner({ s }: { s: ConfigState }) {
   );
 }
 
+/** '담당자 배정' 탭 그리드 아래: 고른 칸을 편집할 수 있는 사람(담당자가 없으면 누구나), 참여자 행 추가 스위치. */
+function AccessFooter({ s }: { s: ConfigState }) {
+  const { view, range, model } = s;
+  const acc = view && range ? rangeAccess(view, s.flags, model.cols, range) : null;
+  const inputCells = acc ? acc.cells - acc.locked : 0;
+  return (
+    <footer className="legend access-footer" aria-label="편집할 수 있는 사람">
+      {!view ? null : !range || !acc ? (
+        <span className="muted">칸을 고르면 그 칸을 편집할 수 있는 사람이 보입니다.</span>
+      ) : (
+        <>
+          <span className="access-where">
+            <span className="mono">{rangeLabel(model, range)}</span>
+            {acc.cells > 1 && <span className="muted"> · {acc.cells.toLocaleString()}칸</span>}
+          </span>
+          <b>편집 가능</b>
+          {inputCells === 0 ? (
+            <span className="muted" data-testid="editors">
+              없음 — 잠금 칸이라 참여자는 편집할 수 없습니다
+            </span>
+          ) : (
+            <span className="editors" data-testid="editors">
+              {acc.open > 0 && (
+                <span className="person anyone" title="담당자가 없는 입력 칸은 누구나 편집할 수 있습니다">
+                  누구나{acc.open < inputCells ? ` (${acc.open.toLocaleString()}칸)` : ""}
+                </span>
+              )}
+              {acc.people.map((p) => (
+                <span key={p} className="person">
+                  <span className="mmg-dot" style={{ background: personColor(p) }} />
+                  {view.roster[p]}
+                </span>
+              ))}
+            </span>
+          )}
+          {acc.locked > 0 && inputCells > 0 && <span className="muted">잠금 {acc.locked.toLocaleString()}칸 제외</span>}
+          {acc.required > 0 && <span className="tag tag-required">필수</span>}
+        </>
+      )}
+      <span className="spacer" />
+      <AddRowsSwitch s={s} />
+    </footer>
+  );
+}
+
+/** '열 역할' 탭 그리드 아래: 입력·필수·잠금 범례와 집계. */
 function Legend({ s }: { s: ConfigState }) {
   const l = s.view?.legend;
   const unassigned = s.view?.progress.unassigned ?? 0;
-  const perms = s.view?.config.permissions;
   return (
     <footer className="legend">
       {l && (
@@ -561,24 +614,36 @@ function Legend({ s }: { s: ConfigState }) {
               <span className="muted">예외 {l.exceptions}</span>
             </span>
           )}
-          {unassigned > 0 && <span className="warn">배정되지 않은 필수 {unassigned.toLocaleString()}칸</span>}
+          {unassigned > 0 && (
+            <span className="muted" title="담당자가 아무도 없는 필수 칸은 누구나 입력할 수 있습니다">
+              담당자 없는 필수 {unassigned.toLocaleString()}칸(누구나 입력)
+            </span>
+          )}
         </>
       )}
       <span className="spacer" />
-      {perms && (
-        <button
-          className="switch"
-          role="switch"
-          aria-checked={perms.addRows}
-          disabled={s.busy}
-          onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, addRows: !perms.addRows } })}
-        >
-          참여자가 새 행을 추가할 수 있게 하기
-          <span className="track">
-            <span className="knob" />
-          </span>
-        </button>
-      )}
+      <AddRowsSwitch s={s} />
     </footer>
+  );
+}
+
+/** 그리드 아래 오른쪽: 참여자 행 추가 허용(참여자 권한 '행 추가'와 같다). */
+function AddRowsSwitch({ s }: { s: ConfigState }) {
+  const perms = s.view?.config.permissions;
+  if (!perms) return null;
+  return (
+    <button
+      className="switch"
+      role="switch"
+      aria-checked={perms.addRows}
+      disabled={s.busy}
+      title="켜면 참여자 화면에 '+ 행 추가'가 생겨 표 맨 아래에 행을 붙일 수 있습니다"
+      onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, addRows: !perms.addRows } })}
+    >
+      참여자가 새 행을 추가할 수 있게 하기
+      <span className="track">
+        <span className="knob" />
+      </span>
+    </button>
   );
 }

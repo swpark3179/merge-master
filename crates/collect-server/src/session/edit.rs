@@ -3,7 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use collect_core::access::{Viewer, flag};
-use collect_core::config::FormatPolicy;
+use collect_core::config::{CellException, ExceptionKind, FormatPolicy};
 use collect_core::format::{FormatEdit, StylePatch, apply_format};
 use collect_core::validate::normalize;
 use collect_core::{CellRange, CellRef, CellValue};
@@ -19,6 +19,14 @@ use crate::protocol::{CellEdit, CellUpdate, ChangeEntry, Rejection, ServerMsg, S
 pub const MAX_BATCH: usize = 20_000;
 /// 행 이력으로 돌려주는 최대 항목 수(최근 것부터).
 const MAX_ROW_HISTORY: usize = 200;
+/// 한 번에 추가하는 최대 행 수.
+pub const MAX_ADD_ROWS: u32 = 20;
+/// 엑셀에 저장하기 전까지(기준 시트보다) 참여자가 추가할 수 있는 행 수.
+pub const MAX_ADDED_ROWS: u32 = 1_000;
+/// 행을 추가해도 넘지 않는 시트 크기(칸).
+const MAX_SHEET_CELLS: u64 = 1_000_000;
+/// 참여자가 추가한 행에 거는 셀 예외의 메모(호스트 1b '셀 예외'에 보인다).
+pub const ADDED_ROWS_NOTE: &str = "참여자가 추가한 행";
 
 const READ_ONLY: &str = "마감되어 입력할 수 없습니다";
 const NOT_YOURS: &str = "입력할 수 없는 칸입니다";
@@ -141,7 +149,7 @@ impl State {
     pub(super) fn set_cells(&mut self, conn: ConnId, batch: String, cells: Vec<CellEdit>, origin: BatchOrigin) {
         // 참여자는 복원·'Excel 값 유지'를 할 수 없다(표시만 바뀌는 값이라 일반 입력으로 본다).
         let origin = match origin {
-            BatchOrigin::Restore | BatchOrigin::Excel => BatchOrigin::Edit,
+            BatchOrigin::Restore | BatchOrigin::Excel | BatchOrigin::AddRow => BatchOrigin::Edit,
             o => o,
         };
         let Some((name, p)) = self.person_of(conn) else { return };
@@ -258,13 +266,19 @@ impl State {
         self.request_recalc(changed);
     }
 
-    /// 바뀐 입력 칸을 수식 재계산에 넘긴다(수식이 있고 재계산을 맡은 곳이 있을 때).
+    /// 바뀐 입력 칸을 수식 재계산에 넘긴다(수식이 있고 재계산을 맡은 곳이 있을 때). 계산 사본에 없는 행(재계산을
+    /// 켠 뒤 추가한 행)은 빼고 넘긴다.
     fn request_recalc(&mut self, changed: Vec<CellUpdate>) {
+        let rows = self.recalc_rows;
         if self.has_formulas
             && !changed.is_empty()
             && let Some(tx) = &self.recalc
         {
-            let writes = changed.into_iter().map(|u| (CellRef::new(u.row, u.col), u.value)).collect();
+            let writes: Vec<(CellRef, CellValue)> =
+                changed.into_iter().filter(|u| u.row < rows).map(|u| (CellRef::new(u.row, u.col), u.value)).collect();
+            if writes.is_empty() {
+                return;
+            }
             if tx.send(RecalcRequest { writes }).is_err() {
                 self.recalc = None;
             }
@@ -369,6 +383,94 @@ impl State {
             {
                 self.send(id, ServerMsg::Progress { progress: progress.clone() });
             }
+        }
+    }
+
+    // ------------------------------------------------------------ 행 추가
+
+    /// 표 아래에 빈 행을 붙인다(참여자 권한 '행 추가'). 행 배정 기준 열이 있으면 그 칸에 추가한 사람 이름을 넣어
+    /// 그 사람의 행으로 두고, 없으면 담당자 없는 행(누구나 입력)이다. 새 행은 잠금 열이어도 수식 칸 말고는 입력할 수
+    /// 있다(셀 예외 — 새 비목·설명을 적을 수 있게). 행 배정 기준 칸만 잠근다. 모두에게 새 시트를 보낸다.
+    pub(super) fn add_rows(&mut self, conn: ConnId, count: u32) {
+        let Some((name, _)) = self.person_of(conn) else { return };
+        self.touch(conn);
+        let error = |s: &State, message: String| s.send(conn, ServerMsg::Error { message });
+        if !self.config.permissions.add_rows {
+            return error(self, "이 취합에서는 행을 추가할 수 없습니다".into());
+        }
+        if self.read_only {
+            return error(self, READ_ONLY.into());
+        }
+        let count = count.clamp(1, MAX_ADD_ROWS);
+        let added = self.model.rows.saturating_sub(self.baseline.rows);
+        if added + count > MAX_ADDED_ROWS {
+            return error(self, format!("저장하기 전까지 행은 {MAX_ADDED_ROWS}개까지 추가할 수 있습니다"));
+        }
+        if u64::from(self.model.rows + count) * u64::from(self.model.cols) > MAX_SHEET_CELLS {
+            return error(self, "시트가 너무 커서 행을 더 추가할 수 없습니다".into());
+        }
+        let range = self.model.append_rows(count);
+        self.versions.resize(self.model.cells.len(), 0);
+        self.open_added_rows(range);
+
+        let at_ms = now_ms();
+        let logged = self.log.len();
+        let batch = format!("rows-{}", self.next_seq);
+        if let Some(key) = self.config.assignment.key_col.filter(|&k| k < self.model.cols) {
+            let value = CellValue::Text(name.clone());
+            for row in range.row..=range.last_row() {
+                let at = CellRef::new(row, key);
+                let Some(cell) = self.model.cell_mut(at).filter(|c| c.f.is_none()) else { continue };
+                cell.v = value.clone();
+                let i = self.idx(at);
+                self.versions[i] += 1;
+                self.writer.insert(i, name.clone());
+                self.log.push(ChangeEntry {
+                    seq: self.next_seq,
+                    at_ms,
+                    user: name.clone(),
+                    batch: batch.clone(),
+                    origin: BatchOrigin::AddRow,
+                    kind: ChangeKind::Input,
+                    row,
+                    col: key,
+                    old: CellValue::Empty,
+                    new: value.clone(),
+                });
+                self.next_seq += 1;
+            }
+        }
+        if let Some(store) = &self.store {
+            store.append(&self.log[logged..]);
+        }
+        self.recompile();
+        self.resync();
+        self.feed(HostEvent::Reset);
+        self.persist_sheet();
+        self.persist(true); // 셀 예외(설정)도 남긴다
+        self.broadcast(&ServerMsg::RowsAdded { by: name, range }, None);
+    }
+
+    /// 추가한 행을 입력 칸으로 여는 셀 예외(입력 가능 + 행 배정 기준 칸은 입력 금지). 바로 위에 이어지는 같은 예외가
+    /// 있으면 그 범위를 늘린다(행을 여러 번 추가해도 예외는 늘지 않는다).
+    fn open_added_rows(&mut self, range: CellRange) {
+        let mut add = |kind: ExceptionKind, r: CellRange| {
+            let list = &mut self.config.exceptions;
+            let prev = list.iter_mut().rev().find(|e| {
+                e.kind == kind
+                    && e.note == ADDED_ROWS_NOTE
+                    && e.range.col == r.col
+                    && e.range.cols == r.cols
+                    && e.range.last_row() + 1 == r.row
+            });
+            match prev {
+                Some(e) => e.range.rows += r.rows,
+                None => list.push(CellException { range: r, kind, note: ADDED_ROWS_NOTE.into() }),
+            }
+        };
+        add(ExceptionKind::Input, range);
+        if let Some(key) = self.config.assignment.key_col.filter(|&k| k < self.model.cols) {
+            add(ExceptionKind::Locked, CellRange::new(range.row, key, range.rows, 1));
         }
     }
 

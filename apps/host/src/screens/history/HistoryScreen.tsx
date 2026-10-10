@@ -45,6 +45,7 @@ const BATCH_LABEL: Record<string, string> = {
   revert: "되돌림",
   restore: "스냅샷 복원",
   excel: "Excel 값 유지",
+  addRow: "행 추가",
   edit: "변경",
 };
 

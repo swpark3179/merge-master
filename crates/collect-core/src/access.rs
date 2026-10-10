@@ -1,4 +1,6 @@
-//! 권한 엔진: **입력 가능 = (배정 행 ∪ 배정 범위) ∩ 입력 영역 − 입력 금지 − 수식**.
+//! 권한 엔진: **입력 가능 = (배정 행 ∪ 배정 범위 ∪ 담당자 없는 칸) ∩ 입력 영역 − 입력 금지 − 수식**.
+//!
+//! 행 배정도 범위 배정도 걸리지 않은 칸은 담당자가 없는 칸으로, 입력 영역이면 **누구나** 입력할 수 있다.
 //!
 //! [`Access::compile`]이 셀마다 상태 비트([`flag`])를 미리 계산해 두므로 셀 하나의 판정은 O(1)
 //! (범위 배정 수만큼의 비교 제외)이다. 호스트 1b 화면, 참여자 시점 미리보기, 3단계 서버가 모두 이것을 쓴다.
@@ -203,15 +205,33 @@ impl Access {
         out
     }
 
+    /// 담당자(행 배정·범위 배정)가 아무도 없는 칸인가. 입력 영역이면 누구나 입력할 수 있다.
+    pub fn is_open(&self, at: CellRef) -> bool {
+        self.row_owner(at.row).is_none() && !self.ranges.iter().any(|(r, _)| r.contains(at))
+    }
+
     pub fn can_edit(&self, viewer: Viewer, at: CellRef) -> bool {
         if self.flags(at) & flag::INPUT == 0 {
             return false;
         }
         match viewer {
             Viewer::Host => true,
-            Viewer::Person(p) => {
-                self.row_owner(at.row) == Some(p) || self.ranges.iter().any(|(r, q)| *q == p && r.contains(at))
-            }
+            Viewer::Person(p) => match self.row_owner(at.row) {
+                Some(owner) => owner == p || self.ranges.iter().any(|(r, q)| *q == p && r.contains(at)),
+                // 행 담당자가 없으면: 내 범위 배정이거나, 아무 범위 배정에도 걸리지 않은 칸(누구나).
+                None => {
+                    let mut covered = false;
+                    for (r, q) in &self.ranges {
+                        if r.contains(at) {
+                            if *q == p {
+                                return true;
+                            }
+                            covered = true;
+                        }
+                    }
+                    !covered
+                }
+            },
         }
     }
 
@@ -229,12 +249,26 @@ impl Access {
         out
     }
 
-    /// 그 사람이 맡은 데이터 행(행 배정 + 범위 배정이 걸친 행). '남의 행 숨김'일 때 이 행만 보낸다.
+    /// 그 사람에게 보이는 데이터 행: 맡은 행(행 배정 + 범위 배정이 걸친 행)과 남의 것이 아닌 행 — 담당자가 아무도
+    /// 없는 행, 또는 담당자 없는 입력 칸(누구나 입력)이 있는 행. '남의 행 숨김'일 때 이 행만 보낸다.
     pub fn rows_of(&self, p: usize) -> Vec<u32> {
+        let spans = |r: u32, rg: &CellRange| rg.row <= r && r <= rg.last_row();
         (self.header_rows..self.rows)
             .filter(|&r| {
-                self.row_owner(r) == Some(p)
-                    || self.ranges.iter().any(|(rg, q)| *q == p && rg.row <= r && r <= rg.last_row())
+                if self.row_owner(r) == Some(p) || self.ranges.iter().any(|(rg, q)| *q == p && spans(r, rg)) {
+                    return true;
+                }
+                if self.row_owner(r).is_some() {
+                    return false; // 남이 맡은 행
+                }
+                if !self.ranges.iter().any(|(rg, _)| spans(r, rg)) {
+                    return true; // 아무도 맡지 않은 행
+                }
+                // 남의 범위 배정이 일부 걸친 행: 담당자 없는 입력 칸이 있으면 함께 입력하는 행이다.
+                (0..self.cols).any(|c| {
+                    let at = CellRef::new(r, c);
+                    self.flags(at) & flag::INPUT != 0 && self.is_open(at)
+                })
             })
             .collect()
     }
@@ -308,7 +342,7 @@ pub struct ColumnProgress {
 pub struct ProgressStats {
     pub required: u32,
     pub filled: u32,
-    /// 아무에게도 배정되지 않은 필수 셀(누구도 채울 수 없음 → 설정 실수 경고).
+    /// 담당자가 없는 필수 셀(누구나 입력할 수 있다). 담당자별 진행률에는 들지 않는다.
     pub unassigned: u32,
     pub by_person: Vec<PersonProgress>,
     pub by_column: Vec<ColumnProgress>,
@@ -413,6 +447,48 @@ mod tests {
         assert_eq!(a.roster().last().map(String::as_str), Some("한지우"));
         assert_eq!(a.rows_of(a.person("한지우").unwrap()), [6, 7]);
         assert_eq!(a.rows_of(a.person("이서연").unwrap()), [2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn cells_without_any_assignee_are_open_to_everyone() {
+        let (mut m, mut cfg) = setup();
+        // 김민지 행(7·8행, C7:C8 병합)의 담당자를 비운다 → 그 행은 담당자 없음.
+        m.cell_mut(at("C7")).unwrap().v = CellValue::Empty;
+        cfg.assignment.extra_people.push("김민지".into());
+        cfg.assignment.ranges.push(RangeAssignment {
+            range: CellRange::parse("I7").unwrap(),
+            person: "최도윤".into(),
+            note: String::new(),
+        });
+        let a = Access::compile(&m, &cfg);
+        let lee = Viewer::Person(a.person("이서연").unwrap());
+        let choi = Viewer::Person(a.person("최도윤").unwrap());
+        assert_eq!(a.row_owner(6), None);
+        assert!(a.is_open(at("F7")) && !a.is_open(at("I7")) && !a.is_open(at("F3")));
+        // 담당자 없는 입력 칸은 누구나, 범위 배정이 걸린 칸은 그 사람만.
+        assert!(a.can_edit(lee, at("F7")) && a.can_edit(choi, at("F7")));
+        assert!(a.can_edit(choi, at("I7")) && !a.can_edit(lee, at("I7")));
+        assert!(a.can_edit(lee, at("I8")));
+        // 입력 금지·수식 칸은 여전히 아무도 못 쓴다.
+        assert!(!a.can_edit(lee, at("E7")) && !a.can_edit(lee, at("G7")));
+        // 남의 행 숨김: 담당자 없는 칸이 있는 행은 모두에게 보인다.
+        assert_eq!(a.rows_of(a.person("이서연").unwrap()), [2, 3, 6, 7]);
+        // 담당자 없는 필수 칸(F7·F8·H7·H8)은 누구의 진행률에도 들지 않는다.
+        assert_eq!(a.progress(&m).unassigned, 4);
+    }
+
+    #[test]
+    fn without_any_assignment_everyone_can_edit_every_input_cell() {
+        let m = budget();
+        let mut cfg = CollectConfig::suggest(&m);
+        cfg.assignment.extra_people = vec!["가".into(), "나".into()];
+        cfg.permissions.others_rows = crate::config::OthersRows::Hidden;
+        let a = Access::compile(&m, &cfg);
+        for p in 0..2 {
+            assert!(a.can_edit(Viewer::Person(p), at("F3")) && a.can_edit(Viewer::Person(p), at("H8")));
+            assert!(!a.can_edit(Viewer::Person(p), at("E3")));
+            assert_eq!(a.rows_of(p), (2..8).collect::<Vec<_>>());
+        }
     }
 
     #[test]

@@ -71,6 +71,15 @@ fn join(name: &str) -> ClientMsg {
     ClientMsg::Join { name: name.into(), token: None, protocol: PROTOCOL_VERSION }
 }
 
+/// IP 명단 밖(시험은 모두 127.0.0.1)에서 이름으로 참여 → 승인 대기 → 호스트 승인 → 입장.
+async fn enter(session: &SessionHandle, ws: &mut Client, name: &str) -> Box<protocol::Welcome> {
+    send(ws, &join(name)).await;
+    assert!(matches!(until(ws, |m| matches!(m, ServerMsg::Pending { .. })).await, ServerMsg::Pending { .. }));
+    session.approve(name, None, "").await.unwrap();
+    let ServerMsg::Welcome(w) = until(ws, |m| matches!(m, ServerMsg::Welcome(_))).await else { unreachable!() };
+    w
+}
+
 #[tokio::test]
 async fn http_routes() {
     let server = start(config(false), init()).await.unwrap();
@@ -92,12 +101,16 @@ async fn join_pending_approve_and_switch_over_websocket() {
     let server = start(config(true), init()).await.unwrap();
     let addr = server.local_addr;
 
+    // IP 명단 밖에서는 명단에 있는 이름이어도 승인을 기다린다.
     let mut a = open(addr).await;
     send(&mut a, &join("김민지")).await;
-    let ServerMsg::Welcome(w) = next(&mut a).await else { panic!("welcome") };
+    assert!(matches!(next(&mut a).await, ServerMsg::Pending { .. }));
+    let ok = http(addr, "POST", "/__dev/approve", r#"{"name":"김민지"}"#).await;
+    assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+    let ServerMsg::Welcome(w) = until(&mut a, |m| matches!(m, ServerMsg::Welcome(_))).await else { unreachable!() };
     assert_eq!(w.session.title, "2026년 부서별 예산 신청");
 
-    // 명단 밖 이름 → 승인 대기 → (개발용 관리 API로) 승인
+    // 명단 밖 이름 → 승인 대기 → (개발용 관리 API로) 범위를 주고 승인
     let mut b = open(addr).await;
     send(&mut b, &join("김민수")).await;
     assert!(matches!(next(&mut b).await, ServerMsg::Pending { .. }));
@@ -107,9 +120,13 @@ async fn join_pending_approve_and_switch_over_websocket() {
     assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
     assert!(matches!(until(&mut b, |m| matches!(m, ServerMsg::Welcome(_))).await, ServerMsg::Welcome(_)));
 
-    // 김민지가 다른 기기에서 다시 들어오면 중복 확인 → 전환 → 앞 기기는 끊긴다.
+    // 이 PC(127.0.0.1)를 IP 명단에 김민지로 올리면: 새 연결은 이름을 묻지 않고(`known`) 들어오려 하고,
+    // 김민지가 이미 접속 중이라 중복 확인 → 전환 → 앞 기기는 끊긴다.
+    let names = IpNames::parse_json(r#"{"127.0.0.1": "김민지"}"#).unwrap();
+    server.session().set_ip_names(names);
     let mut c = open(addr).await;
-    send(&mut c, &join("김민지")).await;
+    assert!(matches!(next(&mut c).await, ServerMsg::Known { name } if name == "김민지"));
+    send(&mut c, &join("")).await;
     assert!(matches!(next(&mut c).await, ServerMsg::DupName { .. }));
     send(&mut c, &ClientMsg::SwitchDevice { name: "김민지".into() }).await;
     assert!(matches!(until(&mut c, |m| matches!(m, ServerMsg::Welcome(_))).await, ServerMsg::Welcome(_)));
@@ -132,8 +149,7 @@ async fn host_events_follow_participants() {
     let server = start(config(false), init()).await.unwrap();
     let mut events = server.session().subscribe();
     let mut a = open(server.local_addr).await;
-    send(&mut a, &join("이서연")).await;
-    let _ = next(&mut a).await;
+    enter(server.session(), &mut a, "이서연").await;
     tokio::time::timeout(Duration::from_secs(5), events.wait_for(|s| s.online == 1)).await.unwrap().unwrap();
     drop(a);
     tokio::time::timeout(Duration::from_secs(5), events.wait_for(|s| s.online == 0)).await.unwrap().unwrap();
@@ -160,10 +176,8 @@ async fn edits_flow_over_websocket_and_survive_restart() {
     let addr = server.local_addr;
     let mut a = open(addr).await;
     let mut b = open(addr).await;
-    send(&mut a, &join("이서연")).await;
-    send(&mut b, &join("최도윤")).await;
-    let ServerMsg::Welcome(w) = until(&mut a, |m| matches!(m, ServerMsg::Welcome(_))).await else { unreachable!() };
-    until(&mut b, |m| matches!(m, ServerMsg::Welcome(_))).await;
+    let w = enter(&session, &mut a, "이서연").await;
+    let tb = enter(&session, &mut b, "최도윤").await.token;
     let row = w.row_owner.iter().position(|&o| o == 0).unwrap() as u32;
 
     let cells = vec![CellEdit { row, col: 5, value: CellValue::Text("9,800".into()), base: 0 }];
@@ -186,8 +200,9 @@ async fn edits_flow_over_websocket_and_survive_restart() {
 
     server.stop().await;
     let again = start(config(false), session.clone()).await.unwrap();
+    // 승인받은 브라우저는 토큰으로 다시 묻지 않고 들어온다.
     let mut c = open(again.local_addr).await;
-    send(&mut c, &join("최도윤")).await;
+    send(&mut c, &ClientMsg::Join { name: "최도윤".into(), token: Some(tb), protocol: PROTOCOL_VERSION }).await;
     let ServerMsg::Welcome(w) = until(&mut c, |m| matches!(m, ServerMsg::Welcome(_))).await else { unreachable!() };
     assert_eq!(w.model.cells[(row * w.model.cols + 5) as usize].v, CellValue::Number(9800.0));
     let history = session.with(|s| s.history().len()).await.unwrap();

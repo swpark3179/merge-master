@@ -169,6 +169,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
             {result.report.styled > 0 ? ` · 서식 ${result.report.styled.toLocaleString()}칸` : ""}
             {result.report.merges > 0 ? ` · 병합 ${result.report.merges}` : ""}
             {result.report.resized > 0 ? ` · 크기 ${result.report.resized}줄` : ""}
+            {result.report.inserted > 0 ? ` · 추가한 행 ${result.report.inserted}개` : ""}
             {result.report.historySheet ? ` · ‘${result.report.historySheet}’ 시트` : ""}
             {result.kept > 0 ? ` · Excel 값 유지 ${result.kept}칸` : ""} ·{" "}
             {ok ? "다시 읽어 확인함" : `다시 읽었더니 다른 칸 ${result.report.mismatched.length}개`} ·{" "}
@@ -229,7 +230,12 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
                 변경 기록 <b>{s.historyEntries.toLocaleString()}</b>건
               </span>
               <span>마지막 변경 {s.lastChangeMs ? clock(s.lastChangeMs) : "–"}</span>
-              {s.unassigned > 0 && <span className="warn">배정 안 된 필수 칸 {s.unassigned}</span>}
+              {s.addedRows > 0 && (
+                <span title="참여자가 표 아래에 추가한 행. 저장하면 Excel 표 아래에 끼워 넣습니다">
+                  추가된 행 <b>{s.addedRows.toLocaleString()}</b>
+                </span>
+              )}
+              {s.unassigned > 0 && <span>담당자 없는 필수 칸 {s.unassigned}(누구나 입력)</span>}
               <span className="spacer" />
               {info.closed ? (
                 <span className="warn">● 마감됨 (참여자 읽기 전용)</span>

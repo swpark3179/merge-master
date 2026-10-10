@@ -1,6 +1,6 @@
 import type { CellDecoration, EditorState, GridSelection, Move, SheetGridHandle } from "@mm/grid";
-import { CellEditor, parseTsv, SheetGrid, toTsv } from "@mm/grid";
-import type { CellRange, CellRef, ColumnRule, StylePatch } from "@mm/shared";
+import { CellEditor, fitRowHeights, parseTsv, SheetGrid, toTsv } from "@mm/grid";
+import type { CellRange, CellRef, SheetModel, StylePatch } from "@mm/shared";
 import { a1, dday, displayValue, editText, FLAG, formatDeadline, normalize, personColor } from "@mm/shared";
 import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -15,19 +15,6 @@ import { RowForm } from "./RowForm";
 import type { PanelTab } from "./SidePanel";
 import { SidePanel } from "./SidePanel";
 import type { Notice, SessionState } from "./useSession";
-
-export function formatTag(rule: ColumnRule | undefined): string {
-  switch (rule?.format.kind) {
-    case "number":
-      return rule.format.unit ? `숫자 · ${rule.format.unit}` : "숫자";
-    case "list":
-      return "목록";
-    case "date":
-      return "날짜";
-    default:
-      return "";
-  }
-}
 
 const FILLS: { label: string; rgb: number | null }[] = [
   { label: "노랑", rgb: 0xfff3b0 },
@@ -55,6 +42,30 @@ function rectOf(sel: GridSelection): CellRange {
   };
 }
 
+/** 사이드바를 열어 둘지(주소 경로마다 기억). 처음에는 넓은 화면이면 연다. */
+function sideKey(): string {
+  const slug = location.pathname.split("/").filter(Boolean)[0] ?? "root";
+  return `mm.${slug}.side`;
+}
+
+function loadSide(): boolean {
+  try {
+    const v = localStorage.getItem(sideKey());
+    if (v !== null) return v === "1";
+  } catch {
+    // 기억하지 못해도 동작은 한다.
+  }
+  return window.innerWidth >= 1100;
+}
+
+function saveSide(open: boolean) {
+  try {
+    localStorage.setItem(sideKey(), open ? "1" : "0");
+  } catch {
+    // 사생활 보호 모드 등
+  }
+}
+
 function clock(ms: number): string {
   const d = new Date(ms);
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
@@ -74,7 +85,21 @@ export function Workspace({ s }: { s: SessionState }) {
   const [formRow, setFormRow] = useState<number | null>(null);
   const [waitFree, setWaitFree] = useState<Set<number>>(() => new Set());
   const [bench, setBench] = useState<BenchResult | null>(null);
-  const [panel, setPanel] = useState<PanelTab | null>(null);
+  /** 오른쪽 사이드바(셀 내용·알림·채팅·셀 이력)와 그 탭. */
+  const [sideOpen, setSideOpenState] = useState(loadSide);
+  const [panel, setPanelTab] = useState<PanelTab>("cell");
+  const setSideOpen = useCallback((open: boolean) => {
+    setSideOpenState(open);
+    saveSide(open);
+  }, []);
+  /** 사이드바를 열고 그 탭을 보인다. */
+  const showPanel = useCallback(
+    (tab: PanelTab) => {
+      setPanelTab(tab);
+      setSideOpen(true);
+    },
+    [setSideOpen],
+  );
   const [chatSeen, setChatSeen] = useState(0);
   const onChatSeen = useCallback((id: number) => setChatSeen((x) => Math.max(x, id)), []);
   const editorRef = useRef<ActiveEdit | null>(null);
@@ -91,7 +116,24 @@ export function Workspace({ s }: { s: SessionState }) {
   const myRowCount = useMemo(() => myRows.reduce((n, x) => n + x, 0), [myRows]);
   // 필터는 걸 때 한 번 계산한다(입력하는 동안 행이 사라지지 않게).
   const hidden = useMemo(() => filteredOut(model, flags, myRows, filter), [model, flags, myRows, filter]);
-  const view = useMemo(() => withHiddenRows(model, hidden), [model, hidden]);
+  const filtered = useMemo(() => withHiddenRows(model, hidden), [model, hidden]);
+  // 줄바꿈(Alt+Enter)이 든 칸은 다 보이도록 행 높이를 늘린다(칸 값은 제자리에서 바뀌므로 sheet.rev로 다시 본다).
+  // 높이가 그대로면 앞의 보기를 그대로 써서 그리드가 배치를 다시 계산하지 않게 한다.
+  const lastFit = useRef<{ base: SheetModel; heights: number[]; out: SheetModel } | null>(null);
+  const view = useMemo(() => {
+    const out = fitRowHeights(filtered);
+    const prev = lastFit.current;
+    if (
+      prev &&
+      prev.base === filtered &&
+      prev.heights.length === out.rowHeights.length &&
+      prev.heights.every((h, i) => h === out.rowHeights[i])
+    )
+      return prev.out;
+    lastFit.current = { base: filtered, heights: out.rowHeights, out };
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, sheet.rev]);
   const filterCols = useMemo(
     () => (w.permissions.filterSort ? columns.map((c, i) => (c.filter ? i : -1)).filter((i) => i >= 0) : []),
     [columns, w.permissions.filterSort],
@@ -495,10 +537,35 @@ export function Workspace({ s }: { s: SessionState }) {
     requestAnimationFrame(() => grid.current?.reveal({ row, col }));
   };
 
+  // 내가 행을 추가했으면 새 행(내가 입력할 첫 칸)으로 간다. 새 시트(welcome)를 받은 뒤에 온다.
+  const { rowsAdded } = s;
+  const rowsAddedSeen = useRef(0);
+  useEffect(() => {
+    if (!rowsAdded || rowsAdded.seq === rowsAddedSeen.current) return;
+    rowsAddedSeen.current = rowsAdded.seq;
+    if (rowsAdded.by !== w.name) return;
+    const row = rowsAdded.range.row;
+    const where = model.origin.row + row + 1;
+    notify(
+      `표 맨 아래에 ${rowsAdded.range.rows > 1 ? `${rowsAdded.range.rows}개 행` : "행"}을 추가했습니다(${where}행)`,
+    );
+    if (mode === "form") setFormRow(row);
+    else {
+      // '+ 행 추가' 버튼에 있던 포커스를 놓아 새 칸으로 가면 곧바로 입력할 수 있게 한다.
+      if (document.activeElement instanceof HTMLElement && !gridHost.current?.contains(document.activeElement))
+        document.activeElement.blur();
+      showInGrid(row);
+    }
+    // 새 행을 받은 시트(model)가 바뀐 뒤 한 번만 움직인다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowsAdded, model]);
+
   const unreadAlerts = s.highlights.filter((h) => !h.acked).length + s.announcements.filter((n) => !n.read).length;
   const unreadChat = s.chat.filter((m) => m.id > chatSeen && !(m.from === w.name && !m.host)).length;
-  const cell = at ? model.cells[idx(at.row, at.col)] : undefined;
-  const f = at ? (flags[idx(at.row, at.col)] ?? 0) : 0;
+  // 열려 있는 탭의 것은 이미 보고 있다.
+  const unread =
+    (sideOpen && mode === "grid" && panel === "alerts" ? 0 : unreadAlerts) +
+    (sideOpen && mode === "grid" && panel === "chat" ? 0 : unreadChat);
   const others = s.presence.filter((p) => p.name !== w.name);
   const p = s.progress ?? w.progress;
   const pct = p.required > 0 ? Math.round((p.filled / p.required) * 100) : 100;
@@ -650,28 +717,34 @@ export function Workspace({ s }: { s: SessionState }) {
           {policy === "none" ? "서식은 호스트가 관리합니다" : policy === "fillOnly" ? "배경색만 바꿀 수 있습니다" : ""}
         </span>
         <span className="spacer" />
-        <div className="panel-tabs" role="group" aria-label="패널">
-          {(
-            [
-              ["alerts", "알림", unreadAlerts],
-              ["chat", "채팅", unreadChat],
-              ["history", "셀 이력", 0],
-            ] as const
-          ).map(([k, label, n]) => (
-            <button
-              key={k}
-              className={`ghost small${panel === k ? " on" : ""}`}
-              aria-pressed={panel === k}
-              onClick={() => {
-                setMode("grid");
-                setPanel(panel === k ? null : k);
-              }}
-            >
-              {label}
-              {n > 0 && <span className="badge">{n}</span>}
-            </button>
-          ))}
-        </div>
+        {w.permissions.addRows && (
+          <button
+            className="ghost small"
+            disabled={s.readOnly}
+            title="표 맨 아래에 빈 행을 추가합니다"
+            onClick={() => {
+              if (editorRef.current) leave();
+              s.addRows(1);
+            }}
+          >
+            + 행 추가
+          </button>
+        )}
+        <button
+          className={`ghost small side-toggle${sideOpen && mode === "grid" ? " on" : ""}`}
+          aria-pressed={sideOpen && mode === "grid"}
+          aria-label={`사이드바${unread > 0 ? ` (안 읽은 알림·채팅 ${unread})` : ""}`}
+          title="오른쪽 사이드바: 셀 내용 · 알림 · 채팅 · 셀 이력"
+          onClick={() => {
+            if (mode !== "grid") {
+              setMode("grid");
+              setSideOpen(true);
+            } else setSideOpen(!sideOpen);
+          }}
+        >
+          ☰ 사이드바
+          {unread > 0 && <span className="badge">{unread}</span>}
+        </button>
         <div className="mode-tabs" role="tablist" aria-label="입력 방식">
           <button role="tab" aria-selected={mode === "grid"} onClick={() => setMode("grid")}>
             그리드
@@ -736,37 +809,6 @@ export function Workspace({ s }: { s: SessionState }) {
             </span>
           </div>
 
-          <div className="formula-bar">
-            <span className="addr">{at ? addr(at) : ""}</span>
-            <span className="fx">fx</span>
-            <span className="value">
-              {editor
-                ? editor.state.text
-                : cell
-                  ? displayValue(cell.v, model.styles[cell.s]?.numberFormat ?? "", rule?.format)
-                  : ""}
-            </span>
-            <span className="cell-tags">
-              {at && f & FLAG.REQUIRED ? <span className="tag tag-required">필수</span> : null}
-              {at && f & FLAG.INPUT && formatTag(rule) ? <span className="tag">{formatTag(rule)}</span> : null}
-              {at && f & FLAG.MINE ? <span className="tag tag-mine">내 담당</span> : null}
-            </span>
-          </div>
-          {at && locker ? (
-            <div className="hint-bar lock" role="status">
-              🔒 {locker} 님이 입력 중입니다 · 끝나면 입력할 수 있어요
-              {!waitFree.has(idx(at.row, at.col)) ? (
-                <button className="link" onClick={() => setWaitFree((set) => new Set(set).add(idx(at.row, at.col)))}>
-                  끝나면 알려 주기
-                </button>
-              ) : (
-                <span className="muted"> · 끝나면 알려 드릴게요</span>
-              )}
-            </div>
-          ) : at && f & FLAG.MINE && rule?.hint ? (
-            <div className="hint-bar">{rule.hint}</div>
-          ) : null}
-
           <div className="work-area">
             <div
               className="grid-host"
@@ -778,7 +820,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 e.preventDefault();
                 const target = { row: Number(el.dataset.r), col: Number(el.dataset.c) };
                 grid.current?.reveal(target);
-                setPanel("history");
+                showPanel("history");
               }}
               // 칸을 누르면 브라우저가 그리드에 준 포커스를 바로 편집기로 옮긴다(곧바로 입력해도 첫 글자를 받는다).
               onClick={() => {
@@ -801,15 +843,21 @@ export function Workspace({ s }: { s: SessionState }) {
                 onCellDoubleClick={onDouble}
               />
             </div>
-            {panel && (
+            {sideOpen && (
               <SidePanel
                 s={s}
                 tab={panel}
-                onTab={setPanel}
-                onClose={() => setPanel(null)}
+                onTab={setPanelTab}
+                onClose={() => setSideOpen(false)}
                 at={at}
                 labels={labels}
+                columns={columns}
+                flags={flags}
                 canEdit={(r, c) => canEdit(ctx, r, c)}
+                locker={locker}
+                waiting={at !== null && waitFree.has(idx(at.row, at.col))}
+                onWait={() => at && setWaitFree((set) => new Set(set).add(idx(at.row, at.col)))}
+                unreadChat={unreadChat}
                 onReveal={revealRange}
                 onChatSeen={onChatSeen}
               />
@@ -845,7 +893,7 @@ export function Workspace({ s }: { s: SessionState }) {
         )}
       </footer>
 
-      <div className={`toasts${panel && mode === "grid" ? " with-panel" : ""}`} aria-live="polite">
+      <div className={`toasts${sideOpen && mode === "grid" ? " with-panel" : ""}`} aria-live="polite">
         {s.notices.map((n) => (
           <Toast key={n.id} notice={n} onDone={s.dismiss} onAction={(a) => revealRange(a.range, a.highlight)} />
         ))}

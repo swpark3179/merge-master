@@ -120,6 +120,7 @@ pub async fn recovery_resume(app: AppHandle, state: State<'_, AppState>) -> CmdR
     let rec = collect_server::recover(&path)?;
     let (workbook_id, sheet, server) = (rec.workbook_id.clone(), rec.sheet.clone(), rec.server.clone());
     let session = SessionHandle::spawn(rec.init);
+    crate::people::attach(&state, &session);
     crate::service::forward_participants(&app, &session);
     crate::monitor::forward_events(&app, &session);
     *state.session.lock().unwrap() = Some(session.clone());

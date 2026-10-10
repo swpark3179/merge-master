@@ -6,6 +6,9 @@
 //! - [`summary`]: 저장·마감 화면의 요약(필수 완료율, 담당자별 미입력, 바뀐 칸).
 //!
 //! 좌표는 모두 모델 기준이다. 시트 주소로 바꾸는 일(`origin`)과 실제 Excel 호출은 `excel-com`이 한다.
+//!
+//! 참여자가 표 아래에 붙인 행(지금 시트가 기준보다 행이 많음)은 [`RowInsert`]로 Excel에 그만큼 행을 끼워 넣은 뒤 쓴다.
+//! 새 행의 '원래 값'은 빈 칸, '원래 서식'은 Excel이 끼워 넣을 때 따르는 기준 시트의 마지막 행 서식으로 본다.
 
 use std::collections::{HashMap, HashSet};
 
@@ -16,7 +19,7 @@ use crate::a1::{CellRange, CellRef};
 use crate::access::{Access, flag};
 use crate::config::CollectConfig;
 use crate::history::ChangeEntry;
-use crate::sheet::{CellStyle, CellValue, SheetModel};
+use crate::sheet::{Cell, CellStyle, CellValue, SheetModel};
 
 /// 칸에 쓸 값. `literal`이면 글자를 그대로 둔다(Excel이 숫자·날짜·수식으로 바꾸지 않게 앞에 `'`를 붙여 쓴다).
 #[derive(Debug, Clone, PartialEq)]
@@ -46,9 +49,22 @@ pub struct HistoryTable {
     pub time_col: usize,
 }
 
+/// 표 아래에 붙인 행: 기준 시트의 끝(`at`, 모델 행)에 `count`행을 끼워 넣는다(아래 내용은 밀려 내려간다).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowInsert {
+    pub at: u32,
+    pub count: u32,
+    /// 위 행(기준 시트 마지막 행)의 수식을 새 행까지 채워 내릴 열(Excel이 상대 참조를 맞춘다).
+    pub formula_cols: Vec<u32>,
+    /// 새 행 높이(pt).
+    pub heights: Vec<f32>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExportPlan {
     pub origin: CellRef,
+    /// 표 아래에 붙인 행(값을 쓰기 전에 끼워 넣는다).
+    pub insert: Option<RowInsert>,
     /// 값을 쓰는 칸(행 우선).
     pub cells: Vec<CellRef>,
     pub blocks: Vec<ValueBlock>,
@@ -68,6 +84,7 @@ pub struct ExportPlan {
 impl ExportPlan {
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
+            && self.insert.is_none()
             && self.styles.is_empty()
             && self.merges_add.is_empty()
             && self.merges_remove.is_empty()
@@ -113,13 +130,17 @@ fn merge_heads(model: &SheetModel) -> HashSet<CellRef> {
     model.merges.iter().filter(|m| !m.is_single()).map(CellRange::top_left).collect()
 }
 
-fn same_shape(a: &SheetModel, b: &SheetModel) -> bool {
-    a.rows == b.rows && a.cols == b.cols && a.cells.len() == b.cells.len()
+/// 지금 시트가 기준 시트와 비교할 수 있는 모양인가: 열이 같고, 행은 같거나 아래에 붙여 늘어났다.
+fn comparable(baseline: &SheetModel, current: &SheetModel) -> bool {
+    baseline.cols == current.cols
+        && current.rows >= baseline.rows
+        && baseline.cells.len() == (baseline.rows * baseline.cols) as usize
+        && current.cells.len() == (current.rows * current.cols) as usize
 }
 
-/// 값이 바뀐 칸: 수식이 아니고, 병합에 덮이지 않았고, 기준과 값이 다른 칸(행 우선).
+/// 값이 바뀐 칸: 수식이 아니고, 병합에 덮이지 않았고, 기준과 값이 다른 칸(행 우선). 붙인 행은 빈 칸과 비교한다.
 pub fn changed_cells(baseline: &SheetModel, current: &SheetModel) -> Vec<CellRef> {
-    if !same_shape(baseline, current) {
+    if !comparable(baseline, current) {
         return Vec::new();
     }
     let cover = covered(current);
@@ -127,31 +148,79 @@ pub fn changed_cells(baseline: &SheetModel, current: &SheetModel) -> Vec<CellRef
     current
         .cells
         .iter()
-        .zip(&baseline.cells)
         .enumerate()
-        .filter(|(i, (now, then))| now.f.is_none() && !cover[*i] && now.v != then.v)
+        .filter(|(i, now)| {
+            now.f.is_none()
+                && !cover[*i]
+                && match baseline.cells.get(*i) {
+                    Some(then) => now.v != then.v,
+                    None => !now.v.is_empty(),
+                }
+        })
         .map(|(i, _)| CellRef::new(i as u32 / cols, i as u32 % cols))
         .collect()
 }
 
-/// 서식이 바뀐 칸(서식 표의 번호가 아니라 내용으로 비교한다).
+/// 서식이 바뀐 칸(서식 표의 번호가 아니라 내용으로 비교한다). 붙인 행은 Excel이 끼워 넣을 때 따르는
+/// 기준 시트 마지막 행의 서식과 비교한다.
 fn style_changes(baseline: &SheetModel, current: &SheetModel) -> Vec<(CellRef, CellStyle)> {
-    if !same_shape(baseline, current) {
+    if !comparable(baseline, current) {
         return Vec::new();
     }
     let cols = current.cols.max(1);
     let fallback = CellStyle::default();
+    let last = baseline.rows.checked_sub(1);
     current
         .cells
         .iter()
-        .zip(&baseline.cells)
         .enumerate()
-        .filter_map(|(i, (now, then))| {
+        .filter_map(|(i, now)| {
+            let at = CellRef::new(i as u32 / cols, i as u32 % cols);
+            let then = match baseline.cells.get(i) {
+                Some(c) => Some(c),
+                None => last.and_then(|r| baseline.cell(CellRef::new(r, at.col))),
+            };
             let a = current.styles.get(now.s as usize).unwrap_or(&fallback);
-            let b = baseline.styles.get(then.s as usize).unwrap_or(&fallback);
-            (a != b).then(|| (CellRef::new(i as u32 / cols, i as u32 % cols), a.clone()))
+            let b = then.and_then(|c| baseline.styles.get(c.s as usize)).unwrap_or(&fallback);
+            (a != b).then(|| (at, a.clone()))
         })
         .collect()
+}
+
+/// 표 아래에 붙인 행(기준 시트보다 늘어난 행).
+fn row_insert(baseline: &SheetModel, current: &SheetModel) -> Option<RowInsert> {
+    if !comparable(baseline, current) || current.rows == baseline.rows {
+        return None;
+    }
+    let at = baseline.rows;
+    let formula_cols = (0..current.cols)
+        .filter(|&c| {
+            at > 0
+                && current.cell(CellRef::new(at, c)).is_some_and(|cell| cell.f.is_some())
+                && baseline.cell(CellRef::new(at - 1, c)).is_some_and(|cell| cell.f.is_some())
+        })
+        .collect();
+    Some(RowInsert { at, count: current.rows - at, formula_cols, heights: current.row_heights[at as usize..].to_vec() })
+}
+
+/// 원본에 저장한 뒤: 붙인 행을 기준 시트에도 붙인다(이제 원본에 있는 행이다). `current`는 저장 계획을 만든 시트.
+/// 값·수식은 쓴 그대로, 서식은 Excel이 끼워 넣을 때 따른 위 행(기준 시트 마지막 행)의 것으로 둔다(서식까지 반영했으면
+/// 쓰는 쪽이 따로 맞춘다).
+pub fn adopt_rows(baseline: &mut SheetModel, current: &SheetModel) {
+    if !comparable(baseline, current) || current.rows == baseline.rows {
+        return;
+    }
+    let last = baseline.rows.checked_sub(1);
+    let above: Vec<u32> = (0..baseline.cols)
+        .map(|c| last.and_then(|r| baseline.cell(CellRef::new(r, c))).map_or(0, |cell| cell.s))
+        .collect();
+    let from = baseline.cells.len();
+    for (i, cell) in current.cells[from..].iter().enumerate() {
+        let col = i % current.cols.max(1) as usize;
+        baseline.cells.push(Cell { v: cell.v.clone(), f: cell.f.clone(), s: above[col] });
+    }
+    baseline.row_heights.extend(current.row_heights[baseline.rows as usize..].iter().copied());
+    baseline.rows = current.rows;
 }
 
 /// 칸 목록을 열마다 위아래로 이어진 묶음으로 나눈다. `alone`에 든 칸은 혼자 묶는다.
@@ -275,7 +344,7 @@ pub fn plan(
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };
-    let (col_widths, row_heights) = if opts.styles && same_shape(baseline, current) {
+    let (col_widths, row_heights) = if opts.styles && comparable(baseline, current) {
         (
             size_changes(&baseline.col_widths, &current.col_widths),
             size_changes(&baseline.row_heights, &current.row_heights),
@@ -288,6 +357,7 @@ pub fn plan(
         (opts.history && !history.is_empty()).then(|| history_table(current, labels, history, offset_minutes));
     ExportPlan {
         origin: current.origin,
+        insert: row_insert(baseline, current),
         cells,
         blocks,
         styles,
@@ -332,17 +402,18 @@ pub struct CheckReport {
 
 const DRIFT_SAMPLES: usize = 20;
 
-/// `excel`은 불러온 범위를 지금 Excel에서 다시 읽은 값(모델 크기, 행 우선). `cells`는 이번에 쓸 칸.
+/// `excel`은 불러온 범위를 지금 Excel에서 다시 읽은 값(기준 시트 크기, 행 우선). `cells`는 이번에 쓸 칸.
+/// 표 아래에 붙인 행의 칸은 Excel에 아직 없으므로 충돌이 될 수 없다.
 pub fn compare(baseline: &SheetModel, current: &SheetModel, excel: &[CellValue], cells: &[CellRef]) -> CheckReport {
     let mut report = CheckReport::default();
-    if !same_shape(baseline, current) || excel.len() != baseline.cells.len() {
+    if !comparable(baseline, current) || excel.len() != baseline.cells.len() {
         report.suspicious = true;
         return report;
     }
     let cols = baseline.cols.max(1);
     let idx = |at: CellRef| (at.row * cols + at.col) as usize;
     let writing: HashSet<CellRef> = cells.iter().copied().collect();
-    for &at in cells {
+    for &at in cells.iter().filter(|at| at.row < baseline.rows) {
         let i = idx(at);
         let (original, now, collected) = (&baseline.cells[i].v, &excel[i], &current.cells[i].v);
         // Excel에서도 같은 값으로 고쳤으면 충돌이 아니다.
@@ -406,7 +477,7 @@ pub struct PersonChanges {
 pub struct SaveSummary {
     pub required: u32,
     pub filled: u32,
-    /// 아무에게도 배정되지 않은 필수 칸.
+    /// 담당자가 없는 필수 칸(누구나 입력할 수 있다).
     pub unassigned: u32,
     pub people: Vec<PersonMissing>,
     /// 불러올 때(또는 마지막으로 원본에 저장할 때)와 값이 다른 칸.
@@ -420,6 +491,8 @@ pub struct SaveSummary {
     pub merge_changes: u32,
     /// 앱에서 크기를 바꾼 열·행 수.
     pub size_changes: u32,
+    /// 참여자가 표 아래에 추가한 행 수(저장할 때 Excel에 끼워 넣는다).
+    pub added_rows: u32,
 }
 
 const MISSING_SAMPLES: usize = 12;
@@ -486,12 +559,13 @@ pub fn summary(
         history_entries: history.len() as u32,
         style_cells: style_changes(baseline, current).len() as u32,
         merge_changes: before.symmetric_difference(&after).count() as u32,
-        size_changes: if same_shape(baseline, current) {
+        size_changes: if comparable(baseline, current) {
             (size_changes(&baseline.col_widths, &current.col_widths).len()
                 + size_changes(&baseline.row_heights, &current.row_heights).len()) as u32
         } else {
             0
         },
+        added_rows: row_insert(baseline, current).map_or(0, |ins| ins.count),
     }
 }
 
@@ -714,6 +788,36 @@ mod tests {
         assert_eq!(s.changed_cells, 1);
         assert_eq!(s.changed_by, [PersonChanges { name: "이서연".into(), cells: 1 }]);
         assert_eq!((s.last_change_ms, s.history_entries), (Some(30), 3));
+    }
+
+    #[test]
+    fn appended_rows_are_inserted_then_written() {
+        let base = budget();
+        let mut now = base.clone();
+        let added = now.append_rows(2); // 9·10행(모델 8·9행)
+        assert_eq!(added.row, 8);
+        set(&mut now, "F9", CellValue::Number(700.0));
+        set(&mut now, "H10", CellValue::Text("새 비목".into()));
+        set(&mut now, "F3", CellValue::Number(1.0));
+        assert_eq!(changed_cells(&base, &now), [at("F3"), at("F9"), at("H10")]);
+        let p = plan(&base, &now, &[], &[], opts(), 0, &HashSet::new());
+        let insert = p.insert.clone().unwrap();
+        assert_eq!((insert.at, insert.count), (8, 2));
+        assert_eq!(insert.formula_cols, [6], "G열(증감률) 수식을 채워 내린다");
+        assert_eq!(insert.heights, [15.0, 15.0]);
+        // 새 행은 마지막 행 서식을 그대로 따르므로 서식 변화가 아니다.
+        assert!(p.styles.is_empty(), "{:?}", p.styles);
+        assert!(p.row_heights.is_empty());
+        // 그사이 Excel에서 고친 칸 비교는 기준 시트 크기로 한다(새 행은 충돌이 될 수 없다).
+        let excel: Vec<CellValue> = base.cells.iter().map(|c| c.v.clone()).collect();
+        let r = compare(&base, &now, &excel, &p.cells);
+        assert!(!r.suspicious && r.conflicts.is_empty(), "{r:?}");
+        // 원본에 저장하면 새 행이 기준이 된다.
+        let mut adopted = base.clone();
+        adopt_rows(&mut adopted, &now);
+        assert_eq!((adopted.rows, adopted.cells.len(), adopted.row_heights.len()), (10, 90, 10));
+        assert!(plan(&adopted, &now, &[], &[], opts(), 0, &HashSet::new()).insert.is_none());
+        assert_eq!(changed_cells(&adopted, &now), [at("F3")]);
     }
 
     #[test]

@@ -24,14 +24,15 @@ import { EditState } from "./edits";
 import { loadOutbox, outboxKey, saveOutbox } from "./outbox";
 
 /** 서버 `protocol::PROTOCOL_VERSION`과 같아야 한다. */
-const PROTOCOL = 3;
+const PROTOCOL = 4;
 const RETRY_MS = [500, 1000, 2000, 4000, 8000];
 const PING_MS = 20_000;
 const CURSOR_MS = 100;
 
 export type Phase =
   | { kind: "name"; error?: string }
-  | { kind: "joining"; name: string }
+  /** `known`: 이 PC가 호스트의 IP 명단에 있어 그 이름으로 바로 들어가는 중. */
+  | { kind: "joining"; name: string; known?: boolean }
   | { kind: "pending"; name: string }
   | { kind: "dup"; name: string }
   | { kind: "in" }
@@ -108,9 +109,15 @@ export function useSession() {
   const [highlights, setHighlights] = useState<HighlightView[]>([]);
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [lockEvent, setLockEvent] = useState<LockEvent | null>(null);
+  /** 표 아래에 행이 붙었다(내가 추가했으면 그 행으로 간다). */
+  const [rowsAdded, setRowsAdded] = useState<{ seq: number; by: string; range: CellRange } | null>(null);
   const [, setRev] = useState(0);
 
   const ws = useRef<WebSocket | null>(null);
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  /** 호스트의 IP 명단에 있는 이 PC의 이름(`known`). */
+  const knownName = useRef<string | null>(null);
   /** 연결이 열리면 보낼 입장 요청(재접속 포함). */
   const wantJoin = useRef<string | null>(phase.kind === "joining" ? phase.name : null);
   /** 끊긴 사유가 '다시 붙지 말 것'인지. */
@@ -123,6 +130,7 @@ export function useSession() {
   const saving = useRef<Promise<void>>(Promise.resolve());
   const noticeSeq = useRef(0);
   const lockSeq = useRef(0);
+  const rowsSeq = useRef(0);
   /** E2E: 오프라인 흉내(연결을 끊고 다시 붙지 않음). */
   const offline = useRef(false);
   const reconnect = useRef<() => void>(() => {});
@@ -204,6 +212,17 @@ export function useSession() {
           );
           setPhase({ kind: "in" });
           refresh();
+          break;
+        }
+        case "known": {
+          // 이 PC는 호스트의 IP 명단에 있다: 이름을 묻지 않고 그 이름으로 들어간다(이 연결의 입장 요청은 보낸 이름과
+          // 상관없이 그 이름이 된다). 호스트가 연결을 끊었으면 '다시 참여'를 누를 때까지 기다린다.
+          knownName.current = msg.name;
+          if (phaseRef.current.kind === "kicked") break;
+          const sent = wantJoin.current !== null; // 연결되자마자 기억한 이름으로 이미 보냈다
+          wantJoin.current = msg.name;
+          setPhase((p) => (p.kind === "in" ? p : { kind: "joining", name: msg.name, known: true }));
+          if (!sent) void sendJoin(msg.name);
           break;
         }
         case "pending":
@@ -307,6 +326,9 @@ export function useSession() {
         case "chat":
           setChat((list) => [...list, msg].slice(-500));
           break;
+        case "rowsAdded":
+          setRowsAdded({ seq: ++rowsSeq.current, by: msg.by, range: msg.range });
+          break;
         case "pong":
           break;
         case "error":
@@ -314,7 +336,7 @@ export function useSession() {
           break;
       }
     },
-    [at, notify, persist, refresh, send],
+    [at, notify, persist, refresh, send, sendJoin],
   );
 
   // 연결 유지: 끊기면 점점 간격을 늘려 다시 붙고, 붙으면 기억한 이름(토큰)으로 다시 입장한다.
@@ -461,6 +483,8 @@ export function useSession() {
     [send],
   );
   const sendChat = useCallback((to: ChatTo, text: string) => send({ type: "chat", to, text }), [send]);
+  /** 표 아래에 빈 행을 붙인다(참여자 권한 '행 추가'). 결과는 새 시트(`welcome`) + `rowsAdded`. */
+  const addRows = useCallback((count = 1) => send({ type: "addRows", count }), [send]);
 
   const flags = useMemo(() => (welcome ? decodeFlags(welcome.flags) : new Uint8Array()), [welcome]);
 
@@ -480,6 +504,7 @@ export function useSession() {
     highlights,
     chat,
     lockEvent,
+    rowsAdded,
     sheet: edits.current,
     join,
     switchDevice,
@@ -495,9 +520,10 @@ export function useSession() {
     ackNotice,
     ackHighlight,
     sendChat,
+    addRows,
     notify,
     dismiss,
-    savedName: load("name"),
+    savedName: knownName.current ?? load("name"),
   };
 }
 

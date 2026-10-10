@@ -59,3 +59,39 @@ export function withHiddenRows(model: SheetModel, hide: Set<number>): SheetModel
   const hiddenRows = [...new Set([...model.hiddenRows, ...hide])].sort((a, b) => a - b);
   return { ...model, rowHeights, hiddenRows };
 }
+
+/** 줄바꿈 칸이 늘릴 수 있는 최대 줄 수(더 긴 내용은 셀 상세에서 본다). */
+export const FIT_MAX_LINES = 8;
+
+/**
+ * 줄바꿈(Alt+Enter)이 든 칸이 다 보이도록 행 높이를 늘린 보기용 시트(Excel이 줄바꿈을 넣으면 행 높이를 맞추는 것처럼).
+ * 늘리기만 하고 줄이지 않는다. 숨긴 행(높이 0)·여러 행에 걸친 병합은 그대로 둔다. 바꿀 것이 없으면 `model`을 그대로 돌려준다.
+ */
+export function fitRowHeights(model: SheetModel, maxLines = FIT_MAX_LINES): SheetModel {
+  const tall = new Set<number>();
+  for (const m of model.merges) {
+    if (m.rows <= 1) continue;
+    for (let r = m.row; r < m.row + m.rows; r++)
+      for (let c = m.col; c < m.col + m.cols; c++) tall.add(r * model.cols + c);
+  }
+  let heights: number[] | null = null;
+  for (let r = 0; r < model.rows; r++) {
+    const now = model.rowHeights[r] ?? 0;
+    if (now <= 0) continue;
+    let need = now;
+    for (let c = 0; c < model.cols; c++) {
+      const i = r * model.cols + c;
+      const v = model.cells[i]?.v;
+      if (typeof v !== "string" || !v.includes("\n") || tall.has(i)) continue;
+      const lines = Math.min(maxLines, v.split("\n").length);
+      const size = model.styles[model.cells[i]?.s ?? 0]?.fontSize || 11;
+      // 줄 높이 1.25 + 위아래 여백(pt)
+      need = Math.max(need, Math.ceil(lines * size * 1.25 + 4));
+    }
+    if (need > now) {
+      heights ??= [...model.rowHeights];
+      heights[r] = need;
+    }
+  }
+  return heights ? { ...model, rowHeights: heights } : model;
+}

@@ -9,7 +9,10 @@ const KICK_TEXT = {
   removed: "명단에서 빠졌습니다. 호스트에게 문의해 주세요.",
 } as const;
 
-/** 1e 접속 화면: URL로 들어와 이름만 입력한다. 승인 대기·중복 접속·끊김 상태도 여기서 보인다. */
+/**
+ * 1e 접속 화면: 호스트의 IP 명단에 있는 PC는 이름을 묻지 않고 그 이름으로 바로 들어간다. 그 밖에는 이름을 입력하고
+ * 호스트 승인을 기다린다. 승인 대기·중복 접속·끊김 상태도 여기서 보인다.
+ */
 export function JoinScreen({ s }: { s: SessionState }) {
   const [name, setName] = useState(s.savedName ?? "");
   const { info, phase } = s;
@@ -42,7 +45,10 @@ export function JoinScreen({ s }: { s: SessionState }) {
             onChange={(e) => setName(e.target.value)}
           />
         </label>
-        <div className="hint">호스트 명단과 같은 이름이면 담당 행이 자동으로 연결됩니다.</div>
+        <div className="hint">
+          호스트가 승인하면 참여합니다. 호스트 명단과 같은 이름이면 담당 행이 자동으로 연결됩니다(호스트가 등록한 PC는
+          이름 없이 바로 들어갑니다).
+        </div>
         {phase.kind === "name" && phase.error && <div className="error">{phase.error}</div>}
         <button type="submit" className="primary" disabled={busy || !name.trim() || !s.connected}>
           {busy ? "참여하는 중…" : "참여하기"}
@@ -57,9 +63,15 @@ export function JoinScreen({ s }: { s: SessionState }) {
             <div className="muted">호스트 PC에 연결하는 중입니다… 같은 사내망인지 확인해 주세요.</div>
           </div>
         )}
+        {phase.kind === "joining" && phase.known && (
+          <div className="state-card" role="status">
+            <b>등록된 PC</b>
+            <div>‘{phase.name}’ 님으로 들어가는 중입니다…</div>
+          </div>
+        )}
         {phase.kind === "pending" && (
           <div className="state-card" role="status">
-            <b>명단에 없는 이름</b>
+            <b>호스트 승인 대기</b>
             <div>‘{phase.name}’ 님, 호스트 승인을 기다리는 중입니다…</div>
             <div className="bar indeterminate">
               <span />
