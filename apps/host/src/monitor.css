@@ -1,7 +1,6 @@
 /* ---------------------------------------------------------------- 4 진행 모니터링 (1d) · 1i 소통 패널 */
 .monitor-screen {
-  gap: 8px;
-  padding: 12px 16px;
+  gap: 12px;
   overflow: hidden;
 }
 
@@ -9,7 +8,40 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 16px;
+  gap: 8px 28px;
+}
+
+.mon-head .stat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  color: var(--ink-2);
+}
+
+.mon-head .stat b {
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.mon-head .stat.warn b {
+  color: var(--warn);
+}
+
+.mon-head .ghost.small {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.warn-pill {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.pill:not(.ok-pill):not(.warn-pill) {
+  background: var(--chip);
+  color: var(--ink-2);
 }
 
 .mon-progress {
@@ -26,24 +58,26 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px 12px;
-  padding: 6px 0;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
-  font-size: 13px;
+  gap: 6px 14px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--chrome);
+  font-size: 12px;
 }
 
 .filter-bar select {
   height: 28px;
   margin-left: 4px;
+  font-size: 12px;
 }
 
 .mon-body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 190px minmax(0, 1fr) 330px;
-  gap: 12px;
+  grid-template-columns: 190px minmax(0, 1fr) 300px;
+  gap: 16px;
 }
 
 .mon-left {
@@ -70,18 +104,30 @@
   border-radius: 6px;
   background: transparent;
   color: var(--ink);
+  font-weight: 400;
   text-align: left;
 }
 
-.mon-person:hover,
-.mon-col:hover {
-  background: var(--chrome);
+.mon-person:hover:not(:disabled),
+.mon-col:hover:not(:disabled) {
+  border-color: transparent;
+  background: #eef0f3;
 }
 
 .mon-person.on,
-.mon-col.on {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+.mon-col.on,
+.mon-person.on:hover:not(:disabled),
+.mon-col.on:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--accent-tint);
+  font-weight: 700;
+}
+
+.mon-left b {
+  padding: 0 6px 4px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
 }
 
 .grow {
@@ -96,8 +142,8 @@
   min-width: 0;
   min-height: 0;
   display: flex;
-  border: 1.5px solid var(--ink);
-  border-radius: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -109,28 +155,42 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  border: 1.5px solid var(--ink);
-  border-radius: 8px;
-  padding: 8px;
+  gap: 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 12px 12px;
 }
 
 .mon-tabs {
   display: flex;
-  gap: 4px;
+  margin: 0 -12px;
+  border-bottom: 1px solid var(--line);
 }
 
 .mon-tabs button {
-  height: 28px;
-  padding: 0 10px;
-  background: #fff;
-  color: var(--ink);
+  flex: 1;
+  height: auto;
+  padding: 11px 0 9px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
   font-size: 13px;
+  font-weight: 400;
 }
 
-.mon-tabs button[aria-selected="true"] {
-  background: var(--ink);
-  color: #fff;
+.mon-tabs button:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+}
+
+.mon-tabs button[aria-selected="true"],
+.mon-tabs button[aria-selected="true"]:hover:not(:disabled) {
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .feed,
@@ -144,19 +204,20 @@
 }
 
 .feed-item {
-  padding: 6px 8px;
-  border-radius: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
   background: var(--paper);
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .feed-item.editing {
-  background: #fff4e5;
+  background: var(--warn-soft);
 }
 
 .feed-item.alert {
-  border: 1.5px solid var(--danger);
-  background: #fdecec;
+  border: 1px solid #f1c4bd;
+  background: var(--danger-soft);
 }
 
 .feed-actions {
@@ -175,10 +236,8 @@
 }
 
 .panel-body textarea {
-  font: inherit;
-  border: 1.5px solid var(--ink);
-  border-radius: 4px;
-  padding: 6px 8px;
+  padding: 8px 10px;
+  line-height: 1.5;
   resize: vertical;
 }
 
@@ -193,14 +252,15 @@
   flex-direction: column;
   gap: 6px;
   padding-top: 6px;
-  border-top: 1px dashed var(--line);
+  border-top: 1px solid var(--line-soft);
 }
 
 .sent-item {
-  padding: 6px 8px;
+  padding: 10px 12px;
   border-radius: 6px;
-  background: var(--paper);
-  font-size: 13px;
+  background: var(--warn-soft);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .radio-inline {
@@ -212,11 +272,11 @@ button.cell-ref {
   padding: 0 3px;
   border: 0;
   border-radius: 3px;
-  background: #fff3b0;
-  color: #6b5b00;
+  background: #fdecc8;
+  color: var(--warn-ink);
   font:
-    12px ui-monospace,
-    Menlo,
+    12px Consolas,
+    ui-monospace,
     monospace;
 }
 
@@ -231,16 +291,16 @@ button.cell-ref {
 
 .chat-msg {
   max-width: 92%;
-  padding: 6px 8px;
+  padding: 8px 11px;
   border-radius: 8px;
-  background: var(--paper);
-  font-size: 13px;
+  background: var(--chip);
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
 .chat-msg.mine {
   align-self: flex-end;
-  background: var(--accent-soft);
+  background: #eeeefc;
 }
 
 .chat-input {
@@ -258,7 +318,7 @@ button.cell-ref {
 }
 
 .steps .badge {
-  margin-left: 6px;
+  margin-left: auto;
   padding: 0 6px;
   border-radius: 9px;
   background: var(--danger);
@@ -303,15 +363,15 @@ button.cell-ref {
   padding: 8px;
   border: 1.5px solid var(--warn);
   border-radius: 6px;
-  background: #fffaf0;
-  font-size: 13px;
+  background: #fffbf3;
+  font-size: 12px;
 }
 
 .htable {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  border: 1.5px solid var(--ink);
+  border: 1px solid var(--line);
   border-radius: 8px;
 }
 
@@ -319,26 +379,32 @@ button.cell-ref {
   display: grid;
   grid-template-columns: 70px 90px 64px minmax(0, 1fr) minmax(0, 1.4fr) 84px;
   align-items: center;
-  gap: 6px;
-  min-height: 34px;
-  padding: 2px 10px;
-  border-bottom: 1px solid #eee;
-  font-size: 13px;
+  gap: 8px;
+  min-height: 36px;
+  padding: 2px 14px;
+  border-bottom: 1px solid var(--line-soft);
   cursor: pointer;
+}
+
+.hrow:hover {
+  background: var(--chrome);
 }
 
 .hrow.hhead {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: #f7f6f3;
-  color: #555;
+  min-height: 32px;
+  background: var(--head);
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 700;
   cursor: default;
-  border-bottom: 1.5px solid var(--ink);
+  border-bottom: 1px solid var(--line);
 }
 
 .hrow.child {
-  background: #fcfbf9;
+  background: var(--paper);
 }
 
 .hrow.on {
@@ -346,7 +412,7 @@ button.cell-ref {
 }
 
 .hbatch.alert > .hrow:first-child {
-  background: #fdecec;
+  background: var(--danger-soft);
 }
 
 .hrow > span {
@@ -365,20 +431,20 @@ button.cell-ref {
 
 .kind {
   margin-left: 4px;
-  padding: 0 5px;
-  border-radius: 3px;
-  background: #eeede9;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--chip);
   font-size: 11px;
 }
 
 .kind-delete {
-  background: #fdecec;
+  background: var(--danger-soft);
   color: var(--danger);
 }
 
 .kind-revert {
-  background: #efe7fb;
-  color: #8a5cd6;
+  background: #eeeefc;
+  color: var(--accent-ink);
 }
 
 .hempty {
@@ -386,7 +452,7 @@ button.cell-ref {
 }
 
 .history-side {
-  width: 330px;
+  width: 300px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -400,7 +466,7 @@ button.cell-ref {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .timeline .link {
@@ -419,18 +485,24 @@ button.cell-ref {
 .snap-item {
   width: 100%;
   height: auto;
-  min-height: 30px;
-  padding: 4px 8px;
+  min-height: 34px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
   background: #fff;
   color: var(--ink);
+  font-weight: 400;
   text-align: left;
-  font-size: 13px;
+}
+
+.snap-item:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--chrome);
 }
 
 .snapshots li.on .snap-item {
   border-color: var(--accent);
   background: var(--accent-soft);
+  font-weight: 600;
 }
 
 .snap-detail {
@@ -461,11 +533,12 @@ button.cell-ref {
   max-height: 80vh;
   background: #fff;
   overflow: hidden;
+  box-shadow: 0 12px 32px rgba(20, 24, 32, 0.2);
 }
 
 .diff-table {
   overflow: auto;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .drow {
@@ -473,21 +546,18 @@ button.cell-ref {
   grid-template-columns: 64px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px;
   padding: 4px 8px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .drow.dhead {
   position: sticky;
   top: 0;
-  background: #f7f6f3;
-  color: #555;
+  background: var(--head);
+  color: var(--ink-2);
+  font-weight: 700;
 }
 
 /* 지난 취합 이어서 하기(앱을 다시 켰을 때) */
-.content {
-  flex-direction: column;
-}
-
 .content > .screen-slot,
 .content > .screen {
   min-height: 0;
@@ -498,9 +568,10 @@ button.cell-ref {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px 14px;
-  margin: 12px 22px 0;
-  padding: 10px 14px;
-  border: 1.5px solid var(--accent);
-  border-radius: 8px;
+  flex: none;
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--accent-line);
+  border-radius: 10px;
   background: var(--accent-soft);
 }

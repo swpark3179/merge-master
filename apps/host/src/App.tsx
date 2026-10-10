@@ -1,10 +1,12 @@
 import type { CommsSnapshot, HostSnapshot, RecoveryInfo, ServiceInfo, SheetModel } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getVersion } from "@tauri-apps/api/app";
 
 import { api, errorText } from "./api";
+import type { FooterOverride } from "./frame";
+import { FrameContext } from "./frame";
 import { ConfigScreen } from "./screens/config/ConfigScreen";
 import { HistoryScreen } from "./screens/history/HistoryScreen";
 import { ImportScreen } from "./screens/import/ImportScreen";
@@ -14,13 +16,13 @@ import { ServiceScreen } from "./screens/service/ServiceScreen";
 
 type Step = "import" | "config" | "service" | "monitor" | "history" | "save";
 
-const STEPS: { id: Step; label: string }[] = [
-  { id: "import", label: "1 불러오기" },
-  { id: "config", label: "2 취합 설정" },
-  { id: "service", label: "3 서비스·접속자" },
-  { id: "monitor", label: "4 진행 모니터링" },
-  { id: "history", label: "5 히스토리" },
-  { id: "save", label: "6 저장·마감" },
+const STEPS: { id: Step; label: string; desc: string }[] = [
+  { id: "import", label: "불러오기", desc: "참여자와 함께 채울 엑셀 파일을 고르세요." },
+  { id: "config", label: "설정", desc: "참여자가 어느 칸을 채울지 정하세요." },
+  { id: "service", label: "서비스", desc: "주소를 공유하면 참여자가 브라우저로 접속합니다." },
+  { id: "monitor", label: "모니터링", desc: "참여자가 입력하는 내용을 실시간으로 확인하세요." },
+  { id: "history", label: "히스토리", desc: "누가 언제 무엇을 바꿨는지 확인하세요." },
+  { id: "save", label: "저장", desc: "모은 내용을 엑셀 파일로 저장하세요." },
 ];
 
 /** 아직 만들지 않은 단계. */
@@ -38,6 +40,20 @@ export function App() {
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
 
   const [version, setVersion] = useState("");
+  const [footer, setFooter] = useState<FooterOverride | null>(null);
+  const [toastText, setToastText] = useState("");
+  const toastTimer = useRef(0);
+  const frame = useMemo(
+    () => ({
+      setFooter,
+      toast: (msg: string) => {
+        setToastText(msg);
+        window.clearTimeout(toastTimer.current);
+        toastTimer.current = window.setTimeout(() => setToastText(""), 2200);
+      },
+    }),
+    [],
+  );
 
   useEffect(() => {
     void api
@@ -111,128 +127,174 @@ export function App() {
 
   const ready = (s: Step) => !NOT_YET.includes(s) && (s === "import" || sheet !== null);
 
+  const index = STEPS.findIndex((s) => s.id === step);
+  const cur = STEPS[index]!;
+  const prevStep = STEPS[index - 1];
+  const nextStep = STEPS[index + 1];
+  const defaultHint =
+    step === "config"
+      ? "설정은 공유 중에도 바꿀 수 있어요"
+      : step === "service" && !service
+        ? "공유를 시작해야 참여자가 접속할 수 있어요"
+        : "";
+  const hint = footer?.hint ?? defaultHint;
+  const goNext = footer?.onNext ?? (() => nextStep && setStep(nextStep.id));
+  const nextDisabled = footer?.nextDisabled ?? (nextStep ? !ready(nextStep.id) : true);
+
   return (
-    <div className="shell">
-      <header className="titlebar">
-        <span className="logo" />
-        <b>엑셀 취합 도구</b>
-        <span className="muted">{sheet ? `${sheet.workbook} · ${sheet.sheet}` : "새 취합"}</span>
-        <span className="spacer" />
-        {excelRunning !== null && (
-          <span className={excelRunning ? "ok" : "muted"}>
-            {excelRunning ? "● Excel 연결됨 (COM)" : "○ 실행 중인 Excel 없음"}
-          </span>
-        )}
-      </header>
-      <div className="body">
-        <nav className="steps">
-          {STEPS.map((s) => (
-            <button
-              key={s.id}
-              className={`step${s.id === step ? " active" : ""}`}
-              disabled={!ready(s.id)}
-              title={NOT_YET.includes(s.id) ? "다음 단계에서 구현" : undefined}
-              onClick={() => setStep(s.id)}
-            >
-              {s.label}
-              {s.id === "import" && sheet ? " ✓" : ""}
-              {s.id === "monitor" && unreadChat > 0 && step !== "monitor" ? (
-                <span className="badge">{unreadChat}</span>
-              ) : null}
-            </button>
-          ))}
+    <FrameContext.Provider value={frame}>
+      <div className="shell">
+        <header className="titlebar">
+          <div className="brand">
+            <span className="logo" />
+            <b>Merge Master</b>
+          </div>
+          <span className="divider" />
+          <span className="file">{sheet ? `${sheet.workbook} · ${sheet.sheet}` : "열린 파일 없음"}</span>
           <span className="spacer" />
-          <div className={`service-badge${service ? " on" : ""}`}>
-            {service ? (
-              <>
-                ● 실행 중
-                <br />
-                접속 {snapshot?.online ?? 0} / {snapshot?.roster ?? 0}
-              </>
-            ) : (
-              "○ 서비스 중지됨"
-            )}
-            {snapshot?.closed && (
-              <>
-                <br />
-                <span className="warn">취합 마감됨</span>
-              </>
-            )}
+          {excelRunning !== null && (
+            <span className={`excel ${excelRunning ? "ok" : "muted"}`}>
+              {excelRunning ? "● Excel 연결됨 (COM)" : "○ 실행 중인 Excel 없음"}
+            </span>
+          )}
+          <div className={`service-badge${service ? " on" : ""}`} aria-live="polite">
+            {service ? `공유 중 · 접속 ${snapshot?.online ?? 0} / ${snapshot?.roster ?? 0}` : "공유 전"}
+            {snapshot?.closed && <span className="warn"> · 취합 마감됨</span>}
           </div>
-          {version && <div className="app-version">v{version}</div>}
-        </nav>
-        <main className="content">
-          {(recovery || recoveryError) && (
-            <div className="recovery-card" role="region" aria-label="지난 취합">
-              {recovery && (
-                <>
-                  <b>지난 취합을 이어서 할 수 있습니다</b>
-                  <span>
-                    {recovery.workbook} · {recovery.sheet} · 변경 {recovery.changes.toLocaleString()}건
-                    {recovery.lastChangeMs
-                      ? ` · 마지막 변경 ${new Date(recovery.lastChangeMs).toLocaleString("ko-KR")}`
-                      : ""}
-                    {recovery.port ? ` · 서비스 포트 ${recovery.port}(다시 엽니다)` : ""}
-                    {recovery.closed ? " · 마감됨" : ""}
-                  </span>
-                  <span className="spacer" />
-                  <button disabled={recoveryBusy} onClick={() => void resume()}>
-                    {recoveryBusy ? "되살리는 중…" : "이어서 하기"}
-                  </button>
-                  <button className="ghost" disabled={recoveryBusy} onClick={() => void discard()}>
-                    버리고 새로 시작
-                  </button>
-                </>
-              )}
-              {recoveryError && <span className="error small">{recoveryError}</span>}
-              {!recovery && (
-                <button className="ghost small" onClick={() => setRecoveryError(null)}>
-                  닫기
+        </header>
+        <div className="body">
+          <nav className="steps" aria-label="진행 단계">
+            <div className="steps-title">진행 단계</div>
+            {STEPS.map((s, i) => {
+              const done = i < index || (s.id === "import" && sheet !== null && step !== "import");
+              return (
+                <button
+                  key={s.id}
+                  className={`step${s.id === step ? " active" : done ? " done" : ""}`}
+                  aria-label={`${i + 1} ${s.label}`}
+                  aria-current={s.id === step ? "step" : undefined}
+                  disabled={!ready(s.id)}
+                  title={NOT_YET.includes(s.id) ? "다음 단계에서 구현" : undefined}
+                  onClick={() => setStep(s.id)}
+                >
+                  <span className="mark">{done ? "✓" : i + 1}</span>
+                  <span>{s.label}</span>
+                  {s.id === "monitor" && unreadChat > 0 && step !== "monitor" ? (
+                    <span className="badge">{unreadChat}</span>
+                  ) : null}
                 </button>
+              );
+            })}
+            <span className="spacer" />
+            {version && <div className="app-version">v{version}</div>}
+          </nav>
+          <div className="main">
+            <div className="step-head">
+              <div>
+                <div className="step-no">{index + 1} / 6 단계</div>
+                <h1>{cur.label}</h1>
+                <p>{cur.desc}</p>
+              </div>
+            </div>
+            <main className="content">
+              {(recovery || recoveryError) && (
+                <div className="recovery-card" role="region" aria-label="지난 취합">
+                  {recovery && (
+                    <>
+                      <b>지난 취합을 이어서 할 수 있습니다</b>
+                      <span>
+                        {recovery.workbook} · {recovery.sheet} · 변경 {recovery.changes.toLocaleString()}건
+                        {recovery.lastChangeMs
+                          ? ` · 마지막 변경 ${new Date(recovery.lastChangeMs).toLocaleString("ko-KR")}`
+                          : ""}
+                        {recovery.port ? ` · 서비스 포트 ${recovery.port}(다시 엽니다)` : ""}
+                        {recovery.closed ? " · 마감됨" : ""}
+                      </span>
+                      <span className="spacer" />
+                      <button disabled={recoveryBusy} onClick={() => void resume()}>
+                        {recoveryBusy ? "되살리는 중…" : "이어서 하기"}
+                      </button>
+                      <button className="ghost" disabled={recoveryBusy} onClick={() => void discard()}>
+                        버리고 새로 시작
+                      </button>
+                    </>
+                  )}
+                  {recoveryError && <span className="error small">{recoveryError}</span>}
+                  {!recovery && (
+                    <button className="ghost small" onClick={() => setRecoveryError(null)}>
+                      닫기
+                    </button>
+                  )}
+                </div>
               )}
-            </div>
-          )}
-          {/* 불러오기·설정 화면은 단계를 옮겨도 상태를 잃지 않도록 숨기기만 한다. */}
-          <div className="screen-slot" hidden={step !== "import"}>
-            <ImportScreen onExcelStatus={setExcelRunning} onCommitted={onCommitted} />
+              {/* 불러오기·설정 화면은 단계를 옮겨도 상태를 잃지 않도록 숨기기만 한다. */}
+              <div className="screen-slot" hidden={step !== "import"}>
+                <ImportScreen
+                  active={step === "import"}
+                  committed={sheet !== null}
+                  onExcelStatus={setExcelRunning}
+                  onCommitted={onCommitted}
+                  onNext={() => setStep("config")}
+                />
+              </div>
+              {sheet && (
+                <div className="screen-slot" hidden={step !== "config"}>
+                  <ConfigScreen key={commitId} model={sheet} active={step === "config"} />
+                </div>
+              )}
+              {step === "service" && (
+                <ServiceScreen
+                  active
+                  hasSheet={sheet !== null}
+                  service={service}
+                  onService={setService}
+                  snapshot={snapshot}
+                  origin={sheet?.origin ?? { row: 0, col: 0 }}
+                  onGoConfig={() => setStep("config")}
+                />
+              )}
+              {step === "monitor" && (
+                <MonitorScreen
+                  active
+                  snapshot={snapshot}
+                  comms={comms}
+                  running={service !== null}
+                  chatSeen={chatSeen}
+                  onChatSeen={onChatSeen}
+                  onGoHistory={() => setStep("history")}
+                />
+              )}
+              {step === "history" && <HistoryScreen active />}
+              {step === "save" && (
+                <SaveScreen
+                  active
+                  snapshot={snapshot}
+                  onStopped={() => setService(null)}
+                  onRestart={() => setStep("import")}
+                />
+              )}
+            </main>
+            <footer className="step-foot">
+              <div>
+                {prevStep && (
+                  <button className="ghost" onClick={() => setStep(prevStep.id)}>
+                    ← {prevStep.label}
+                  </button>
+                )}
+              </div>
+              <div className="next">
+                {hint && <span className="hint">{hint}</span>}
+                {nextStep && (
+                  <button disabled={nextDisabled} onClick={goNext}>
+                    다음: {nextStep.label} →
+                  </button>
+                )}
+              </div>
+            </footer>
           </div>
-          {sheet && (
-            <div className="screen-slot" hidden={step !== "config"}>
-              <ConfigScreen
-                key={commitId}
-                model={sheet}
-                active={step === "config"}
-                onBack={() => setStep("import")}
-                onNext={() => setStep("service")}
-              />
-            </div>
-          )}
-          {step === "service" && (
-            <ServiceScreen
-              active
-              hasSheet={sheet !== null}
-              service={service}
-              onService={setService}
-              snapshot={snapshot}
-              origin={sheet?.origin ?? { row: 0, col: 0 }}
-              onGoConfig={() => setStep("config")}
-            />
-          )}
-          {step === "monitor" && (
-            <MonitorScreen
-              active
-              snapshot={snapshot}
-              comms={comms}
-              running={service !== null}
-              chatSeen={chatSeen}
-              onChatSeen={onChatSeen}
-              onGoHistory={() => setStep("history")}
-            />
-          )}
-          {step === "history" && <HistoryScreen active />}
-          {step === "save" && <SaveScreen active snapshot={snapshot} onStopped={() => setService(null)} />}
-        </main>
+        </div>
+        {toastText && <div className="toast-host">{toastText}</div>}
       </div>
-    </div>
+    </FrameContext.Provider>
   );
 }

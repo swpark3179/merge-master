@@ -2,10 +2,12 @@ import type { GridSelection } from "@mm/grid";
 import { SheetGrid } from "@mm/grid";
 import type { ImportItems, ReadStage, SheetModel } from "@mm/shared";
 import { colLetters, colSpanLabel, formatRange, parseRange } from "@mm/shared";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useEffect, useState } from "react";
 
+import { useStepFooter } from "../../frame";
 import type { ImportState } from "./useImport";
-import { useImport } from "./useImport";
+import { EXCEL_EXTENSIONS, useImport } from "./useImport";
 
 const STAGE_LABEL: Record<ReadStage, string> = {
   values: "값",
@@ -32,12 +34,16 @@ const ITEMS: { key: keyof ImportItems; label: string }[] = [
 const MAX_FROZEN_COLS = 8;
 
 interface Props {
+  active: boolean;
+  /** 이미 확정한 시트가 있다(바꾼 게 없으면 '다음'은 확정 없이 넘어간다). */
+  committed: boolean;
   onExcelStatus: (running: boolean) => void;
   onCommitted: (m: SheetModel) => void;
+  onNext: () => void;
 }
 
 /** 1a 엑셀 불러오기. */
-export function ImportScreen({ onExcelStatus, onCommitted }: Props) {
+export function ImportScreen({ active, committed, onExcelStatus, onCommitted, onNext }: Props) {
   const s = useImport(onExcelStatus, onCommitted);
   const [didInit, setDidInit] = useState(false);
   useEffect(() => {
@@ -46,63 +52,131 @@ export function ImportScreen({ onExcelStatus, onCommitted }: Props) {
     void s.refresh();
   }, [didInit, s.refresh]);
 
+  // 확정한 시트가 있고 새로 고른 게 없으면(이어서 하기 포함) 다시 확정하지 않고 넘어간다.
+  const reuse = committed && (!s.book || !s.changedSinceCommit);
+  useStepFooter(active, {
+    onNext: reuse ? onNext : () => void s.commit(),
+    nextDisabled: !reuse && (!s.book || !s.result || s.stale || s.busy !== null),
+    hint: s.book || committed ? undefined : "파일을 고르면 다음 단계로 넘어갈 수 있어요",
+  });
+
   return (
-    <div className="screen">
-      <div className="screen-head">
-        <h2>엑셀 불러오기</h2>
-        <p className="muted">
-          실행 중인 Excel에서 통합문서를 고르거나 파일을 엽니다. 값·서식·병합·유효성을 함께 읽습니다.
-        </p>
-      </div>
-      <div className="import-grid">
-        <div className="col">
-          <WorkbookCard s={s} />
-          {s.book && <SheetCard s={s} />}
+    <div className="screen import-screen">
+      {s.book ? (
+        <div className="import-grid">
+          <div className="col">
+            <FileCard s={s} />
+            <SheetCard s={s} />
+            <RangeCard s={s} />
+            <ItemsCard s={s} />
+            <div className="info-note">
+              서식·수식·병합 셀은 원본 그대로 가져옵니다. 원본 파일은 마지막 저장 단계 전까지 바뀌지 않아요.
+            </div>
+          </div>
+          <div className="col wide">
+            <PreviewCard s={s} />
+            <ImportStatus s={s} />
+          </div>
         </div>
-        <div className="col wide">
-          <RangeCard s={s} />
-          <ItemsCard s={s} />
-          <PreviewCard s={s} />
-        </div>
-      </div>
-      <ImportFooter s={s} />
+      ) : (
+        <Picker s={s} active={active} />
+      )}
     </div>
   );
 }
 
-function WorkbookCard({ s }: { s: ImportState }) {
+/** 끌어다 놓기 · 파일 선택 · 실행 중인 Excel의 통합문서. */
+function Picker({ s, active }: { s: ImportState; active: boolean }) {
+  const [over, setOver] = useState(false);
+  const openFile = s.openFile;
+
+  // Tauri 창에 파일을 끌어다 놓으면 경로가 온다(브라우저 drop 이벤트로는 경로를 알 수 없다).
+  useEffect(() => {
+    if (!active) return;
+    let off: (() => void) | undefined;
+    let alive = true;
+    try {
+      void getCurrentWebview()
+        .onDragDropEvent((e) => {
+          const p = e.payload;
+          if (p.type === "enter" || p.type === "over") setOver(true);
+          else if (p.type === "leave") setOver(false);
+          else if (p.type === "drop") {
+            setOver(false);
+            const path = p.paths.find((x) => EXCEL_EXTENSIONS.includes(x.split(".").pop()?.toLowerCase() ?? ""));
+            if (path) void openFile(path);
+          }
+        })
+        .then((f) => (alive ? (off = f) : f()))
+        .catch(() => {});
+    } catch {
+      // Tauri 밖(브라우저 개발 서버)에서는 끌어다 놓기를 쓰지 않는다.
+    }
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, [active, openFile]);
+
   const books = s.status?.workbooks ?? [];
   return (
-    <section className="card" aria-label="통합문서">
-      <div className="card-head">
-        <b>통합문서</b>
-        <span className="spacer" />
-        <button className="ghost small" onClick={() => void s.refresh()} disabled={s.busy !== null}>
-          ↻ 다시 찾기
-        </button>
-      </div>
-      <div className="segmented">
-        <span className="on">실행 중인 Excel</span>
+    <div className="picker">
+      <div className={`dropzone${over ? " over" : ""}`}>
+        <div className="drop-title">엑셀 파일을 여기로 끌어다 놓으세요</div>
+        <div className="muted">.xlsx 또는 .xls 파일</div>
         <button onClick={() => void s.openFile()} disabled={s.busy !== null}>
-          파일 열기…
+          {s.busy === "open" ? "여는 중…" : "파일 선택"}
         </button>
       </div>
-      {s.busy === "list" && <div className="muted small">Excel을 찾는 중…</div>}
-      {s.status && books.length === 0 && (
-        <div className="muted small">
-          {s.status.running
-            ? "실행 중인 Excel에 열린 통합문서가 없습니다."
-            : "실행 중인 Excel이 없습니다. ‘파일 열기…’로 불러오면 보이지 않는 Excel에서 읽습니다."}
+      <section className="picker-list" aria-label="통합문서">
+        <div className="card-head">
+          <span className="section-label">실행 중인 Excel</span>
+          <span className="spacer" />
+          <button className="ghost small" onClick={() => void s.refresh()} disabled={s.busy !== null}>
+            ↻ 다시 찾기
+          </button>
         </div>
-      )}
-      {books.map((b) => (
-        <button key={b.id} className={`book${b.id === s.book?.id ? " picked" : ""}`} onClick={() => s.pick(b)}>
-          <span className="book-name">{b.name}</span>
-          <span className="muted small">
-            {b.path || "저장 안 됨"} · 시트 {b.sheets.length}개{b.background ? " · 백그라운드" : ""}
-          </span>
-        </button>
-      ))}
+        {s.busy === "list" && <div className="muted small">Excel을 찾는 중…</div>}
+        {s.status && books.length === 0 && (
+          <div className="info-note small">
+            {s.status.running
+              ? "실행 중인 Excel에 열린 통합문서가 없습니다."
+              : "실행 중인 Excel이 없습니다. ‘파일 선택’으로 불러오면 보이지 않는 Excel에서 읽습니다."}
+          </div>
+        )}
+        {books.length > 0 && (
+          <div className="list">
+            {books.map((b) => (
+              <button key={b.id} className="list-item book" onClick={() => s.pick(b)}>
+                <span>{b.name}</span>
+                <span className="muted">
+                  {b.path || "저장 안 됨"} · 시트 {b.sheets.length}개{b.background ? " · 백그라운드" : ""}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+        {s.error && <div className="error small">{s.error}</div>}
+      </section>
+    </div>
+  );
+}
+
+function FileCard({ s }: { s: ImportState }) {
+  const b = s.book!;
+  const ext = (b.name.split(".").pop() || "xlsx").toUpperCase().slice(0, 4);
+  return (
+    <section className="file-card" aria-label="통합문서">
+      <span className="file-icon">{ext}</span>
+      <div className="file-meta">
+        <div className="file-name">{b.name}</div>
+        <div className="muted">
+          {b.path || "저장 안 됨"} · 시트 {b.sheets.length}개{b.background ? " · 백그라운드" : ""}
+        </div>
+      </div>
+      <button className="ghost" onClick={s.unpick} disabled={s.busy === "commit"}>
+        다른 파일
+      </button>
     </section>
   );
 }
@@ -110,20 +184,31 @@ function WorkbookCard({ s }: { s: ImportState }) {
 function SheetCard({ s }: { s: ImportState }) {
   const lists = (s.inspection?.validations ?? []).filter((v) => v.rule.kind === "list");
   return (
-    <section className="card" aria-label="시트">
-      <b>시트</b>
-      <div className="chips">
-        {s.book!.sheets.map((name) => (
-          <button
-            key={name}
-            className={`chip${name === s.sheet ? " on" : ""}`}
-            onClick={() => s.setSheet(name)}
-            disabled={s.busy === "inspect"}
-          >
-            {name === s.sheet ? "✓ " : ""}
-            {name}
-          </button>
-        ))}
+    <section className="sheet-pick" aria-label="시트">
+      <b>함께 채울 시트</b>
+      <div className="list">
+        {s.book!.sheets.map((name) => {
+          const on = name === s.sheet;
+          return (
+            <button
+              key={name}
+              className={`list-item sheet${on ? " on" : ""}`}
+              aria-pressed={on}
+              onClick={() => s.setSheet(name)}
+              disabled={s.busy === "inspect"}
+            >
+              <span className={`ring${on ? " on" : ""}`} />
+              <span className="grow">{name}</span>
+              <span className="muted">
+                {on && s.inspection
+                  ? `${formatRange(s.inspection.table)}`
+                  : on && s.busy === "inspect"
+                    ? "감지 중…"
+                    : ""}
+              </span>
+            </button>
+          );
+        })}
       </div>
       {lists.map((v) => (
         <div key={formatRange(v.range)} className="muted small">
@@ -153,6 +238,7 @@ function RangeCard({ s }: { s: ImportState }) {
     <section className="card range-card" aria-label="범위 · 머리글">
       <div className="card-head">
         <b>범위 · 머리글</b>
+        <span className="muted small">자동으로 찾았어요. 필요하면 고치세요.</span>
         {s.busy === "inspect" && <span className="muted small">감지 중…</span>}
       </div>
       {form ? (
@@ -215,10 +301,14 @@ function RangeCard({ s }: { s: ImportState }) {
 
 function ItemsCard({ s }: { s: ImportState }) {
   const items = s.form?.items;
+  const off = items ? ITEMS.filter(({ key }) => key !== "includeHidden" && !items[key]).length : 0;
   return (
-    <section className="card" aria-label="가져올 항목">
-      <b>가져올 항목</b>
-      <div className="items">
+    <details className="more" aria-label="가져올 항목">
+      <summary>
+        가져올 항목
+        <span className="muted small">{off === 0 ? "값 · 서식 · 수식 모두" : `${off}개 항목 뺌`}</span>
+      </summary>
+      <div className="more-body items">
         <label className="check">
           <input type="checkbox" checked disabled /> 값
         </label>
@@ -234,7 +324,7 @@ function ItemsCard({ s }: { s: ImportState }) {
           </label>
         ))}
       </div>
-    </section>
+    </details>
   );
 }
 
@@ -336,36 +426,35 @@ function summarize(m: SheetModel) {
   };
 }
 
-function ImportFooter({ s }: { s: ImportState }) {
+/** 읽기 진행률 · 취소 · 오류. */
+function ImportStatus({ s }: { s: ImportState }) {
   const p = s.progress;
   const cols = s.form ? (parseRange(s.form.range)?.cols ?? 1) : 1;
   const rows = p ? Math.round(p.total / cols) : 0;
   const doneRows = p ? Math.round(p.done / cols) : 0;
   const pct = p && p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
+  if (s.busy !== "read" && !s.error) return null;
   return (
-    <footer className="screen-foot">
-      <div className="progress" aria-live="polite">
-        {s.busy === "read" ? (
-          <>
-            읽는 중 · {p ? STAGE_LABEL[p.stage] : "준비"}{" "}
-            {p && (p.stage === "styles" || p.stage === "merges")
-              ? `${doneRows.toLocaleString()} / ${rows.toLocaleString()}행`
-              : ""}
-            <span className="bar">
-              <span style={{ width: `${p && (p.stage === "styles" || p.stage === "merges") ? pct : 15}%` }} />
-            </span>
-          </>
-        ) : (
-          s.error && <span className="error">{s.error}</span>
-        )}
-      </div>
+    <div className="import-status" aria-live="polite">
+      {s.busy === "read" ? (
+        <div className="progress">
+          읽는 중 · {p ? STAGE_LABEL[p.stage] : "준비"}{" "}
+          {p && (p.stage === "styles" || p.stage === "merges")
+            ? `${doneRows.toLocaleString()} / ${rows.toLocaleString()}행`
+            : ""}
+          <span className="bar">
+            <span style={{ width: `${p && (p.stage === "styles" || p.stage === "merges") ? pct : 15}%` }} />
+          </span>
+        </div>
+      ) : (
+        <span className="error">{s.error}</span>
+      )}
       <span className="spacer" />
-      <button className="ghost" onClick={s.cancel} disabled={s.busy !== "read"}>
-        취소
-      </button>
-      <button onClick={() => void s.commit()} disabled={!s.result || s.stale || s.busy !== null}>
-        불러오기 → 취합 설정
-      </button>
-    </footer>
+      {s.busy === "read" && (
+        <button className="ghost small" onClick={s.cancel}>
+          취소
+        </button>
+      )}
+    </div>
   );
 }
