@@ -6,7 +6,7 @@ export type ExportOptions = {
  */
 mark?: number, 
 /**
- * 앱에서 바꾼 서식(글꼴·채우기·맞춤·테두리)과 병합도 반영한다.
+ * 앱에서 바꾼 서식(글꼴·채우기·맞춤·테두리)·병합·열 너비·행 높이도 반영한다.
  */
 styles: boolean, 
 /**

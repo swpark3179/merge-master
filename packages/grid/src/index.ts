@@ -1,3 +1,5 @@
+export { CellEditor } from "./CellEditor";
+export type { EditorState, Move } from "./CellEditor";
 export { SheetGrid } from "./SheetGrid";
 export type { CellDecoration, SheetGridHandle, SheetGridProps } from "./SheetGrid";
 export { parseTsv, toTsv } from "./clipboard";

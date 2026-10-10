@@ -1,13 +1,24 @@
-import type { CellDecoration } from "@mm/grid";
+import type { CellDecoration, SheetGridHandle } from "@mm/grid";
 import { countCells, SheetGrid } from "@mm/grid";
-import type { Brush, CellRange, ColumnRule, HAlign, SheetModel, StylePatch } from "@mm/shared";
+import type { Brush, CellRange, ColumnRule, FormatEdit, HAlign, SheetModel, StylePatch } from "@mm/shared";
 import { colLetters, FLAG, formatRange, formatValue, personColor, rgbHex } from "@mm/shared";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useRef, useState } from "react";
 
-import { AssignmentPanel, ColumnPanel, ExceptionsPanel, PermissionsPanel } from "./panels";
+import { useToast } from "../../frame";
+import { useHostEditor } from "../../useHostEditor";
+import {
+  AssignBar,
+  ColumnPanel,
+  ExceptionsPanel,
+  PermissionsPanel,
+  RangeAssignmentsPanel,
+  RosterPanel,
+} from "./panels";
 import type { ConfigState } from "./useConfig";
 import { useConfig } from "./useConfig";
+
+type Tab = "roles" | "assign";
 
 interface Props {
   model: SheetModel;
@@ -33,13 +44,61 @@ export function formatLabel(rule: ColumnRule | undefined): string {
   }
 }
 
-/** 1b 취합 설정. */
+/** 1b 취합 설정: 위쪽 탭(열 역할 · 담당자 배정), 그리드(칸 편집·크기 조절), 오른쪽 상세. */
 export function ConfigScreen({ model: initial, active }: Props) {
   const s = useConfig(initial, active);
-  const assignRef = useRef<HTMLSelectElement>(null);
   const [fmt, setFmt] = useState(false);
+  const [tab, setTab] = useState<Tab>("roles");
+  const grid = useRef<SheetGridHandle>(null);
+  const gridHost = useRef<HTMLDivElement>(null);
+  const toast = useToast();
   const { model, view, flags, viewer } = s;
   const hr = model.headerRows;
+
+  const { setCells } = s;
+  const commitCells = useCallback((cells: Parameters<typeof setCells>[0]) => void setCells(cells), [setCells]);
+  const editor = useHostEditor({
+    model,
+    flags,
+    columns: view?.config.columns,
+    grid,
+    host: gridHost,
+    selection: s.selection,
+    setSelection: s.setSelection,
+    commit: commitCells,
+    notify: toast,
+  });
+
+  // 머리글로 여러 열(행)을 골라 두고 그중 하나의 경계를 끌면 고른 열(행) 모두를 같은 크기로(Excel처럼).
+  const onResize = (axis: "col" | "row", index: number, size: number) => {
+    const r = s.range;
+    let from = index;
+    let count = 1;
+    if (
+      r &&
+      axis === "col" &&
+      r.row <= hr &&
+      r.row + r.rows >= model.rows &&
+      index >= r.col &&
+      index < r.col + r.cols
+    ) {
+      from = r.col;
+      count = r.cols;
+    } else if (
+      r &&
+      axis === "row" &&
+      r.col === 0 &&
+      r.cols === model.cols &&
+      index >= r.row &&
+      index < r.row + r.rows
+    ) {
+      from = r.row;
+      count = r.rows;
+    }
+    const edit: FormatEdit =
+      axis === "col" ? { op: "colWidth", from, count, width: size } : { op: "rowHeight", from, count, height: size };
+    void s.format(edit);
+  };
 
   // 머리글 맨 아래 행(병합이면 그 병합의 왼쪽 위)에 열 태그(조회·배정 기준·필수·목록)를 붙인다.
   const headTagCells = useMemo(() => {
@@ -129,14 +188,36 @@ export function ConfigScreen({ model: initial, active }: Props) {
     return { ...model, rowHeights };
   }, [model, view]);
 
+  const keyCol = view?.config.assignment.keyCol;
   return (
     <div className="screen config-screen">
       <div className="config-main">
-        <RoleBar s={s} onAssign={() => assignRef.current?.focus()} />
+        <div className="config-tabs" role="tablist" aria-label="설정 종류">
+          <button role="tab" aria-selected={tab === "roles"} onClick={() => setTab("roles")}>
+            열 역할
+          </button>
+          <button role="tab" aria-selected={tab === "assign"} onClick={() => setTab("assign")}>
+            담당자 배정
+            <span className={`tag${keyCol !== undefined && keyCol !== null ? " tag-key" : ""}`}>
+              {keyCol !== undefined && keyCol !== null
+                ? `${colLetters(model.origin.col + keyCol)}열 기준 · ${view?.roster.length ?? 0}명`
+                : view && view.roster.length > 0
+                  ? `${view.roster.length}명`
+                  : "배정 안 함"}
+            </span>
+          </button>
+        </div>
+        {view && (tab === "roles" ? <RoleBar s={s} /> : <AssignBar s={s} />)}
         <div className="grid-card">
           <div className="grid-card-head">
             <span className="muted">
               {model.sheet} · {(model.rows - hr).toLocaleString()}행 {model.cols}열
+            </span>
+            <span
+              className="muted small grid-tip"
+              title="칸을 두 번 누르거나 바로 입력해 내용을 고치고, Delete로 지웁니다. 열·행 머리글 경계를 끌면 너비·높이가 바뀝니다."
+            >
+              두 번 눌러 고치기 · 머리글 경계를 끌어 크기 조절
             </span>
             <span className="spacer" />
             <ViewerPick s={s} />
@@ -145,16 +226,21 @@ export function ConfigScreen({ model: initial, active }: Props) {
             </button>
           </div>
           {fmt && <FormatBar s={s} />}
-          <FormulaBar s={s} />
+          <FormulaBar s={s} editing={editor.editing?.text ?? null} />
           {viewer && view && <ViewerBanner s={s} />}
-          <div className="config-grid">
+          <div className="config-grid" ref={gridHost}>
             {view ? (
               <SheetGrid
+                handle={grid}
                 model={shown}
                 decorate={decorate}
                 rowMarker={rowMarker}
                 selection={s.selection}
-                onSelectionChange={s.setSelection}
+                onSelectionChange={editor.onSelectionChange}
+                overlay={editor.overlay}
+                onKey={editor.onKey}
+                onCellDoubleClick={editor.onCellDoubleClick}
+                onResize={onResize}
                 className="preview-grid"
               />
             ) : (
@@ -166,10 +252,18 @@ export function ConfigScreen({ model: initial, active }: Props) {
       </div>
       {view && (
         <aside className="config-side" aria-label="설정 패널">
-          <ColumnPanel s={s} />
-          <ExceptionsPanel s={s} />
-          <AssignmentPanel s={s} selectRef={assignRef} />
-          <PermissionsPanel s={s} />
+          {tab === "roles" ? (
+            <>
+              <ColumnPanel s={s} />
+              <ExceptionsPanel s={s} />
+              <PermissionsPanel s={s} />
+            </>
+          ) : (
+            <>
+              <RosterPanel s={s} />
+              <RangeAssignmentsPanel s={s} />
+            </>
+          )}
         </aside>
       )}
     </div>
@@ -317,79 +411,53 @@ function ViewerPick({ s }: { s: ConfigState }) {
   );
 }
 
-const BRUSHES: { brush: Brush; name: string; label: ReactNode; title: string }[] = [
-  {
-    brush: "input",
-    name: "입력 영역",
-    label: (
-      <>
-        <span className="role-sw input" />
-        입력으로 지정
-      </>
-    ),
-    title: "참여자가 쓸 수 있는 칸으로",
-  },
-  {
-    brush: "required",
-    name: "필수",
-    label: (
-      <>
-        <span className="role-sw req" />
-        필수로 지정
-      </>
-    ),
-    title: "반드시 채워야 하는 칸으로(다시 누르면 해제)",
-  },
-  {
-    brush: "locked",
-    name: "입력 금지",
-    label: (
-      <>
-        <span className="role-sw lock" />
-        잠금으로 지정
-      </>
-    ),
-    title: "보기만 가능한 칸으로",
-  },
-  {
-    brush: "filter",
-    name: "조회조건",
-    label: (
-      <>
-        <span className="tag tag-filter">조회</span>조회조건
-      </>
-    ),
-    title: "열을 참여자 화면의 조회조건(드롭다운 필터)으로",
-  },
-];
-
-/** 범위(열 머리글 = 데이터 행 전체)를 고르고 역할을 누른다. */
-function RoleBar({ s, onAssign }: { s: ConfigState; onAssign: () => void }) {
+/** 열 역할 줄: 범위(열 머리글 = 데이터 행 전체)를 고르고 입력/잠금 중 하나를 고른다. 필수는 오른쪽 열 속성에서. */
+function RoleBar({ s }: { s: ConfigState }) {
   const disabled = !s.range || s.busy;
   const brush = (b: Brush) => s.range && void s.apply({ op: "brush", range: s.range, brush: b });
   const r = s.range;
+  const whole = r !== null && r.row <= s.model.headerRows && r.row + r.rows >= s.model.rows;
+  // 고른 열이 모두 같은 역할이면 그 역할을 켠 것으로 보인다(일부 칸만 고르면 셀 예외가 된다).
+  const cols = r ? s.view!.config.columns.slice(r.col, r.col + r.cols) : [];
+  const role = whole && cols.length > 0 && cols.every((c) => c.role === cols[0]!.role) ? cols[0]!.role : null;
   const hint = !r
     ? "열 머리글(A, B, C…)을 누르거나 범위를 끌어 고르세요. Shift로 여러 열을 함께 고를 수 있어요."
-    : r.row <= s.model.headerRows && r.row + r.rows >= s.model.rows
-      ? `${colSpan(s.model, r)}열을 골랐어요.`
-      : `${rangeLabel(s.model, r)}을 골랐어요.`;
+    : whole
+      ? `${colSpan(s.model, r)}열을 골랐어요. 필수는 오른쪽 열 속성에서 정해요.`
+      : `${rangeLabel(s.model, r)}을 골랐어요. 일부 칸만 바꾸면 셀 예외가 됩니다.`;
   return (
     <div className="role-bar" role="toolbar" aria-label="역할 지정">
       <span className="role-hint">{hint}</span>
-      {BRUSHES.map((b) => (
+      <div className="segmented role-seg" role="group" aria-label="입력 또는 잠금">
         <button
-          key={b.brush}
-          className="ghost role"
-          aria-label={b.name}
-          title={b.title}
+          className={role === "input" ? "on" : ""}
+          aria-pressed={role === "input"}
+          title="참여자가 쓸 수 있는 칸으로"
           disabled={disabled}
-          onClick={() => brush(b.brush)}
+          onClick={() => brush("input")}
         >
-          {b.label}
+          <span className="role-sw input" />
+          입력
         </button>
-      ))}
-      <button className="ghost role" aria-label="담당자 배정" disabled={disabled} onClick={onAssign}>
-        담당자 배정
+        <button
+          className={role === "locked" ? "on" : ""}
+          aria-pressed={role === "locked"}
+          title="보기만 가능한 칸으로"
+          disabled={disabled}
+          onClick={() => brush("locked")}
+        >
+          <span className="role-sw lock" />
+          잠금
+        </button>
+      </div>
+      <button
+        className="ghost role"
+        aria-label="조회조건"
+        title="열을 참여자 화면의 조회조건(드롭다운 필터)으로(다시 누르면 해제)"
+        disabled={disabled}
+        onClick={() => brush("filter")}
+      >
+        <span className="tag tag-filter">조회</span>조회조건
       </button>
       <button className="ghost role eraser" aria-label="지우개" disabled={disabled} onClick={() => brush("erase")}>
         지우개
@@ -407,10 +475,12 @@ function rangeLabel(model: SheetModel, r: CellRange): string {
   return formatRange({ ...r, row: r.row + model.origin.row, col: r.col + model.origin.col });
 }
 
-function FormulaBar({ s }: { s: ConfigState }) {
+function FormulaBar({ s, editing }: { s: ConfigState; editing: string | null }) {
   const { range, model, view } = s;
   let summary = "";
-  if (range && view) {
+  if (editing !== null) {
+    summary = editing;
+  } else if (range && view) {
     const n = countCells(s.layout, range);
     const a = s.selection!.anchor;
     if (n === 1) {
@@ -421,7 +491,7 @@ function FormulaBar({ s }: { s: ConfigState }) {
       if (range.cols === 1) {
         const rule = view.config.columns[range.col];
         if (rule) {
-          parts.push(rule.role === "input" ? "입력 영역" : "입력 금지");
+          parts.push(rule.role === "input" ? "입력" : "잠금");
           if (rule.required) parts.push("필수");
           parts.push(formatLabel(rule));
         }

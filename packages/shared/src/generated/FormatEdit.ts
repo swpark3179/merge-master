@@ -2,4 +2,4 @@
 import type { CellRange } from "./CellRange";
 import type { StylePatch } from "./StylePatch";
 
-export type FormatEdit = { "op": "style", range: CellRange, patch: StylePatch, } | { "op": "merge", range: CellRange, } | { "op": "unmerge", range: CellRange, };
+export type FormatEdit = { "op": "style", range: CellRange, patch: StylePatch, } | { "op": "merge", range: CellRange, } | { "op": "unmerge", range: CellRange, } | { "op": "colWidth", from: number, count: number, width: number, } | { "op": "rowHeight", from: number, count: number, height: number, };

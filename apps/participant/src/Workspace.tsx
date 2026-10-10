@@ -1,5 +1,5 @@
-import type { CellDecoration, GridSelection, SheetGridHandle } from "@mm/grid";
-import { parseTsv, SheetGrid, toTsv } from "@mm/grid";
+import type { CellDecoration, EditorState, GridSelection, Move, SheetGridHandle } from "@mm/grid";
+import { CellEditor, parseTsv, SheetGrid, toTsv } from "@mm/grid";
 import type { CellRange, CellRef, ColumnRule, StylePatch } from "@mm/shared";
 import { a1, dday, displayValue, editText, FLAG, formatDeadline, normalize, personColor } from "@mm/shared";
 import type { ClipboardEvent, KeyboardEvent } from "react";
@@ -7,8 +7,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { BenchResult } from "./bench";
 import { runScrollBench } from "./bench";
-import type { EditorState, Move } from "./CellEditor";
-import { CellEditor } from "./CellEditor";
 import type { RowFilter } from "./filters";
 import { filteredOut, filterOptions, isFiltering, myRowsOf, NO_FILTER, withHiddenRows } from "./filters";
 import type { BulkResult, EditContext } from "./gridOps";

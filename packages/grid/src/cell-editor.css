@@ -1,0 +1,108 @@
+/*
+ * 칸 안 편집기(CellEditor): 참여자 화면과 호스트 1b·모니터링이 함께 쓴다. 색은 쓰는 쪽의 --accent·--ink·--line·
+ * --muted·--danger를 따르고, 없으면 기본색.
+ *
+ * 대기 중에는 투명(첫 글자·한글 조합을 받으려고 활성 칸에 미리 둔다). 대기 중에는 마우스가 밑의 칸으로 지나가
+ * 활성 칸에서도 끌어 선택·더블클릭할 수 있다.
+ */
+.cell-editor {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.cell-editor.on,
+.cell-editor .list-toggle {
+  pointer-events: auto;
+}
+
+.cell-editor textarea {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.25;
+  white-space: pre;
+}
+
+.cell-editor.on textarea {
+  min-height: 100%;
+  min-width: 100%;
+  width: max(100%, 180px);
+  background: #fff;
+  color: var(--ink, #222);
+  caret-color: auto;
+  box-shadow:
+    0 0 0 2px var(--accent, #2a78d6),
+    0 4px 14px rgba(0, 0, 0, 0.18);
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.list-toggle {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  bottom: 1px;
+  width: 18px;
+  height: auto;
+  padding: 0;
+  border: 1px solid var(--line, #e2e0da);
+  border-radius: 3px;
+  background: #fff;
+  color: var(--muted, #8a8f98);
+  font-size: 11px;
+}
+
+.cell-list {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  z-index: 10;
+  min-width: max(100%, 140px);
+  max-height: 220px;
+  margin: 0;
+  padding: 4px 0;
+  overflow: auto;
+  list-style: none;
+  border: 1.5px solid var(--ink, #222);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+}
+
+.cell-list li {
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cell-list li.hi,
+.cell-list li:hover {
+  background: #dbe8f8;
+}
+
+.cell-error {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  z-index: 11;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--danger, #d64545);
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+}

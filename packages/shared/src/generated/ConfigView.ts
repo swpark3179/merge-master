@@ -23,4 +23,8 @@ hiddenRows: Array<number>, progress: ProgressStats, legend: Legend,
 /**
  * 열 이름(머리글 기준).
  */
-labels: Array<string>, };
+labels: Array<string>, 
+/**
+ * 행 배정 기준으로 추천하는 열(담당자 이름 열 후보 1순위).
+ */
+suggestedKeyCol?: number, };

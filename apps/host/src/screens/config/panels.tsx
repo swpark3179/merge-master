@@ -1,6 +1,5 @@
 import type { CellRange, ColumnRule, ExceptionKind, InputFormat, Permissions } from "@mm/shared";
 import { colLetters, formatRange, personColor } from "@mm/shared";
-import type { RefObject } from "react";
 import { useState } from "react";
 
 import type { ConfigState } from "./useConfig";
@@ -28,7 +27,7 @@ function defaultHint(f: InputFormat): string {
   }
 }
 
-/** 활성 칸이 있는 열의 역할·형식·안내. */
+/** 활성 칸이 있는 열의 역할(입력/잠금)·필수(입력일 때만)·조회조건·형식·안내. */
 export function ColumnPanel({ s }: { s: ConfigState }) {
   const col = s.selection?.anchor.col;
   if (col === undefined) {
@@ -60,18 +59,34 @@ function ColumnEditor({ s, col }: { s: ConfigState; col: number }) {
         <b>{s.view!.labels[col] || `${letter(s, col)}열`}</b>
         <span className="muted small">열 전체</span>
       </div>
-      <div className="segmented">
-        <button className={rule.role === "input" ? "on" : ""} onClick={() => set({ role: "input" })}>
-          입력 영역
+      <div className="segmented" role="group" aria-label="열 역할">
+        <button
+          className={rule.role === "input" ? "on" : ""}
+          aria-pressed={rule.role === "input"}
+          onClick={() => set({ role: "input" })}
+        >
+          입력
         </button>
-        <button className={rule.role === "locked" ? "on" : ""} onClick={() => set({ role: "locked" })}>
-          입력 금지
+        <button
+          className={rule.role === "locked" ? "on" : ""}
+          aria-pressed={rule.role === "locked"}
+          onClick={() => set({ role: "locked", required: false })}
+        >
+          잠금
         </button>
       </div>
       <div className="row-checks">
-        <label className="check">
-          <input type="checkbox" checked={rule.required} onChange={(e) => set({ required: e.target.checked })} /> 필수
-        </label>
+        {rule.role === "input" && (
+          <label className="check">
+            <input
+              type="checkbox"
+              aria-label="필수"
+              checked={rule.required}
+              onChange={(e) => set({ required: e.target.checked })}
+            />{" "}
+            필수
+          </label>
+        )}
         <label className="check">
           <input type="checkbox" checked={rule.filter} onChange={(e) => set({ filter: e.target.checked })} /> 조회조건
         </label>
@@ -187,22 +202,27 @@ export function ExceptionsPanel({ s }: { s: ConfigState }) {
   );
 }
 
-export function AssignmentPanel({ s, selectRef }: { s: ConfigState; selectRef: RefObject<HTMLSelectElement | null> }) {
+/** 담당자 배정 탭 위쪽 줄: 행 배정 기준 열, 고른 범위를 사람에게 배정. */
+export function AssignBar({ s }: { s: ConfigState }) {
   const view = s.view!;
   const { assignment } = view.config;
   const [person, setPerson] = useState("");
   const [note, setNote] = useState("");
-  const [newName, setNewName] = useState("");
-  const target = person || view.roster[0] || "";
-
+  const name = person.trim();
+  const suggested = view.suggestedKeyCol;
+  const assign = () => {
+    if (!s.range || !name) return;
+    void s.apply({ op: "assignRange", range: s.range, person: name, note });
+    setNote("");
+  };
   return (
-    <section className="side-card" aria-label="담당자 배정">
-      <b>담당자 배정</b>
-      <label className="field">
+    <div className="role-bar assign-bar" role="toolbar" aria-label="담당자 배정">
+      <label className="assign-field" title="이 열의 이름과 같은 이름으로 접속한 사람이 그 행을 맡습니다">
         행 배정 기준
         <select
           aria-label="행 배정 기준"
           value={assignment.keyCol ?? ""}
+          disabled={s.busy}
           onChange={(e) =>
             void s.apply({ op: "setKeyColumn", col: e.target.value === "" ? undefined : Number(e.target.value) })
           }
@@ -210,29 +230,85 @@ export function AssignmentPanel({ s, selectRef }: { s: ConfigState; selectRef: R
           <option value="">행 배정 없음</option>
           {view.labels.map((label, c) => (
             <option key={c} value={c}>
-              {letter(s, c)}열 {label || ""} = 접속 이름
+              {letter(s, c)}열 {label || ""}
+              {c === suggested ? " (추천)" : ""}
             </option>
           ))}
         </select>
       </label>
-      <div className="roster">
-        <span className="muted small">명단 {view.roster.length}명</span>
-        {view.roster.map((p, i) => (
-          <span key={p} className="person">
-            <span className="mmg-dot" style={{ background: personColor(i) }} />
-            {p}
-            {assignment.extraPeople.includes(p) && (
-              <button
-                className="x"
-                aria-label={`${p} 빼기`}
-                onClick={() => void s.apply({ op: "removePerson", name: p })}
-              >
-                ✕
-              </button>
-            )}
-          </span>
+      <span className="bar-sep" />
+      <span className="role-hint">
+        {s.range ? (
+          <>
+            <span className="mono">{sheetRange(s, s.range)}</span> →
+          </>
+        ) : (
+          "범위를 고르면 그 칸을 사람에게 배정할 수 있어요 →"
+        )}
+      </span>
+      <input
+        className="assign-person"
+        aria-label="배정할 사람"
+        list="config-roster"
+        placeholder="이름"
+        value={person}
+        onChange={(e) => setPerson(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && assign()}
+      />
+      <datalist id="config-roster">
+        {view.roster.map((p) => (
+          <option key={p} value={p} />
         ))}
+      </datalist>
+      <input
+        className="assign-note"
+        aria-label="배정 메모"
+        placeholder="메모"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <button className="ghost role" disabled={!s.range || !name || s.busy} onClick={assign}>
+        선택 범위 배정
+      </button>
+    </div>
+  );
+}
+
+/** 담당자 배정 탭 오른쪽: 명단(행 배정 기준 열의 이름 + 추가한 이름 + 범위 배정 받은 이름). */
+export function RosterPanel({ s }: { s: ConfigState }) {
+  const view = s.view!;
+  const { assignment } = view.config;
+  const [newName, setNewName] = useState("");
+  return (
+    <section className="side-card" aria-label="명단">
+      <div className="card-head">
+        <b>명단</b>
+        <span className="muted small">{view.roster.length}명</span>
       </div>
+      {view.roster.length === 0 && (
+        <div className="muted small">
+          아직 배정한 사람이 없습니다. 위에서 행 배정 기준 열을 고르거나, 범위를 사람에게 배정하거나, 이름을 추가하세요.
+        </div>
+      )}
+      {view.roster.length > 0 && (
+        <div className="roster">
+          {view.roster.map((p, i) => (
+            <span key={p} className="person">
+              <span className="mmg-dot" style={{ background: personColor(i) }} />
+              {p}
+              {assignment.extraPeople.includes(p) && (
+                <button
+                  className="x"
+                  aria-label={`${p} 빼기`}
+                  onClick={() => void s.apply({ op: "removePerson", name: p })}
+                >
+                  ✕
+                </button>
+              )}
+            </span>
+          ))}
+        </div>
+      )}
       <form
         className="add-row"
         onSubmit={(e) => {
@@ -252,9 +328,24 @@ export function AssignmentPanel({ s, selectRef }: { s: ConfigState; selectRef: R
           추가
         </button>
       </form>
+    </section>
+  );
+}
 
-      <span className="muted small">범위 배정 (행 배정에 더함)</span>
-      {assignment.ranges.map((a, i) => (
+/** 담당자 배정 탭 오른쪽: 범위 배정 목록(행 배정에 더한다). */
+export function RangeAssignmentsPanel({ s }: { s: ConfigState }) {
+  const view = s.view!;
+  const { ranges } = view.config.assignment;
+  return (
+    <section className="side-card" aria-label="범위 배정">
+      <div className="card-head">
+        <b>범위 배정</b>
+        <span className="muted small">행 배정에 더함</span>
+      </div>
+      {ranges.length === 0 && (
+        <div className="muted small">그리드에서 범위를 고르고 위쪽의 ‘선택 범위 배정’을 누르세요.</div>
+      )}
+      {ranges.map((a, i) => (
         <div key={`${formatRange(a.range)}-${i}`} className="exception-row">
           <span className="mmg-dot" style={{ background: personColor(view.roster.indexOf(a.person)) }} />
           <span className="mono small">{sheetRange(s, a.range)}</span>→ {a.person}
@@ -269,25 +360,6 @@ export function AssignmentPanel({ s, selectRef }: { s: ConfigState; selectRef: R
           </button>
         </div>
       ))}
-      <div className="add-row">
-        <select ref={selectRef} aria-label="배정할 사람" value={target} onChange={(e) => setPerson(e.target.value)}>
-          {view.roster.map((p) => (
-            <option key={p}>{p}</option>
-          ))}
-        </select>
-        <input aria-label="배정 메모" placeholder="메모" value={note} onChange={(e) => setNote(e.target.value)} />
-      </div>
-      <button
-        className="link"
-        disabled={!s.range || !target || s.busy}
-        onClick={() => {
-          if (!s.range) return;
-          void s.apply({ op: "assignRange", range: s.range, person: target, note });
-          setNote("");
-        }}
-      >
-        + 선택 범위 배정
-      </button>
       <div className="formula-note small">입력 가능 = (배정 행 ∪ 배정 범위) ∩ 입력 영역 − 입력 금지</div>
     </section>
   );

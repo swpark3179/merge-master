@@ -14,4 +14,8 @@ changedCells: number, changedBy: Array<PersonChanges>, lastChangeMs?: number, hi
 /**
  * 앱에서 서식이 바뀐 칸·병합 변화.
  */
-styleCells: number, mergeChanges: number, };
+styleCells: number, mergeChanges: number, 
+/**
+ * 앱에서 크기를 바꾼 열·행 수.
+ */
+sizeChanges: number, };

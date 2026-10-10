@@ -7,7 +7,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use crate::access::{Access, ProgressStats, Viewer, flag};
-use crate::config::{CollectConfig, ColumnRole, OthersRows};
+use crate::config::{CollectConfig, ColumnRole, OthersRows, suggested_key_col};
 use crate::detect::{TableGuess, column_labels};
 use crate::sheet::SheetModel;
 
@@ -41,6 +41,9 @@ pub struct ConfigView {
     pub legend: Legend,
     /// 열 이름(머리글 기준).
     pub labels: Vec<String>,
+    /// 행 배정 기준으로 추천하는 열(담당자 이름 열 후보 1순위).
+    #[ts(optional)]
+    pub suggested_key_col: Option<u32>,
 }
 
 /// 셀 상태 비트 → base64(화면·참여자에게 보낼 형태).
@@ -93,13 +96,14 @@ pub fn config_view(
         progress,
         legend,
         labels,
+        suggested_key_col: suggested_key_col(model),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::tests::budget;
+    use crate::config::tests::{assigned, budget};
 
     fn decode(s: &str) -> Vec<u8> {
         base64::engine::general_purpose::STANDARD.decode(s).unwrap()
@@ -108,7 +112,7 @@ mod tests {
     #[test]
     fn host_view() {
         let m = budget();
-        let mut cfg = CollectConfig::suggest(&m);
+        let mut cfg = assigned(&m);
         cfg.columns[5].required = true;
         let v = config_view(&m, &cfg, None).unwrap();
         assert_eq!(v.roster, ["이서연", "최도윤", "김민지"]);
@@ -124,7 +128,7 @@ mod tests {
     #[test]
     fn participant_view_and_hidden_policy() {
         let m = budget();
-        let mut cfg = CollectConfig::suggest(&m);
+        let mut cfg = assigned(&m);
         let v = config_view(&m, &cfg, Some("김민지")).unwrap();
         let flags = decode(&v.flags);
         let mine = |r: u32, c: u32| flags[(r * m.cols + c) as usize] & flag::MINE != 0;

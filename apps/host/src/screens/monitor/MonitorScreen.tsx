@@ -15,13 +15,17 @@ import type {
   MonitorData,
   NoticeTarget,
   ProgressStats,
+  SheetModel,
 } from "@mm/shared";
 import { a1, colLetters, decodeFlags, displayValue, FLAG, personColor, remaining, splitCellRefs } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import type { CellWrite } from "../../api";
 import { api, errorText } from "../../api";
+import { useToast } from "../../frame";
+import { useHostEditor } from "../../useHostEditor";
 
 type Panel = "activity" | "notice" | "highlight" | "chat";
 
@@ -47,6 +51,26 @@ interface Filter {
 }
 
 const NO_FILTER: Filter = { values: {}, missingOnly: false, recentDeleted: false, person: null, column: null };
+
+/** 시트를 받기 전 편집기에 줄 빈 시트. */
+const EMPTY_MODEL: SheetModel = {
+  workbook: "",
+  sheet: "",
+  origin: { row: 0, col: 0 },
+  rows: 0,
+  cols: 0,
+  cells: [],
+  styles: [],
+  merges: [],
+  colWidths: [],
+  rowHeights: [],
+  headerRows: 0,
+  frozenRows: 0,
+  frozenCols: 0,
+  validations: [],
+  hiddenRows: [],
+  hiddenCols: [],
+};
 
 export function time(ms: number, seconds = true): string {
   const d = new Date(ms);
@@ -105,6 +129,8 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const grid = useRef<SheetGridHandle>(null);
+  const gridHost = useRef<HTMLDivElement>(null);
+  const toast = useToast();
   const refreshTimer = useRef<number | undefined>(undefined);
 
   const refresh = useCallback(() => {
@@ -265,6 +291,43 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
     }
     return set;
   }, [comms]);
+
+  // ------------------------------------------------------------ 호스트 칸 편집
+  /** 바로 그리고(바뀐 칸은 `sheet-changes`로도 다시 온다) 세션에 보낸다. */
+  const commitCells = useCallback(
+    (cells: CellWrite[]) => {
+      setData((d) => {
+        if (!d) return d;
+        for (const u of cells) {
+          const cell = d.model.cells[u.row * d.model.cols + u.col];
+          if (cell) cell.v = u.value;
+        }
+        return d;
+      });
+      setRev((r) => r + 1);
+      setError(null);
+      api.sheetSetCells(cells).catch((e) => {
+        setError(errorText(e));
+        void load();
+      });
+    },
+    [load],
+  );
+  const editor = useHostEditor({
+    model: viewModel ?? EMPTY_MODEL,
+    flags,
+    columns,
+    grid,
+    host: gridHost,
+    selection,
+    setSelection,
+    blockedBy: (r, c) => {
+      const who = editing.get(`${r}:${c}`);
+      return who ? `${who} 님이 입력 중인 칸입니다` : null;
+    },
+    commit: commitCells,
+    notify: toast,
+  });
 
   const decorate = (r: number, c: number): CellDecoration | undefined => {
     if (!model) return undefined;
@@ -453,6 +516,9 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
           </button>
         )}
         <span className="spacer" />
+        <span className="muted small" title="칸을 두 번 누르거나 바로 입력해 고치고, Delete로 지웁니다">
+          두 번 눌러 고치기
+        </span>
         <span className="muted small" data-testid="mon-rows">
           {(model.rows - model.headerRows).toLocaleString()}행 중 {shown.toLocaleString()}행
         </span>
@@ -502,7 +568,7 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
           </section>
         </aside>
 
-        <div className="mon-grid">
+        <div className="mon-grid" ref={gridHost}>
           <SheetGrid
             handle={grid}
             model={viewModel}
@@ -513,7 +579,10 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
               return o >= 0 ? personColor(o) : undefined;
             }}
             selection={selection}
-            onSelectionChange={setSelection}
+            onSelectionChange={editor.onSelectionChange}
+            overlay={editor.overlay}
+            onKey={editor.onKey}
+            onCellDoubleClick={editor.onCellDoubleClick}
           />
         </div>
 

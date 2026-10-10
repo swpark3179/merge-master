@@ -1,4 +1,4 @@
-import type { CollectConfig, FirewallStatus, HostSnapshot, LanAddress, RecalcStatus, ServiceInfo } from "@mm/shared";
+import type { CollectConfig, HostSnapshot, LanAddress, RecalcStatus, ServiceInfo } from "@mm/shared";
 import { formatDeadline } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
@@ -33,7 +33,6 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   /** 이 화면에서 공유를 시작한 시각(표시용). */
   const [since, setSince] = useState<string | null>(null);
   const toast = useToast();
-  const [firewall, setFirewall] = useState<FirewallStatus | "checking" | null>(null);
   const [recalc, setRecalc] = useState<RecalcStatus | null>(null);
 
   // 수식 재계산(Excel 계산 사본) 상태
@@ -139,16 +138,6 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
     ]
       .filter(Boolean)
       .join("\n");
-
-  const checkFirewall = async () => {
-    setFirewall("checking");
-    try {
-      setFirewall(await api.firewallCheck(Number(port)));
-    } catch (e) {
-      setFirewall(null);
-      setError(errorText(e));
-    }
-  };
 
   const host = ip ?? "127.0.0.1";
   const preview = `http://${host}:${port || "8080"}/${slug.trim() || "q4"}`;
@@ -285,34 +274,6 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
               )}
             </div>
           )}
-          <div className="note small">
-            다른 PC에서 접속이 안 되면 Windows 방화벽을 확인하세요.{" "}
-            <button className="link" onClick={() => void checkFirewall()} disabled={firewall === "checking"}>
-              {firewall === "checking" ? "확인 중…" : "방화벽 확인"}
-            </button>
-            {firewall && firewall !== "checking" && (
-              <div className="firewall">
-                {firewall.appBlocked
-                  ? "이 앱을 막는 규칙이 있습니다(처음 물어볼 때 취소함)."
-                  : firewall.appAllowed || firewall.portAllowed
-                    ? "✓ 허용 규칙이 있습니다."
-                    : "허용 규칙이 없습니다. 처음 서비스를 시작할 때 Windows가 물으면 허용하거나, 아래에서 규칙을 추가하세요."}
-                {!(firewall.appAllowed || firewall.portAllowed) && (
-                  <button
-                    className="ghost small"
-                    onClick={() =>
-                      void api
-                        .firewallAdd(Number(port))
-                        .then(checkFirewall)
-                        .catch((e) => setError(errorText(e)))
-                    }
-                  >
-                    포트 {port} 허용 규칙 추가(관리자 권한)
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
         </section>
 
         <section className="card share" aria-label="공유">

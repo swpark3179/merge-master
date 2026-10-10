@@ -19,6 +19,10 @@ mismatched: Array<CellRef>,
  */
 styled: number, merges: number, 
 /**
+ * 크기(열 너비·행 높이)를 바꾼 열·행 수.
+ */
+resized: number, 
+/**
  * 더한 '변경 이력' 시트 이름.
  */
 historySheet?: string, ms: number, };

@@ -779,12 +779,37 @@ details.more > .more-body {
   gap: 16px;
 }
 
+/* 호스트 그리드 스크롤바는 늘 보이게 한다(겹쳐 나타났다 사라지는 스크롤바면 표가 더 있는지 알기 어렵다). */
+.mmg-scroller::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+.mmg-scroller::-webkit-scrollbar-track {
+  background: #f4f3f0;
+}
+
+.mmg-scroller::-webkit-scrollbar-thumb {
+  border: 3px solid #f4f3f0;
+  border-radius: 6px;
+  background: #c4c2bb;
+}
+
+.mmg-scroller::-webkit-scrollbar-thumb:hover {
+  background: #a3a19a;
+}
+
+.mmg-scroller::-webkit-scrollbar-corner {
+  background: #f4f3f0;
+}
+
+/* 스크롤은 그리드(.mmg-scroller, overflow: auto)가 한다. 여기서 overflow를 숨기면 가로·세로 스크롤바가 사라진다. */
 .preview-grid {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: hidden;
 }
 
 .placeholder {
@@ -876,6 +901,8 @@ details.more > .more-body {
 .screen-slot {
   flex: 1;
   min-width: 0;
+  /* 없으면 칸 높이가 그리드 내용만큼 늘어나 그리드 대신 화면 전체가 스크롤된다. */
+  min-height: 0;
   display: flex;
 }
 
@@ -1035,7 +1062,46 @@ input.invalid {
   border-radius: 10px;
 }
 
-/* 역할 지정 줄: 고른 범위 안내 + 역할 버튼 */
+/* 1b 위쪽 탭: 열 역할 | 담당자 배정 */
+.config-tabs {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.config-tabs button {
+  height: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 7px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.config-tabs button:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+}
+
+.config-tabs button[aria-selected="true"],
+.config-tabs button[aria-selected="true"]:hover:not(:disabled) {
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.config-tabs .tag {
+  font-weight: 400;
+}
+
+/* 역할 지정 줄: 고른 범위 안내 + 입력/잠금 + 조회조건 + 지우개 */
 .role-bar {
   flex: none;
   display: flex;
@@ -1060,6 +1126,68 @@ button.role {
   align-items: center;
   gap: 6px;
   padding: 0 12px;
+}
+
+.role-seg {
+  flex: none;
+}
+
+.role-seg > button {
+  height: 28px;
+  gap: 6px;
+  padding: 0 14px;
+}
+
+/* 담당자 배정 줄 */
+.assign-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink-2);
+}
+
+.assign-field select {
+  height: 32px;
+  max-width: 220px;
+}
+
+.bar-sep {
+  width: 1px;
+  height: 22px;
+  background: var(--line);
+}
+
+.assign-bar .role-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.assign-person {
+  width: 110px;
+  height: 32px;
+}
+
+.assign-note {
+  width: 120px;
+  height: 32px;
+}
+
+.grid-card-head > .muted {
+  flex: none;
+  white-space: nowrap;
+}
+
+.grid-card-head .grid-tip {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.grid-card-head .viewer-pick {
+  flex: none;
+  white-space: nowrap;
 }
 
 button.role.eraser {
@@ -1649,14 +1777,6 @@ code.url.pending-url {
 button.big-btn {
   height: 44px;
   font-size: 14px;
-}
-
-.firewall {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-  margin-top: 6px;
 }
 
 .participants {

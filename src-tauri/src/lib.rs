@@ -4,16 +4,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use collect_core::SheetModel;
 use collect_core::config::CollectConfig;
 use collect_core::edit::ConfigEdit;
 use collect_core::format::{FormatEdit, apply_format};
+use collect_core::history::BatchOrigin;
 use collect_core::view::{ConfigView, config_view};
+use collect_core::{CellRef, CellValue, SheetModel};
 use collect_server::{LanAddress, ServerHandle, SessionHandle, SessionInit};
 use excel_com::{
     ExcelStatus, ExcelThread, ReadOptions, ReadProgress, ReadStats, Session, SheetInspection, WorkbookInfo,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, RunEvent, State};
 use tokio::sync::Mutex;
@@ -257,6 +258,38 @@ async fn sheet_format(state: State<'_, AppState>, edit: FormatEdit, viewer: Opti
         .await?
 }
 
+/// 호스트가 칸에 넣을 값(모델 좌표). TS: `apps/host/src/api.ts`의 `CellWrite`.
+#[derive(Deserialize)]
+struct CellWrite {
+    row: u32,
+    col: u32,
+    #[serde(default)]
+    value: CellValue,
+}
+
+/// 호스트가 칸 내용을 바꾼다(1b 설정·4 모니터링 그리드). 참여자 입력처럼 버전·이력·진행률에 반영되고 모두에게 간다.
+/// 수식 칸·같은 값은 세션이 건너뛴다. 머리글(열 이름)이나 행 배정 기준 열(명단)을 바꿨으면 권한을 다시 계산한다 —
+/// 같은 작업 안에서는 다시 계산이 값 반영보다 먼저 돌아서 따로 보낸다.
+#[tauri::command]
+async fn sheet_set_cells(state: State<'_, AppState>, cells: Vec<CellWrite>) -> CmdResult<()> {
+    let session = state.session()?;
+    let structural = session
+        .with(move |s| {
+            let header_rows = s.model.header_rows;
+            let key = s.config.assignment.key_col;
+            let structural = cells.iter().any(|c| c.row < header_rows || Some(c.col) == key);
+            let user = history::host_user(&s.config.requester);
+            let cells = cells.into_iter().map(|c| (CellRef::new(c.row, c.col), c.value)).collect();
+            s.host_set(&user, BatchOrigin::Edit, cells);
+            structural
+        })
+        .await?;
+    if structural {
+        session.with(|s| s.changed()).await?;
+    }
+    Ok(())
+}
+
 pub fn run() {
     tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())).init();
     let excel = Arc::new(ExcelThread::spawn().expect("Excel 스레드를 시작할 수 없습니다"));
@@ -283,6 +316,7 @@ pub fn run() {
             config_view_get,
             config_apply,
             sheet_format,
+            sheet_set_cells,
             lan_addresses,
             recalc::recalc_status,
             monitor::monitor_get,
@@ -319,8 +353,6 @@ pub fn run() {
             service::participant_reject,
             service::participant_kick,
             service::participant_unlock,
-            service::firewall_check,
-            service::firewall_add,
         ])
         .setup(|app| {
             // 오래된 기록 파일 정리(최근 것만 남긴다).

@@ -31,7 +31,6 @@ import type {
   SaveInfo,
   SaveOptions,
   SaveResult,
-  FirewallStatus,
   HostSnapshot,
   ServiceInfo,
   SheetInspection,
@@ -39,6 +38,13 @@ import type {
   WorkbookInfo,
 } from "@mm/shared";
 import { Channel, invoke } from "@tauri-apps/api/core";
+
+/** 호스트가 칸에 넣을 값(모델 좌표). Rust `src-tauri/src/lib.rs`의 `CellWrite`. */
+export interface CellWrite {
+  row: number;
+  col: number;
+  value: CellValue;
+}
 
 /** Tauri command 래퍼. 이름·인수는 src-tauri/src/lib.rs와 맞춘다(Rust snake_case ↔ JS camelCase). */
 export const api = {
@@ -65,6 +71,9 @@ export const api = {
   configApply: (edit: ConfigEdit, viewer: string | null) => invoke<ConfigView>("config_apply", { edit, viewer }),
 
   sheetFormat: (edit: FormatEdit, viewer: string | null) => invoke<FormatResult>("sheet_format", { edit, viewer }),
+
+  /** 호스트가 칸 내용을 바꾼다(1b·모니터링). 수식 칸·같은 값은 건너뛴다. 바뀐 칸은 `sheet-changes`로 온다. */
+  sheetSetCells: (cells: CellWrite[]) => invoke<void>("sheet_set_cells", { cells }),
 
   lanAddresses: () => invoke<LanAddress[]>("lan_addresses"),
 
@@ -155,10 +164,6 @@ export const api = {
   snapshotDiff: (id: number) => invoke<SnapshotDiff>("snapshot_diff", { id }),
 
   snapshotRestore: (id: number) => invoke<number>("snapshot_restore", { id }),
-
-  firewallCheck: (port: number) => invoke<FirewallStatus>("firewall_check", { port }),
-
-  firewallAdd: (port: number) => invoke<void>("firewall_add", { port }),
 };
 
 /** Rust `ExcelError::Cancelled`의 메시지. 사용자가 취소했거나 새 읽기가 앞선 읽기를 대신한 경우라 오류로 보이지 않는다. */

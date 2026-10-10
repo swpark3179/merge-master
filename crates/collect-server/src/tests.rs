@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use collect_core::SheetModel;
-use collect_core::config::CollectConfig;
+use collect_core::config::{CollectConfig, suggested_key_col};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::tungstenite::Message;
@@ -19,6 +19,7 @@ fn config(dev_admin: bool) -> ServerConfig {
 fn init() -> SessionHandle {
     let model: SheetModel = serde_json::from_slice(include_bytes!("../../../fixtures/budget.sheet.json")).unwrap();
     let mut config = CollectConfig::suggest(&model);
+    config.assignment.key_col = suggested_key_col(&model); // C 담당자
     config.title = "2026년 부서별 예산 신청".into();
     config.requester = "박지훈".into();
     SessionHandle::spawn(SessionInit::new(model, config))

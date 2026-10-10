@@ -4,13 +4,14 @@ use std::net::Ipv4Addr;
 
 use base64::Engine;
 use collect_core::access::flag;
-use collect_core::config::ColumnRole;
+use collect_core::config::{ColumnRole, suggested_key_col};
 
 use super::*;
 
 pub(super) fn fixture() -> SessionInit {
     let model: SheetModel = serde_json::from_slice(include_bytes!("../../../../fixtures/budget.sheet.json")).unwrap();
     let mut config = CollectConfig::suggest(&model);
+    config.assignment.key_col = suggested_key_col(&model); // C 담당자
     config.requester = "박지훈".into();
     config.columns[5].required = true; // F 신청 금액
     SessionInit::new(model, config)

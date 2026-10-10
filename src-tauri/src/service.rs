@@ -1,7 +1,6 @@
-//! 1c 서비스·접속자: 참여자 서버 시작/중지, 접속자 표 이벤트, 승인·거절·연결 끊기·잠금 해제, 방화벽 확인.
+//! 1c 서비스·접속자: 참여자 서버 시작/중지, 접속자 표 이벤트, 승인·거절·연결 끊기·잠금 해제.
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::Command;
 use std::time::Duration;
 
 use collect_core::CellRange;
@@ -147,56 +146,4 @@ pub async fn participant_kick(state: State<'_, AppState>, name: String) -> CmdRe
 #[tauri::command]
 pub async fn participant_unlock(state: State<'_, AppState>, name: String) -> CmdResult<()> {
     state.session()?.unlock(&name).await
-}
-
-#[derive(Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct FirewallStatus {
-    /// 이 앱 실행 파일을 허용하는 인바운드 규칙이 있다(Windows가 처음에 물어볼 때 허용하면 생긴다).
-    app_allowed: bool,
-    /// 이 앱을 막는 규칙이 있다(처음 물어볼 때 '취소'를 누른 경우).
-    app_blocked: bool,
-    /// 포트를 허용하는 인바운드 규칙이 있다.
-    port_allowed: bool,
-}
-
-fn powershell(script: &str) -> CmdResult<String> {
-    let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .map_err(|e| format!("PowerShell을 실행할 수 없습니다: {e}"))?;
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-/// 방화벽 규칙 확인(읽기만 한다. 관리자 권한이 필요 없다).
-#[tauri::command]
-pub async fn firewall_check(port: u16) -> CmdResult<FirewallStatus> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe = exe.to_string_lossy().replace('\'', "''");
-    let script = format!(
-        r#"$ErrorActionPreference='SilentlyContinue';
-$in = {{ param($r) $r | Where-Object {{ $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' }} }};
-$app = & $in (Get-NetFirewallApplicationFilter -Program '{exe}' | Get-NetFirewallRule);
-$port = & $in (Get-NetFirewallPortFilter -Protocol TCP | Where-Object {{ $_.LocalPort -eq '{port}' }} | Get-NetFirewallRule);
-'{{0}} {{1}} {{2}}' -f @($app | Where-Object Action -eq 'Allow').Count, @($app | Where-Object Action -eq 'Block').Count, @($port | Where-Object Action -eq 'Allow').Count"#
-    );
-    let out = tauri::async_runtime::spawn_blocking(move || powershell(&script)).await.map_err(|e| e.to_string())??;
-    let n: Vec<u32> = out.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-    let get = |i: usize| n.get(i).copied().unwrap_or(0) > 0;
-    Ok(FirewallStatus { app_allowed: get(0), app_blocked: get(1), port_allowed: get(2) })
-}
-
-/// 포트 허용 규칙을 추가한다. Windows가 관리자 권한(UAC)을 묻고, 사용자가 허락해야 추가된다.
-#[tauri::command]
-pub async fn firewall_add(port: u16) -> CmdResult<()> {
-    let args = format!(
-        "advfirewall firewall add rule name=\"엑셀 취합 도구 (TCP {port})\" dir=in action=allow protocol=TCP localport={port} profile=domain,private"
-    );
-    let script = format!(
-        "Start-Process -FilePath netsh -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '{}'",
-        args.replace('\'', "''")
-    );
-    tauri::async_runtime::spawn_blocking(move || powershell(&script)).await.map_err(|e| e.to_string())??;
-    Ok(())
 }

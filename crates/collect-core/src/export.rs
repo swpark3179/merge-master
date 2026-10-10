@@ -1,6 +1,6 @@
 //! 5단계 엑셀 저장: 불러온 시점의 시트(기준)와 지금 시트를 비교해 Excel에 쓸 것을 만든다.
 //!
-//! - [`plan`]: 바뀐 값(연속 블록), 앱에서 바꾼 서식·병합, 변경 칸 표시, '변경 이력' 시트.
+//! - [`plan`]: 바뀐 값(연속 블록), 앱에서 바꾼 서식·병합·열 너비·행 높이, 변경 칸 표시, '변경 이력' 시트.
 //! - [`compare`]: 저장 직전에 읽은 Excel 값과 기준을 비교해 그사이 Excel에서 직접 고친 칸(충돌)과
 //!   취합하지 않는 칸의 변화(표 구조가 바뀌었는지)를 찾는다.
 //! - [`summary`]: 저장·마감 화면의 요약(필수 완료율, 담당자별 미입력, 바뀐 칸).
@@ -56,6 +56,10 @@ pub struct ExportPlan {
     pub styles: Vec<StyleBlock>,
     pub merges_add: Vec<CellRange>,
     pub merges_remove: Vec<CellRange>,
+    /// 앱에서 바꾼 열 너비(모델 열, pt).
+    pub col_widths: Vec<(u32, f32)>,
+    /// 앱에서 바꾼 행 높이(모델 행, pt).
+    pub row_heights: Vec<(u32, f32)>,
     /// 값이 바뀐 칸에 칠할 채우기 색(`0xRRGGBB`).
     pub mark: Option<u32>,
     pub history: Option<HistoryTable>,
@@ -67,7 +71,14 @@ impl ExportPlan {
             && self.styles.is_empty()
             && self.merges_add.is_empty()
             && self.merges_remove.is_empty()
+            && self.col_widths.is_empty()
+            && self.row_heights.is_empty()
             && self.history.is_none()
+    }
+
+    /// 크기를 바꾼 행·열 수.
+    pub fn resized(&self) -> u32 {
+        (self.col_widths.len() + self.row_heights.len()) as u32
     }
 }
 
@@ -78,7 +89,7 @@ pub struct ExportOptions {
     /// 값이 바뀐 칸을 이 색으로 칠한다(`0xRRGGBB`).
     #[ts(optional)]
     pub mark: Option<u32>,
-    /// 앱에서 바꾼 서식(글꼴·채우기·맞춤·테두리)과 병합도 반영한다.
+    /// 앱에서 바꾼 서식(글꼴·채우기·맞춤·테두리)·병합·열 너비·행 높이도 반영한다.
     pub styles: bool,
     /// '변경 이력' 시트를 더한다.
     pub history: bool,
@@ -162,6 +173,17 @@ fn vertical_runs<T: PartialEq>(mut cells: Vec<(CellRef, T)>, alone: &HashSet<Cel
         runs.push((CellRange::cell(at), vec![item], single));
     }
     runs.into_iter().map(|(r, items, _)| (r, items)).collect()
+}
+
+/// 크기가 바뀐 줄(열 또는 행): 숨긴 줄(어느 쪽이든 크기 0)은 뺀다. 0.1pt 안쪽 차이는 같은 크기로 본다.
+fn size_changes(before: &[f32], after: &[f32]) -> Vec<(u32, f32)> {
+    after
+        .iter()
+        .zip(before)
+        .enumerate()
+        .filter(|(_, (now, then))| **now > 0.0 && **then > 0.0 && (**now - **then).abs() > 0.1)
+        .map(|(i, (now, _))| (i as u32, *now))
+        .collect()
 }
 
 /// 같은 서식이 위아래로 이어진 칸을 묶는다.
@@ -253,10 +275,29 @@ pub fn plan(
     } else {
         (Vec::new(), Vec::new(), Vec::new())
     };
+    let (col_widths, row_heights) = if opts.styles && same_shape(baseline, current) {
+        (
+            size_changes(&baseline.col_widths, &current.col_widths),
+            size_changes(&baseline.row_heights, &current.row_heights),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
 
     let history =
         (opts.history && !history.is_empty()).then(|| history_table(current, labels, history, offset_minutes));
-    ExportPlan { origin: current.origin, cells, blocks, styles, merges_add, merges_remove, mark: opts.mark, history }
+    ExportPlan {
+        origin: current.origin,
+        cells,
+        blocks,
+        styles,
+        merges_add,
+        merges_remove,
+        col_widths,
+        row_heights,
+        mark: opts.mark,
+        history,
+    }
 }
 
 /// 저장 직전에 Excel에서 그사이 직접 고친 칸.
@@ -377,6 +418,8 @@ pub struct SaveSummary {
     /// 앱에서 서식이 바뀐 칸·병합 변화.
     pub style_cells: u32,
     pub merge_changes: u32,
+    /// 앱에서 크기를 바꾼 열·행 수.
+    pub size_changes: u32,
 }
 
 const MISSING_SAMPLES: usize = 12;
@@ -443,13 +486,19 @@ pub fn summary(
         history_entries: history.len() as u32,
         style_cells: style_changes(baseline, current).len() as u32,
         merge_changes: before.symmetric_difference(&after).count() as u32,
+        size_changes: if same_shape(baseline, current) {
+            (size_changes(&baseline.col_widths, &current.col_widths).len()
+                + size_changes(&baseline.row_heights, &current.row_heights).len()) as u32
+        } else {
+            0
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::tests::budget;
+    use crate::config::tests::{assigned, budget};
     use crate::format::{FillPatch, FormatEdit, StylePatch, apply_format};
     use crate::history::{BatchOrigin, ChangeKind};
 
@@ -528,6 +577,22 @@ mod tests {
     }
 
     #[test]
+    fn sizes_follow_the_style_option_and_skip_hidden_lines() {
+        let base = budget();
+        let mut now = base.clone();
+        apply_format(&mut now, FormatEdit::ColWidth { from: 7, count: 1, width: 150.0 }).unwrap();
+        apply_format(&mut now, FormatEdit::RowHeight { from: 2, count: 2, height: 30.0 }).unwrap();
+        now.row_heights[5] = 0.0; // 숨긴 행(크기 0)은 쓰지 않는다
+        let p = plan(&base, &now, &[], &[], opts(), 0, &HashSet::new());
+        assert_eq!(p.col_widths, [(7, 150.0)]);
+        assert_eq!(p.row_heights, [(2, 30.0), (3, 30.0)]);
+        assert_eq!(p.resized(), 3);
+        assert!(!p.is_empty());
+        let off = plan(&base, &now, &[], &[], ExportOptions::default(), 0, &HashSet::new());
+        assert!(off.col_widths.is_empty() && off.row_heights.is_empty() && off.is_empty());
+    }
+
+    #[test]
     fn history_sheet_rows_and_skip() {
         let base = budget();
         let mut now = base.clone();
@@ -597,7 +662,7 @@ mod tests {
     #[test]
     fn summary_lists_missing_required_cells_per_person() {
         let base = budget();
-        let mut cfg = CollectConfig::suggest(&base);
+        let mut cfg = assigned(&base);
         cfg.columns[5].required = true;
         let mut now = base.clone();
         set(&mut now, "F3", CellValue::Number(9800.0));
