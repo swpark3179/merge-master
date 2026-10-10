@@ -17,6 +17,11 @@ pub struct Projection {
 pub fn project(model: &SheetModel, config: &CollectConfig, person: &str) -> Result<Projection, UnknownPerson> {
     let access = Access::compile(model, config);
     let p = access.person(person).ok_or_else(|| UnknownPerson(person.to_string()))?;
+    Ok(project_with(&access, model, config, p))
+}
+
+/// [`project`]와 같지만 이미 만든 권한 엔진과 명단 인덱스를 쓴다(세션이 접속자마다 다시 만들지 않게).
+pub fn project_with(access: &Access, model: &SheetModel, config: &CollectConfig, p: usize) -> Projection {
     let flags = access.viewer_flags(Viewer::Person(p));
     let mut out = model.clone();
     if config.permissions.others_rows == OthersRows::Hidden {
@@ -52,7 +57,7 @@ pub fn project(model: &SheetModel, config: &CollectConfig, person: &str) -> Resu
         }
         out.hidden_rows.sort_unstable();
     }
-    Ok(Projection { model: out, flags })
+    Projection { model: out, flags }
 }
 
 #[cfg(test)]

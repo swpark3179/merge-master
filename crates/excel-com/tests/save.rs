@@ -74,6 +74,7 @@ fn save_copy_and_save_into_round_trip() {
             kind: ChangeKind::Input,
             at_ms: 1_791_000_000_000,
             user: "이서연".into(),
+            sheet: 0,
             row: 2,
             col: 5,
             old: CellValue::Empty,

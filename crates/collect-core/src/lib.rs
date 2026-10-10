@@ -26,5 +26,5 @@ pub mod sheet;
 pub mod validate;
 pub mod view;
 
-pub use a1::{CellRange, CellRef};
+pub use a1::{CellRange, CellRef, SheetCell};
 pub use sheet::*;

@@ -162,6 +162,45 @@ pub struct CollectConfig {
     pub permissions: Permissions,
 }
 
+/// 여러 시트를 함께 취합할 때 모든 시트가 같이 쓰는 설정: 제목·안내·요청자·마감·'마감 후 읽기 전용'과 직접 넣은 명단.
+/// 첫 시트의 설정이 주인이고, 세션이 바뀔 때마다 다른 시트 설정에 그대로 옮겨 적는다(나머지 설정은 시트마다 따로).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SessionCommon {
+    pub title: String,
+    pub description: String,
+    pub requester: String,
+    pub deadline: Option<String>,
+    pub lock_after_deadline: bool,
+    pub extra_people: Vec<String>,
+}
+
+impl SessionCommon {
+    pub fn of(c: &CollectConfig) -> Self {
+        Self {
+            title: c.title.clone(),
+            description: c.description.clone(),
+            requester: c.requester.clone(),
+            deadline: c.deadline.clone(),
+            lock_after_deadline: c.permissions.lock_after_deadline,
+            extra_people: c.assignment.extra_people.clone(),
+        }
+    }
+
+    /// `c`의 공통 설정을 이것으로 바꾼다. 바뀐 것이 있으면 `true`.
+    pub fn write_to(&self, c: &mut CollectConfig) -> bool {
+        if Self::of(c) == *self {
+            return false;
+        }
+        c.title.clone_from(&self.title);
+        c.description.clone_from(&self.description);
+        c.requester.clone_from(&self.requester);
+        c.deadline.clone_from(&self.deadline);
+        c.permissions.lock_after_deadline = self.lock_after_deadline;
+        c.assignment.extra_people.clone_from(&self.extra_people);
+        true
+    }
+}
+
 impl CollectConfig {
     /// 불러온 시트를 보고 설정 초안을 만든다(호스트가 1b에서 고친다).
     ///
@@ -401,6 +440,24 @@ pub(crate) mod tests {
         assert_eq!(cfg.columns[7].format, InputFormat::Text);
         assert!(cfg.columns.iter().all(|c| !c.required));
         assert_eq!(cfg.permissions, Permissions::default());
+    }
+
+    #[test]
+    fn session_common_is_copied_between_sheets() {
+        let m = budget();
+        let mut first = CollectConfig::suggest(&m);
+        first.title = "예산".into();
+        first.deadline = Some("2026-10-31T18:00".into());
+        first.permissions.lock_after_deadline = false;
+        first.assignment.extra_people.push("정하늘".into());
+        let mut other = CollectConfig::suggest(&m);
+        other.permissions.add_rows = true; // 시트별 권한은 그대로
+        let common = SessionCommon::of(&first);
+        assert!(common.write_to(&mut other));
+        assert!(!common.write_to(&mut other), "같으면 바뀐 것 없음");
+        assert_eq!((other.title.as_str(), other.deadline.as_deref()), ("예산", Some("2026-10-31T18:00")));
+        assert!(!other.permissions.lock_after_deadline && other.permissions.add_rows);
+        assert_eq!(other.assignment.extra_people, ["정하늘"]);
     }
 
     #[test]

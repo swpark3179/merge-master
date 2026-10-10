@@ -144,6 +144,74 @@ impl fmt::Display for CellRange {
     }
 }
 
+/// 시트 안의 칸(여러 시트를 함께 취합할 때). `sheet`는 세션 안 시트 순번(불러온 순서).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SheetCell {
+    pub sheet: u32,
+    pub row: u32,
+    pub col: u32,
+}
+
+impl SheetCell {
+    pub const fn new(sheet: u32, at: CellRef) -> Self {
+        Self { sheet, row: at.row, col: at.col }
+    }
+
+    pub const fn at(self) -> CellRef {
+        CellRef { row: self.row, col: self.col }
+    }
+}
+
+/// Excel 주소 앞에 붙이는 시트 이름: `인력계획!`, 글자·숫자·`_` 밖의 문자가 있거나 숫자로 시작하면 `'1분기 예산'!`.
+pub fn sheet_prefix(name: &str) -> String {
+    let plain = !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
+    if plain { format!("{name}!") } else { format!("'{}'!", name.replace('\'', "''")) }
+}
+
+/// `인력계획!F7`, `'1분기 예산'!F7:H7` → (시트 이름, 나머지 주소). 시트 이름이 없으면 `None`.
+pub fn split_sheet(text: &str) -> (Option<String>, &str) {
+    let t = text.trim();
+    if let Some(rest) = t.strip_prefix('\'') {
+        // 따옴표 안의 '' 는 ' 하나다.
+        let mut name = String::new();
+        let mut chars = rest.char_indices().peekable();
+        while let Some((i, c)) = chars.next() {
+            if c == '\'' {
+                if chars.peek().is_some_and(|(_, n)| *n == '\'') {
+                    name.push('\'');
+                    chars.next();
+                    continue;
+                }
+                return match rest[i + 1..].strip_prefix('!') {
+                    Some(addr) => (Some(name), addr),
+                    None => (None, t),
+                };
+            }
+            name.push(c);
+        }
+        return (None, t);
+    }
+    match t.rsplit_once('!') {
+        Some((name, addr)) if !name.is_empty() => (Some(name.to_string()), addr),
+        _ => (None, t),
+    }
+}
+
+/// `시트!범위` 또는 `범위`를 (시트 순번, 범위)로. 시트 이름이 없으면 `default` 시트, 모르는 시트 이름이면 오류.
+pub fn parse_sheet_range(text: &str, sheets: &[&str], default: usize) -> Result<(usize, CellRange), A1Error> {
+    let (name, addr) = split_sheet(text);
+    let sheet = match name {
+        None => default,
+        Some(n) => {
+            sheets.iter().position(|s| s.trim() == n.trim()).ok_or_else(|| A1Error(format!("{n} 시트가 없습니다")))?
+        }
+    };
+    Ok((sheet, CellRange::parse(addr)?))
+}
+
 /// `0 → "A"`, `25 → "Z"`, `26 → "AA"`.
 pub fn col_to_letters(mut col: u32) -> String {
     let mut out = Vec::new();
@@ -305,5 +373,22 @@ mod tests {
         assert!(a.contains(CellRef::new(3, 3)));
         assert_eq!(a.cells().count(), 9);
         assert_eq!(b.relative_to(CellRef::new(2, 2)), Some(CellRange::new(0, 0, 7, 4)));
+    }
+
+    #[test]
+    fn sheet_qualified_addresses() {
+        assert_eq!(sheet_prefix("인력계획"), "인력계획!");
+        assert_eq!(sheet_prefix("1분기 예산"), "'1분기 예산'!");
+        assert_eq!(sheet_prefix("Bob's"), "'Bob''s'!");
+        assert_eq!(split_sheet("인력계획!F7"), (Some("인력계획".into()), "F7"));
+        assert_eq!(split_sheet("'1분기 예산'!F7:H7"), (Some("1분기 예산".into()), "F7:H7"));
+        assert_eq!(split_sheet("'Bob''s'!A1"), (Some("Bob's".into()), "A1"));
+        assert_eq!(split_sheet("F7"), (None, "F7"));
+        let sheets = ["예산신청서", "인력계획"];
+        assert_eq!(parse_sheet_range("H5:H9", &sheets, 0).unwrap(), (0, CellRange::parse("H5:H9").unwrap()));
+        assert_eq!(parse_sheet_range("인력계획!E5", &sheets, 0).unwrap(), (1, CellRange::parse("E5").unwrap()));
+        assert!(parse_sheet_range("없는시트!E5", &sheets, 0).is_err());
+        let c = SheetCell::new(1, CellRef::new(4, 2));
+        assert_eq!((c.sheet, c.at()), (1, CellRef::new(4, 2)));
     }
 }

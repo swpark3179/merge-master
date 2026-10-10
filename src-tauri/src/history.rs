@@ -57,7 +57,7 @@ pub async fn history_timeline(state: State<'_, AppState>, at: CellRef) -> CmdRes
                 at,
                 original,
                 current: s.model.cell(at).map(|c| c.v.clone()).unwrap_or_default(),
-                entries: history::timeline(s.history(), at),
+                entries: history::timeline(s.history(), 0, at),
             }
         })
         .await
@@ -133,9 +133,8 @@ pub async fn history_export_csv(state: State<'_, AppState>, filter: HistoryFilte
         .session()?
         .with(move |s| {
             let entries: Vec<ChangeEntry> = s.history().iter().filter(|e| filter.matches(e)).cloned().collect();
-            let table = TableGuess { range: s.model.bounds(), header_rows: s.model.header_rows };
-            let labels = column_labels(s.model, &table);
-            (history::to_csv(&entries, s.model.origin, &labels, offset), entries.len() as u32)
+            let sheets = [history::SheetLabels::of(s.model)];
+            (history::to_csv(&entries, &sheets, offset), entries.len() as u32)
         })
         .await?;
     std::fs::write(&path, csv).map_err(|e| format!("파일을 쓸 수 없습니다: {e}"))?;

@@ -10,4 +10,8 @@ export type ChangeEntry = { seq: number,
 /**
  * 유닉스 시각(ms).
  */
-atMs: number, user: string, batch: string, origin: BatchOrigin, kind: ChangeKind, row: number, col: number, old?: CellValue, new?: CellValue, };
+atMs: number, user: string, batch: string, origin: BatchOrigin, kind: ChangeKind, 
+/**
+ * 세션 안 시트 순번(불러온 순서). 여러 시트를 취합하기 전의 기록은 0.
+ */
+sheet: number, row: number, col: number, old?: CellValue, new?: CellValue, };
