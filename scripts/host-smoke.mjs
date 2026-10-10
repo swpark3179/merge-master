@@ -304,7 +304,6 @@ try {
   await svc.getByRole("button", { name: "공유 시작", exact: true }).click();
   const url = (await svc.locator("code.url").textContent()) ?? "";
   check(url.endsWith(`:${SERVICE_PORT}/q4`), `접속 주소 ${url}`);
-  await expect(svc.locator('[aria-label="접속 주소 QR"] svg')).toBeVisible();
   const info = await (await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/session`)).json();
   check(info.requester === "박지훈 (기획팀)" && info.title === "하반기 교육 수요 조사", "공개 정보: 제목·요청자");
   check((await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/sheet`)).status === 404, "시트는 입장 전에는 받을 수 없음");

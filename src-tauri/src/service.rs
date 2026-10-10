@@ -1,4 +1,4 @@
-//! 1c 서비스·접속자: 참여자 서버 시작/중지, 접속자 표 이벤트, 승인·거절·연결 끊기·잠금 해제, QR, 방화벽 확인.
+//! 1c 서비스·접속자: 참여자 서버 시작/중지, 접속자 표 이벤트, 승인·거절·연결 끊기·잠금 해제, 방화벽 확인.
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
@@ -147,18 +147,6 @@ pub async fn participant_kick(state: State<'_, AppState>, name: String) -> CmdRe
 #[tauri::command]
 pub async fn participant_unlock(state: State<'_, AppState>, name: String) -> CmdResult<()> {
     state.session()?.unlock(&name).await
-}
-
-/// 접속 주소 QR(SVG 문자열).
-#[tauri::command]
-pub fn qr_svg(text: String) -> CmdResult<String> {
-    let code = qrcode::QrCode::new(text.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(code
-        .render::<qrcode::render::svg::Color>()
-        .min_dimensions(160, 160)
-        .dark_color(qrcode::render::svg::Color("#222222"))
-        .light_color(qrcode::render::svg::Color("#ffffff"))
-        .build())
 }
 
 #[derive(Serialize, TS)]

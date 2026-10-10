@@ -319,7 +319,6 @@ pub fn run() {
             service::participant_reject,
             service::participant_kick,
             service::participant_unlock,
-            service::qr_svg,
             service::firewall_check,
             service::firewall_add,
         ])

@@ -33,7 +33,6 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   /** 이 화면에서 공유를 시작한 시각(표시용). */
   const [since, setSince] = useState<string | null>(null);
   const toast = useToast();
-  const [qr, setQr] = useState<string | null>(null);
   const [firewall, setFirewall] = useState<FirewallStatus | "checking" | null>(null);
   const [recalc, setRecalc] = useState<RecalcStatus | null>(null);
 
@@ -65,10 +64,6 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   }, [active, reload]);
 
   const url = service ? `http://${ip ?? service.urls[0]?.ip ?? "127.0.0.1"}:${service.port}/${service.slug}` : null;
-  useEffect(() => {
-    if (!url) return setQr(null);
-    void api.qrSvg(url).then(setQr);
-  }, [url]);
 
   const saveMeta = async (patch: Partial<Pick<CollectConfig, "title" | "description" | "requester" | "deadline">>) => {
     if (!config) return;
@@ -331,14 +326,6 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
               <div className="url-row">
                 <code className="url">{url}</code>
                 <button onClick={() => void copy(url, "주소를 복사했어요")}>복사</button>
-              </div>
-              <div className="qr-row">
-                {qr ? (
-                  <div className="qr" aria-label="접속 주소 QR" dangerouslySetInnerHTML={{ __html: qr }} />
-                ) : (
-                  <div className="qr placeholder muted small">QR 코드</div>
-                )}
-                <div className="muted-2">같은 공간에 있다면 휴대폰으로 QR을 찍어 접속할 수도 있어요.</div>
               </div>
               <div className="row">
                 <button className="ghost grow-btn" onClick={() => void copy(notice(), "안내 문구를 복사했어요")}>
