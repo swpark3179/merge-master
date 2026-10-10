@@ -1,0 +1,235 @@
+# Release 워크플로
+# Actions 탭 → Release → Run workflow 에서 버전 증가 기준(major / minor / patch)을 골라 실행합니다.
+#
+# 동작 순서
+#   1. 기존 Release 페이지에서 가장 높은 버전 확인 (릴리즈가 없거나 버전을 알 수 없으면 1.0.0)
+#   2. 증가 기준에 따라 다음 버전 확정
+#   3. 설정 파일에 버전 반영 후 빌드
+#   4. 버전 변경을 기본 브랜치에 커밋·푸시
+#   5. 4번 커밋에 태그를 달고 Release 페이지 생성 (이전 버전 이후 PR 목록 + 빌드 결과물 첨부)
+#
+# 첨부 파일: 설치 없이 실행되는 merge-master-<버전>.exe 하나 (NSIS 설치 파일은 만들지 않는다)
+#   실행하는 PC에 WebView2 런타임이 있어야 한다. 없는 PC(인터넷 없는 사내망 등)는 pnpm app:build로 만든 설치 파일을 쓴다.
+#
+# 필요한 시크릿
+#   RELEASE_TOKEN (선택) : 기본 브랜치에 보호 규칙이 있어 기본 토큰으로 푸시가 막힐 때만 등록
+#   추가로 필요한 시크릿 없음
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "버전 증가 기준 (major: 1.3.4→2.0.0, minor: 1.3.4→1.4.0, patch: 1.3.4→1.3.5)"
+        required: true
+        type: choice
+        options:
+          - major
+          - minor
+          - patch
+        default: patch
+
+permissions:
+  contents: write
+
+# 두 번 연달아 실행해도 같은 버전을 동시에 계산하지 않도록 한 번에 하나씩만 실행
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+      GH_REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      APP_NAME: ${{ github.event.repository.name }}
+
+    steps:
+      - name: 기본 브랜치에서 실행했는지 확인
+        if: github.ref_name != github.event.repository.default_branch
+        run: |
+          echo "::error::Release는 기본 브랜치(${DEFAULT_BRANCH})에서만 실행할 수 있습니다. 현재: ${GITHUB_REF_NAME}"
+          exit 1
+
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+
+      # ───────── 1~2. 이전 릴리즈 확인 및 다음 버전 확정 ─────────
+      - name: "1~2. 이전 릴리즈 확인 및 다음 버전 확정"
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+
+          # Release 페이지의 태그 중 x.y.z 또는 vx.y.z 형식만 골라 가장 높은 버전을 찾는다.
+          # 릴리즈가 없거나 버전 형식의 태그가 하나도 없으면 '기존 버전 확인 불가'로 보고 1.0.0부터 시작한다.
+          TAGS=$(gh release list --exclude-drafts --exclude-pre-releases --limit 100 \
+                   --json tagName --jq '.[].tagName')
+          LATEST=$(printf '%s\n' "$TAGS" \
+                   | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+                   | awk '{ v = $0; sub(/^v/, "", v); print v, $0 }' \
+                   | sort -V | tail -n 1 || true)
+
+          if [ -z "$LATEST" ]; then
+            echo "확인 가능한 이전 릴리즈가 없어 1.0.0으로 시작합니다."
+            NEXT="1.0.0"
+            PREV_TAG=""
+            PREFIX="v"
+          else
+            PREV_VERSION="${LATEST%% *}"
+            PREV_TAG="${LATEST##* }"
+            PREFIX="${PREV_TAG%%[0-9]*}"   # 기존 태그가 v를 붙였는지 여부를 그대로 따른다
+            IFS=. read -r MAJOR MINOR PATCH <<< "$PREV_VERSION"
+            # 10# : 01 같은 값이 8진수로 해석되지 않게 10진수로 고정
+            MAJOR=$((10#$MAJOR)); MINOR=$((10#$MINOR)); PATCH=$((10#$PATCH))
+            case "$BUMP" in
+              major) NEXT="$((MAJOR + 1)).0.0" ;;
+              minor) NEXT="${MAJOR}.$((MINOR + 1)).0" ;;
+              patch) NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+              *) echo "::error::알 수 없는 증가 기준: ${BUMP}"; exit 1 ;;
+            esac
+            echo "이전 버전 ${PREV_TAG} → 다음 버전 ${NEXT} (${BUMP})"
+          fi
+          TAG="${PREFIX}${NEXT}"
+
+          # 같은 이름의 태그가 이미 있으면 Release를 만들 수 없으므로 오래 걸리는 빌드 전에 멈춘다
+          if gh api "repos/${GH_REPO}/git/ref/tags/${TAG}" --silent 2>/dev/null; then
+            echo "::error::태그 ${TAG} 가 이미 존재합니다. 태그를 정리한 뒤 다시 실행하세요."
+            exit 1
+          fi
+
+          {
+            echo "VERSION=${NEXT}"
+            echo "TAG=${TAG}"
+            echo "PREV_TAG=${PREV_TAG}"
+          } >> "$GITHUB_ENV"
+
+      # ───────── 3. 설정 파일에 버전 반영 및 빌드 (프레임워크별) ─────────
+      - name: pnpm 설정
+        uses: pnpm/action-setup@v4 # package.json의 packageManager(pnpm 버전)를 따른다
+
+      - name: Node 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Rust 설정
+        uses: dtolnay/rust-toolchain@stable
+
+      # Cargo 작업 공간 루트의 target/을 캐시한다 (기본값 ". -> target")
+      - name: Rust 빌드 캐시
+        uses: swatinem/rust-cache@v2
+
+      - name: 의존성 설치
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          # 3-1의 pnpm bump가 Cargo.lock을 오프라인(cargo update --offline)으로 맞추므로 크레이트를 미리 받아 둔다
+          cargo fetch
+
+      - name: "3-1. 설정 파일에 버전 반영 (Cargo.toml, Cargo.lock)"
+        run: |
+          set -euo pipefail
+          # 앱 버전은 루트 Cargo.toml의 [workspace.package] version 하나가 기준이다 (scripts/version.mjs).
+          # tauri.conf.json에는 version이 없어 Tauri가 이 값을 실행 파일 버전과 호스트 화면의 버전 표시에 쓴다.
+          pnpm bump "$VERSION"
+          CURRENT=$(node scripts/version.mjs)
+          if [ "$CURRENT" != "$VERSION" ]; then
+            echo "::error::Cargo.toml 버전이 ${CURRENT}입니다. 기대한 버전: ${VERSION}"
+            exit 1
+          fi
+
+          echo "VERSION_FILES=Cargo.toml Cargo.lock" >> "$GITHUB_ENV"
+
+      - name: "3-2. 빌드 (단독 실행 exe)"
+        run: |
+          set -euo pipefail
+          # 참여자 웹은 collect-server에 들어간다(rust-embed, allow_missing).
+          # 먼저 빌드하지 않아도 exe는 만들어지지만 참여자 화면이 빠지므로 반드시 먼저 빌드하고 확인한다.
+          pnpm build:participant
+          if [ ! -f apps/participant/dist/index.html ]; then
+            echo "::error::참여자 웹 빌드 결과(apps/participant/dist/index.html)가 없습니다."
+            exit 1
+          fi
+
+          # --no-bundle: NSIS 설치 파일과 WebView2 설치 파일 없이 실행 파일만 만든다.
+          # 호스트 화면은 tauri.conf.json의 beforeBuildCommand가 빌드해 실행 파일에 넣는다.
+          pnpm tauri build --no-bundle
+
+          # Cargo 작업 공간이라 결과는 루트 target/에 생긴다 (tauri.conf.json mainBinaryName)
+          EXE=target/release/merge-master.exe
+          if [ ! -f "$EXE" ]; then
+            echo "::error::실행 파일(${EXE})을 찾지 못했습니다."
+            exit 1
+          fi
+          mkdir -p release-assets
+          cp "$EXE" "release-assets/${APP_NAME}-${VERSION}.exe"
+
+      - name: "3-3. 첨부할 빌드 결과물 확인"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release-assets/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::release-assets/ 에 빌드 결과물이 없습니다. 빌드 단계를 확인하세요."
+            exit 1
+          fi
+          ls -la release-assets
+
+      # ───────── 4. 버전 변경을 기본 브랜치에 커밋 ─────────
+      - name: "4. 버전 변경을 기본 브랜치에 커밋"
+        id: commit
+        run: |
+          set -euo pipefail
+          if [ -z "${VERSION_FILES:-}" ]; then
+            echo "::error::VERSION_FILES가 비어 있습니다. 3-1 단계에서 수정한 버전 파일 목록을 기록해야 합니다."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 버전 파일만 골라서 추가한다 (git add -A 금지).
+          # 서명 키, key.properties, 빌드 결과물이 실수로 커밋되는 것을 막기 위해서다.
+          for f in $VERSION_FILES; do
+            if git ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+              git add -- "$f"
+            fi
+          done
+
+          if git diff --cached --quiet; then
+            echo "바뀐 버전 파일이 없어 커밋 없이 현재 커밋에 릴리즈합니다."
+          else
+            git commit -m "chore(release): ${TAG} [skip ci]"
+            # 빌드 도중 기본 브랜치에 새 커밋이 들어왔다면 푸시가 거부되고 Release도 만들어지지 않는다.
+            # 빌드한 코드와 태그가 가리키는 코드를 일치시키려는 의도된 동작이니, 그럴 땐 다시 실행하면 된다.
+            git push origin "HEAD:${DEFAULT_BRANCH}"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ───────── 5. Release 페이지 생성 ─────────
+      - name: "5. Release 페이지 생성 (PR 목록 + 빌드 결과물 첨부)"
+        env:
+          TARGET_SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # --generate-notes: 이전 릴리즈 태그부터 이번 커밋까지 머지된 PR 목록을 GitHub가 본문에 작성한다
+          ARGS=(--target "$TARGET_SHA" --title "$TAG" --generate-notes)
+          if [ -n "$PREV_TAG" ]; then
+            ARGS+=(--notes-start-tag "$PREV_TAG")
+          fi
+          gh release create "$TAG" release-assets/* "${ARGS[@]}"
+          echo "### 🚀 ${TAG} 릴리즈 완료" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://github.com/${GH_REPO}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
