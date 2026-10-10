@@ -16,12 +16,6 @@ use crate::{AppState, CmdResult};
 /// 비교 보기에 보이는 최대 칸 수.
 const DIFF_LIMIT: usize = 500;
 
-/// 호스트가 바꾼 값의 기록 이름: 요청자, 없으면 "호스트".
-pub(crate) fn host_user(requester: &str) -> String {
-    let r = requester.trim();
-    if r.is_empty() { "호스트".into() } else { r.to_string() }
-}
-
 #[tauri::command]
 pub async fn history_query(
     state: State<'_, AppState>,
@@ -95,7 +89,7 @@ async fn revert(state: &AppState, pick: Pick, force: bool) -> CmdResult<RevertRe
                 return Ok(RevertResult { changed: 0, stale });
             }
             let n = changes.len() as u32;
-            let user = host_user(&s.config.requester);
+            let user = s.host_name().to_string();
             s.host_set(&user, BatchOrigin::Revert, changes);
             Ok(RevertResult { changed: n, stale })
         })
@@ -125,7 +119,7 @@ pub async fn history_set_value(state: State<'_, AppState>, at: CellRef, value: C
     state
         .session()?
         .with(move |s| {
-            let user = host_user(&s.config.requester);
+            let user = s.host_name().to_string();
             s.host_set(&user, BatchOrigin::Revert, vec![(at, value)]);
         })
         .await
@@ -239,7 +233,7 @@ pub async fn snapshot_restore(state: State<'_, AppState>, id: u32) -> CmdResult<
     state
         .session()?
         .with(move |s| {
-            let user = host_user(&s.config.requester);
+            let user = s.host_name().to_string();
             s.restore(id, &user).map(|n| n as u32)
         })
         .await?

@@ -32,6 +32,8 @@ import type {
   SaveOptions,
   SaveResult,
   HostSnapshot,
+  IpEntry,
+  IpNamesView,
   ServiceInfo,
   SheetInspection,
   SheetModel,
@@ -103,6 +105,20 @@ export const api = {
 
   /** 그 사람이 잡고 있는 편집 잠금을 푼다. */
   participantUnlock: (name: string) => invoke<void>("participant_unlock", { name }),
+
+  // ---------------------------------------------------------- 1c IP 명단(IP별 참여자 이름)
+  /** 명단 IP에서 오면 그 이름으로 바로 들어오고, 명단 밖 IP는 이름 + 승인. 호스트 IP의 이름이 호스트 이름이 된다. */
+  ipNamesGet: () => invoke<IpNamesView>("ip_names_get"),
+
+  ipNamesSet: (entries: IpEntry[]) => invoke<IpNamesView>("ip_names_set", { entries }),
+
+  /** 한 사람을 더하거나 이름을 바꾼다(승인할 때 'IP 명단에 저장'). */
+  ipNamesPut: (ip: string, name: string) => invoke<IpNamesView>("ip_names_put", { ip, name }),
+
+  ipNamesImport: (path: string) => invoke<IpNamesView>("ip_names_import", { path }),
+
+  /** 쓴 사람 수를 돌려준다. */
+  ipNamesExport: (path: string) => invoke<number>("ip_names_export", { path }),
 
   recalcStatus: () => invoke<RecalcStatus>("recalc_status"),
 

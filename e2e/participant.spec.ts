@@ -1,8 +1,11 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
+import { approve, setIpNames } from "./join";
+
 // 참여자 웹(1e 접속 · 1f 작업 화면)을 개발 서버(collect-dev-server --dev-admin)에 붙여 확인한다.
 // 개발 서버는 테스트 사이에 상태가 남으므로, 명단 밖 이름은 실행마다 새로 만든다.
+// 브라우저는 모두 127.0.0.1(호스트의 IP 명단 밖)이라 이름을 넣고 승인을 받아 들어온다(`enterAs`).
 
 const unique = (prefix: string) => `${prefix}${Date.now() % 100000}`;
 
@@ -12,16 +15,25 @@ async function joinAs(page: Page, name: string, path = "/q4") {
   await page.getByRole("button", { name: "참여하기" }).click();
 }
 
+/** 이름으로 참여 → (관리 API로) 승인 → 작업 화면. */
+async function enterAs(page: Page, name: string, path = "/q4") {
+  await joinAs(page, name, path);
+  await approve(page, name);
+  await inWorkspace(page);
+}
+
 async function inWorkspace(page: Page) {
   await expect(page.getByRole("heading", { name: "2026년 부서별 예산 신청" })).toBeVisible();
   await expect(page.locator(".status")).toContainText("실시간 동기화");
 }
 
-test("명단 이름으로 입장하고, 새로 고침하면 이름 없이 바로 들어온다", async ({ page }) => {
+test("IP 명단 밖에서는 명단 이름도 승인 후 들어오고, 새로 고침하면 바로 들어온다", async ({ page }) => {
   await page.goto("/q4");
   await expect(page.getByText("박지훈 님의 엑셀 취합 요청")).toBeVisible();
   await expect(page.getByText("부서별 담당 비목의 신청 금액")).toBeVisible();
   await joinAs(page, "김민지");
+  await expect(page.getByText("‘김민지’ 님, 호스트 승인을 기다리는 중입니다…")).toBeVisible();
+  await approve(page, "김민지");
   await inWorkspace(page);
   await expect(page.locator(".mine-progress")).toContainText("내 필수 입력");
   await expect(page.getByTestId("row-count")).toContainText("내 담당");
@@ -34,8 +46,7 @@ test("명단 이름으로 입장하고, 새로 고침하면 이름 없이 바로
 });
 
 test("시트 그리드: 머리글·병합·틀 고정이 원본대로 보인다", async ({ page }) => {
-  await joinAs(page, "한지우");
-  await inWorkspace(page);
+  await enterAs(page, "한지우");
   await expect(page.locator(".mmg-cell", { hasText: "기본 정보" })).toBeVisible();
   const merged = page.locator('.mmg-cell[data-r="0"][data-c="0"]');
   const widths = await page
@@ -52,8 +63,7 @@ test("시트 그리드: 머리글·병합·틀 고정이 원본대로 보인다"
 });
 
 test("가상화 스크롤 성능", async ({ page }) => {
-  await joinAs(page, "오세린");
-  await inWorkspace(page);
+  await enterAs(page, "오세린");
   await page.goto("/q4?bench");
   const bench = page.getByTestId("bench");
   await expect(bench).toBeVisible({ timeout: 15_000 });
@@ -63,42 +73,62 @@ test("가상화 스크롤 성능", async ({ page }) => {
   expect(result.avgFps).toBeGreaterThanOrEqual(45);
 });
 
-test("선택과 키보드 이동이 수식 입력줄에 반영된다", async ({ page }) => {
-  await joinAs(page, "정하늘");
-  await inWorkspace(page);
+test("선택과 키보드 이동이 사이드바 '셀 내용'에 반영된다", async ({ page }) => {
+  await enterAs(page, "정하늘");
+  await expect(page.locator(".formula-bar")).toHaveCount(0); // 그리드 위 셀 정보 줄은 없다
   await page.locator('.mmg-cell[data-r="2"][data-c="6"]').click();
-  await expect(page.locator(".formula-bar .addr")).toHaveText("G3");
+  await expect(page.locator(".cell-detail .addr")).toHaveText("G3");
+  await expect(page.locator(".cell-detail .cell-tags")).toContainText("수식");
   await page.keyboard.press("ArrowLeft");
-  await expect(page.locator(".formula-bar .addr")).toHaveText("F3");
-  await expect(page.locator(".formula-bar .cell-tags")).toContainText("필수");
+  await expect(page.locator(".cell-detail .addr")).toHaveText("F3");
+  await expect(page.locator(".cell-detail .cell-tags")).toContainText("필수");
   await page.locator('.mmg-cell[data-r="2"][data-c="2"]').click();
   await page.keyboard.press("ArrowDown");
-  await expect(page.locator(".formula-bar .addr")).toHaveText("C8");
+  await expect(page.locator(".cell-detail .addr")).toHaveText("C8");
 });
 
 test("다른 사람의 커서가 이름표로 보인다", async ({ browser }) => {
   const a = await (await browser.newContext()).newPage();
   const b = await (await browser.newContext()).newPage();
-  await joinAs(a, "최도윤");
-  await joinAs(b, "오세린");
-  await inWorkspace(a);
-  await inWorkspace(b);
+  await enterAs(a, "최도윤");
+  await enterAs(b, "오세린");
   await expect(b.locator('.avatar[title^="최도윤"]')).toBeVisible();
   await a.locator('.mmg-cell[data-r="9"][data-c="5"]').click();
   await expect(b.locator('.mmg-cell[data-r="9"][data-c="5"] .peer-tag')).toHaveText("최도윤");
 });
 
-test("같은 이름이 접속 중이면 확인 후 이 기기로 전환한다", async ({ browser }) => {
+test("IP 명단 밖의 다른 기기는 같은 이름이어도 승인을 받고, 승인하면 앞 기기는 끊긴다", async ({ browser }) => {
   const a = await (await browser.newContext()).newPage();
   const b = await (await browser.newContext()).newPage();
-  await joinAs(a, "이서연");
-  await inWorkspace(a);
+  await enterAs(a, "이서연");
   await joinAs(b, "이서연");
-  await expect(b.getByText("같은 이름이 이미 접속 중")).toBeVisible();
-  await b.getByRole("button", { name: "이 기기로 전환" }).click();
+  await expect(b.getByText("‘이서연’ 님, 호스트 승인을 기다리는 중입니다…")).toBeVisible();
+  await approve(b, "이서연");
   await inWorkspace(b);
   await expect(a.getByText("다른 기기(창)에서 같은 이름으로 접속해")).toBeVisible();
-  await expect(a.getByRole("button", { name: "이 기기로 다시 전환" })).toBeVisible();
+});
+
+test("IP 명단에 있는 PC는 이름 없이 그 이름으로 바로 들어오고, 같은 PC의 다른 창은 전환을 묻는다", async ({
+  browser,
+}) => {
+  const a = await (await browser.newContext()).newPage();
+  const b = await (await browser.newContext()).newPage();
+  await a.goto("/q4");
+  await setIpNames(a, { "127.0.0.1": "명단사람" });
+  try {
+    await a.reload();
+    await inWorkspace(a);
+    await expect(a.locator(".status")).toContainText("명단사람 님");
+    await expect(a.getByRole("button", { name: "참여하기" })).toHaveCount(0);
+    // 같은 PC(같은 IP)의 다른 창: 같은 이름이 접속 중 → 이 기기로 전환
+    await b.goto("/q4");
+    await expect(b.getByText("같은 이름이 이미 접속 중")).toBeVisible();
+    await b.getByRole("button", { name: "이 기기로 전환" }).click();
+    await inWorkspace(b);
+    await expect(a.getByText("다른 기기(창)에서 같은 이름으로 접속해")).toBeVisible();
+  } finally {
+    await setIpNames(a, {});
+  }
 });
 
 test("명단에 없는 이름은 호스트 승인을 기다렸다가 들어온다", async ({ page, request }) => {
@@ -121,18 +151,17 @@ test("호스트가 거절하면 이름 입력으로 돌아간다", async ({ page
   await expect(page.getByRole("button", { name: "참여하기" })).toBeVisible();
 });
 
-test("호스트가 연결을 끊으면 알리고, 다시 참여할 수 있다", async ({ page, request }) => {
-  await joinAs(page, "김민지");
-  await inWorkspace(page);
+test("호스트가 연결을 끊으면 알리고, 다시 참여하면 다시 승인을 받는다", async ({ page, request }) => {
+  await enterAs(page, "김민지");
   await request.post("/__dev/kick", { data: { name: "김민지" } });
   await expect(page.getByText("호스트가 연결을 끊었습니다.")).toBeVisible();
   await page.getByRole("button", { name: "다시 참여" }).click();
+  await approve(page, "김민지");
   await inWorkspace(page);
 });
 
 test("‘남의 행 숨김’이면 내 행만 받는다", async ({ page }) => {
-  await joinAs(page, "김민지", "http://127.0.0.1:8098/q4");
-  await inWorkspace(page);
+  await enterAs(page, "김민지", "http://127.0.0.1:8098/q4");
   const heads = await page.locator(".mmg-rowhead").allTextContents();
   expect(heads).toContain("13"); // 김민지 행(총무팀)
   expect(heads).not.toContain("3"); // 이서연 행

@@ -1,7 +1,8 @@
 import type { CellRange, ColumnRule, ExceptionKind, InputFormat, Permissions } from "@mm/shared";
 import { colLetters, formatRange, personColor } from "@mm/shared";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import { api } from "../../api";
 import type { ConfigState } from "./useConfig";
 
 function sheetRange(s: ConfigState, r: CellRange): string {
@@ -202,14 +203,27 @@ export function ExceptionsPanel({ s }: { s: ConfigState }) {
   );
 }
 
-/** 담당자 배정 탭 위쪽 줄: 행 배정 기준 열, 고른 범위를 사람에게 배정. */
+/**
+ * 담당자 배정 탭 위쪽: 첫 줄은 행 배정 기준 열(그 열의 이름으로 접속한 사람이 그 행을 맡음), 둘째 줄은 고른 칸의 담당자.
+ * 행 배정도 범위 배정도 없는 입력 칸은 누구나 입력한다.
+ */
 export function AssignBar({ s }: { s: ConfigState }) {
   const view = s.view!;
   const { assignment } = view.config;
   const [person, setPerson] = useState("");
   const [note, setNote] = useState("");
+  const [known, setKnown] = useState<string[]>([]);
   const name = person.trim();
   const suggested = view.suggestedKeyCol;
+  const key = assignment.keyCol;
+  // 담당자 후보: 명단 + IP 명단의 이름(아직 접속하지 않은 사람도 고를 수 있게).
+  useEffect(() => {
+    api
+      .ipNamesGet()
+      .then((v) => setKnown(v.entries.map((e) => e.name)))
+      .catch(() => {});
+  }, []);
+  const candidates = [...new Set([...view.roster, ...known])];
   const assign = () => {
     if (!s.range || !name) return;
     void s.apply({ op: "assignRange", range: s.range, person: name, note });
@@ -217,59 +231,62 @@ export function AssignBar({ s }: { s: ConfigState }) {
   };
   return (
     <div className="role-bar assign-bar" role="toolbar" aria-label="담당자 배정">
-      <label className="assign-field" title="이 열의 이름과 같은 이름으로 접속한 사람이 그 행을 맡습니다">
-        행 배정 기준
-        <select
-          aria-label="행 배정 기준"
-          value={assignment.keyCol ?? ""}
-          disabled={s.busy}
-          onChange={(e) =>
-            void s.apply({ op: "setKeyColumn", col: e.target.value === "" ? undefined : Number(e.target.value) })
-          }
-        >
-          <option value="">행 배정 없음</option>
-          {view.labels.map((label, c) => (
-            <option key={c} value={c}>
-              {letter(s, c)}열 {label || ""}
-              {c === suggested ? " (추천)" : ""}
-            </option>
+      <div className="assign-row">
+        <label className="assign-field" title="이 열의 이름과 같은 이름으로 접속한 사람이 그 행을 맡습니다">
+          <b>행 배정 기준</b>
+          <select
+            aria-label="행 배정 기준"
+            value={key ?? ""}
+            disabled={s.busy}
+            onChange={(e) =>
+              void s.apply({ op: "setKeyColumn", col: e.target.value === "" ? undefined : Number(e.target.value) })
+            }
+          >
+            <option value="">행 배정 없음</option>
+            {view.labels.map((label, c) => (
+              <option key={c} value={c}>
+                {letter(s, c)}열 {label || ""}
+                {c === suggested ? " (추천)" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        <span className="role-hint">
+          {key !== undefined && key !== null
+            ? `${letter(s, key)}열의 이름과 같은 이름으로 접속한 사람이 그 행을 맡습니다. 이름이 빈 행은 누구나 입력합니다.`
+            : "행을 사람에게 나누지 않습니다. 아래에서 범위를 배정하지 않은 입력 칸은 누구나 입력합니다."}
+        </span>
+      </div>
+      <div className="assign-row">
+        <b className="assign-label">선택 셀 담당자</b>
+        <span className="assign-range mono" aria-label="고른 범위">
+          {s.range ? sheetRange(s, s.range) : "칸을 고르세요"}
+        </span>
+        <input
+          className="assign-person"
+          aria-label="배정할 사람"
+          list="config-roster"
+          placeholder="이름 선택·입력"
+          value={person}
+          onChange={(e) => setPerson(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && assign()}
+        />
+        <datalist id="config-roster">
+          {candidates.map((p) => (
+            <option key={p} value={p} />
           ))}
-        </select>
-      </label>
-      <span className="bar-sep" />
-      <span className="role-hint">
-        {s.range ? (
-          <>
-            <span className="mono">{sheetRange(s, s.range)}</span> →
-          </>
-        ) : (
-          "범위를 고르면 그 칸을 사람에게 배정할 수 있어요 →"
-        )}
-      </span>
-      <input
-        className="assign-person"
-        aria-label="배정할 사람"
-        list="config-roster"
-        placeholder="이름"
-        value={person}
-        onChange={(e) => setPerson(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && !e.nativeEvent.isComposing && assign()}
-      />
-      <datalist id="config-roster">
-        {view.roster.map((p) => (
-          <option key={p} value={p} />
-        ))}
-      </datalist>
-      <input
-        className="assign-note"
-        aria-label="배정 메모"
-        placeholder="메모"
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-      />
-      <button className="ghost role" disabled={!s.range || !name || s.busy} onClick={assign}>
-        선택 범위 배정
-      </button>
+        </datalist>
+        <input
+          className="assign-note"
+          aria-label="배정 메모"
+          placeholder="메모"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        <button className="ghost role" disabled={!s.range || !name || s.busy} onClick={assign}>
+          선택 범위 배정
+        </button>
+      </div>
     </div>
   );
 }
@@ -287,7 +304,8 @@ export function RosterPanel({ s }: { s: ConfigState }) {
       </div>
       {view.roster.length === 0 && (
         <div className="muted small">
-          아직 배정한 사람이 없습니다. 위에서 행 배정 기준 열을 고르거나, 범위를 사람에게 배정하거나, 이름을 추가하세요.
+          아직 배정한 사람이 없습니다(입력 칸은 누구나 입력). 위에서 행 배정 기준 열을 고르거나, 범위를 사람에게
+          배정하거나, 이름을 추가하세요.
         </div>
       )}
       {view.roster.length > 0 && (
@@ -343,7 +361,7 @@ export function RangeAssignmentsPanel({ s }: { s: ConfigState }) {
         <span className="muted small">행 배정에 더함</span>
       </div>
       {ranges.length === 0 && (
-        <div className="muted small">그리드에서 범위를 고르고 위쪽의 ‘선택 범위 배정’을 누르세요.</div>
+        <div className="muted small">그리드에서 범위를 고르고 위쪽 둘째 줄의 ‘선택 범위 배정’을 누르세요.</div>
       )}
       {ranges.map((a, i) => (
         <div key={`${formatRange(a.range)}-${i}`} className="exception-row">
@@ -360,7 +378,9 @@ export function RangeAssignmentsPanel({ s }: { s: ConfigState }) {
           </button>
         </div>
       ))}
-      <div className="formula-note small">입력 가능 = (배정 행 ∪ 배정 범위) ∩ 입력 영역 − 입력 금지</div>
+      <div className="formula-note small">
+        입력 가능 = (배정 행 ∪ 배정 범위) ∩ 입력 영역 − 입력 금지 · 담당자가 아무도 없는 입력 칸은 누구나
+      </div>
     </section>
   );
 }

@@ -1,11 +1,12 @@
-import type { CellRange, CellRef, CellValue, ChatTo } from "@mm/shared";
+import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
 import { a1, splitCellRefs } from "@mm/shared";
 import { useEffect, useRef, useState } from "react";
 
+import { CellDetail } from "./CellDetail";
 import { sameValue } from "./edits";
 import type { SessionState } from "./useSession";
 
-export type PanelTab = "alerts" | "chat" | "history";
+export type PanelTab = "cell" | "alerts" | "chat" | "history";
 
 function time(ms: number): string {
   const d = new Date(ms);
@@ -27,30 +28,42 @@ interface Props {
   tab: PanelTab;
   onTab: (t: PanelTab) => void;
   onClose: () => void;
-  /** 지금 고른 칸(셀 이력). */
+  /** 지금 고른 칸(셀 내용·셀 이력). */
   at: CellRef | null;
   labels: string[];
+  columns: ColumnRule[];
+  flags: Uint8Array;
   canEdit: (row: number, col: number) => boolean;
+  /** 고른 칸을 편집 중인 다른 사람. */
+  locker?: string;
+  /** 고른 칸에 '끝나면 알려 주기'를 걸어 두었다. */
+  waiting: boolean;
+  onWait: () => void;
+  unreadChat: number;
   /** 모델 좌표 범위로 간다. `highlight`가 있으면 확인으로 표시한다. */
   onReveal: (range: CellRange, highlight?: number) => void;
   onChatSeen: (id: number) => void;
 }
 
-/** 1f 오른쪽 패널: 알림(강조된 셀·공지), 채팅(전체·호스트에게), 셀 이력(내 변경 되돌리기). */
-export function SidePanel({ s, tab, onTab, onClose, at, labels, canEdit, onReveal, onChatSeen }: Props) {
+/** 1f 오른쪽 사이드바: 셀 내용(고른 칸의 위치·내용 보기·고치기), 알림(강조된 셀·공지), 채팅(전체·호스트에게), 셀 이력. */
+export function SidePanel(props: Props) {
+  const { s, tab, onTab, onClose, at, labels, canEdit, onReveal, onChatSeen } = props;
   const w = s.welcome!;
   const origin = s.sheet!.model.origin;
   const addr = (r: CellRef) => a1(origin.row + r.row, origin.col + r.col);
   const unreadAlerts = s.highlights.filter((h) => !h.acked).length + s.announcements.filter((n) => !n.read).length;
 
   return (
-    <aside className="side-panel" aria-label="알림·채팅·셀 이력">
+    <aside className="side-panel" aria-label="사이드바">
       <div className="side-tabs" role="tablist">
+        <button role="tab" aria-selected={tab === "cell"} onClick={() => onTab("cell")}>
+          셀 내용
+        </button>
         <button role="tab" aria-selected={tab === "alerts"} onClick={() => onTab("alerts")}>
           알림{unreadAlerts > 0 ? ` ${unreadAlerts}` : ""}
         </button>
         <button role="tab" aria-selected={tab === "chat"} onClick={() => onTab("chat")}>
-          채팅
+          채팅{props.unreadChat > 0 && tab !== "chat" ? ` ${props.unreadChat}` : ""}
         </button>
         <button role="tab" aria-selected={tab === "history"} onClick={() => onTab("history")}>
           셀 이력
@@ -60,6 +73,19 @@ export function SidePanel({ s, tab, onTab, onClose, at, labels, canEdit, onRevea
           ✕
         </button>
       </div>
+      {tab === "cell" && (
+        <CellDetail
+          s={s}
+          at={at}
+          columns={props.columns}
+          labels={labels}
+          flags={props.flags}
+          canEdit={canEdit}
+          locker={props.locker}
+          waiting={props.waiting}
+          onWait={props.onWait}
+        />
+      )}
       {tab === "alerts" && <Alerts s={s} addr={addr} onReveal={onReveal} />}
       {tab === "chat" && (
         <Chat

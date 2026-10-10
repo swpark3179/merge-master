@@ -1,9 +1,10 @@
 //! 참여자 WebSocket 프로토콜 (JSON, `type`으로 구분).
 //!
-//! - 접속: 이름 대조·승인 대기·기기 전환·재접속 토큰(3단계)
+//! - 접속: IP 명단(그 IP면 그 이름으로 바로 입장), 명단 밖 IP는 이름 + 호스트 승인, 기기 전환, 재접속 토큰
 //! - 프레즌스: 접속 상태·커서(3단계)
 //! - 편집: 셀 잠금, 셀 수정 묶음(기준 버전으로 충돌 감지), 진행률, 마감 읽기 전용, 서식, 행 이력(4단계)
 //! - 소통: 공지(읽음 확인), 셀 강조(확인), 채팅(전체·호스트와 1:1)(6단계)
+//! - 행 추가: 참여자가 표 아래에 행을 붙인다(참여자 권한 '행 추가')
 
 use collect_core::access::PersonProgress;
 use collect_core::config::{ColumnRule, Permissions};
@@ -13,8 +14,8 @@ use collect_core::{CellRange, CellRef, CellStyle, CellValue, SheetModel};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// 2: 4단계 편집 메시지 추가. 3: 6단계 공지·강조·채팅, 묶음 출처.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// 2: 4단계 편집 메시지 추가. 3: 6단계 공지·강조·채팅, 묶음 출처. 4: IP 명단 입장(`known`), 행 추가.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// 채팅 받는 쪽. 참여자는 전체나 호스트에게, 호스트는 전체나 한 사람에게 보낸다.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
@@ -88,7 +89,8 @@ pub struct CellEdit {
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(export)]
 pub enum ClientMsg {
-    /// 이름으로 참여. 전에 받은 `token`이 있으면 같이 보내 재접속한다.
+    /// 이름으로 참여. 전에 받은 `token`이 있으면 같이 보내 재접속한다. IP 명단에 있는 IP면 `name`은 무시하고
+    /// 명단의 이름으로 들어온다.
     Join {
         name: String,
         #[serde(default)]
@@ -145,6 +147,10 @@ pub enum ClientMsg {
     Chat {
         to: ChatTo,
         text: String,
+    },
+    /// 표 아래에 빈 행을 붙인다(참여자 권한 '행 추가'일 때만). 결과는 모두에게 새 시트(`welcome`) + `rowsAdded`.
+    AddRows {
+        count: u32,
     },
 }
 
@@ -279,7 +285,11 @@ pub struct StyleChange {
 #[ts(export)]
 pub enum ServerMsg {
     Welcome(Box<Welcome>),
-    /// 명단에 없는 이름: 호스트 승인을 기다린다.
+    /// 연결한 IP가 호스트의 IP 명단에 있다: 이름을 묻지 않고 이 이름으로 들어온다(`join`을 보내면 된다).
+    Known {
+        name: String,
+    },
+    /// IP 명단 밖에서 접속: 호스트 승인을 기다린다.
     Pending {
         name: String,
     },
@@ -355,6 +365,11 @@ pub enum ServerMsg {
         id: u32,
     },
     Chat(ChatMessage),
+    /// 누군가 표 아래에 행을 붙였다(새 시트는 `welcome`으로 먼저 온다). 모델 좌표.
+    RowsAdded {
+        by: String,
+        range: CellRange,
+    },
     /// 서버가 곧 닫힌다(호스트가 서비스 중지).
     Closing,
     Pong,

@@ -5,10 +5,13 @@
 //!
 //! 쓰는 동안 화면 갱신·이벤트·자동 계산·경고를 끄고 끝나면 되돌린다. 값은 열마다 이어진 칸을 한 번에(`Value2` 배열) 쓰고,
 //! 저장한 뒤 다시 읽어 맞는지 확인한다. 수식 칸은 쓰지 않는다(계획에 들어 있지 않다).
+//!
+//! 참여자가 표 아래에 붙인 행이 있으면 값을 쓰기 전에 그 자리에 행을 끼워 넣는다(아래 내용은 밀려 내려가고, 새 행은
+//! 위 행의 서식을 따른다). 위 행의 수식은 새 행까지 채워 내린다.
 
 use std::path::Path;
 
-use collect_core::export::{ExportPlan, HistoryTable, ValueBlock};
+use collect_core::export::{ExportPlan, HistoryTable, RowInsert, ValueBlock};
 use collect_core::{CellRange, CellRef, CellStyle, CellValue, HAlign};
 use serde::Serialize;
 use ts_rs::TS;
@@ -54,6 +57,8 @@ pub struct SaveReport {
     pub merges: u32,
     /// 크기(열 너비·행 높이)를 바꾼 열·행 수.
     pub resized: u32,
+    /// 표 아래에 끼워 넣은 행 수(참여자가 추가한 행).
+    pub inserted: u32,
     /// 더한 '변경 이력' 시트 이름.
     #[ts(optional)]
     pub history_sheet: Option<String>,
@@ -143,6 +148,22 @@ fn apply_sizes(t: &Target, plan: &ExportPlan) -> Result<()> {
                 break;
             }
             column.put("ColumnWidth", Var::f64((chars * want / width).clamp(0.1, 255.0)))?;
+        }
+    }
+    Ok(())
+}
+
+/// 표 아래(`at`)에 행을 끼워 넣고, 높이를 맞추고, 위 행의 수식을 새 행까지 채워 내린다.
+fn insert_rows(t: &Target, ins: &RowInsert) -> Result<()> {
+    // Insert(Shift, CopyOrigin)의 기본값: 아래로 밀고, 서식은 위 행을 따른다.
+    t.range(CellRange::new(ins.at, 0, ins.count, 1))?.obj("EntireRow")?.call("Insert", vec![])?;
+    for (k, h) in ins.heights.iter().enumerate() {
+        let row = t.range(CellRange::new(ins.at + k as u32, 0, 1, 1))?.obj("EntireRow")?;
+        row.put("RowHeight", Var::f64(f64::from(*h)))?;
+    }
+    if ins.at > 0 {
+        for &c in &ins.formula_cols {
+            t.range(CellRange::new(ins.at - 1, c, ins.count + 1, 1))?.call("FillDown", vec![])?;
         }
     }
     Ok(())
@@ -259,6 +280,10 @@ fn apply(book: &Dispatch, ws: &Dispatch, plan: &ExportPlan, report: &mut SaveRep
     let app = book.obj("Application")?;
     let _suspend = Suspend::new(&app);
     let t = Target { ws, origin: plan.origin };
+    if let Some(ins) = &plan.insert {
+        insert_rows(&t, ins)?;
+        report.inserted = ins.count;
+    }
     for m in &plan.merges_remove {
         t.range(*m)?.call("UnMerge", vec![])?;
     }

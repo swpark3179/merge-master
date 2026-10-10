@@ -117,17 +117,21 @@ async fn thirty_people_editing_at_once() {
 
     let mut tasks = Vec::new();
     for (k, name) in people.iter().enumerate() {
-        let (url, name, stats) = (url.clone(), name.clone(), stats.clone());
+        let (url, name, stats, host) = (url.clone(), name.clone(), stats.clone(), session.clone());
         tasks.push(tokio::spawn(async move {
             let (ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
             let (mut tx, mut rx): (futures_util::stream::SplitSink<Ws, Message>, _) = ws.split();
             tx.send(text(&ClientMsg::Join { name: name.clone(), token: None, protocol: PROTOCOL_VERSION }))
                 .await
                 .unwrap();
-            // 입장: 내 행
+            // 입장(모두 같은 PC라 IP 명단 밖: 승인 대기 → 호스트 승인): 내 행
             let mine: Vec<u32> = loop {
                 let Some(Ok(Message::Text(t))) = rx.next().await else { panic!("연결 끊김") };
-                if let Ok(ServerMsg::Welcome(w)) = serde_json::from_str::<ServerMsg>(&t) {
+                let msg = serde_json::from_str::<ServerMsg>(&t);
+                if let Ok(ServerMsg::Pending { .. }) = msg {
+                    host.approve(&name, None, "").await.unwrap();
+                }
+                if let Ok(ServerMsg::Welcome(w)) = msg {
                     break w
                         .row_owner
                         .iter()

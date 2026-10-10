@@ -52,6 +52,8 @@ export type { HostSnapshot } from "./HostSnapshot";
 export type { ImportItems } from "./ImportItems";
 export type { ImportResult } from "./ImportResult";
 export type { InputFormat } from "./InputFormat";
+export type { IpEntry } from "./IpEntry";
+export type { IpNamesView } from "./IpNamesView";
 export type { KickReason } from "./KickReason";
 export type { LanAddress } from "./LanAddress";
 export type { LastSave } from "./LastSave";

@@ -22,6 +22,7 @@ use ts_rs::TS;
 
 mod history;
 mod monitor;
+mod people;
 mod recalc;
 mod recovery;
 mod save;
@@ -41,6 +42,8 @@ pub(crate) struct AppState {
     /// 확정한 시트의 출처(저장할 원본).
     source: std::sync::Mutex<Option<save::Source>>,
     last_save: std::sync::Mutex<Option<save::LastSave>>,
+    /// IP별 참여자 이름(1c IP 명단, 앱 설정 폴더의 JSON 파일).
+    ip_names: std::sync::Mutex<collect_server::IpNames>,
 }
 
 pub(crate) struct Preview {
@@ -178,6 +181,7 @@ async fn import_commit(
         }
         None => {
             let session = SessionHandle::spawn(SessionInit { model: model.clone(), config, store, restore: None });
+            people::attach(&state, &session);
             service::forward_participants(&app, &session);
             monitor::forward_events(&app, &session);
             *state.session.lock().unwrap() = Some(session.clone());
@@ -278,7 +282,7 @@ async fn sheet_set_cells(state: State<'_, AppState>, cells: Vec<CellWrite>) -> C
             let header_rows = s.model.header_rows;
             let key = s.config.assignment.key_col;
             let structural = cells.iter().any(|c| c.row < header_rows || Some(c.col) == key);
-            let user = history::host_user(&s.config.requester);
+            let user = s.host_name().to_string();
             let cells = cells.into_iter().map(|c| (CellRef::new(c.row, c.col), c.value)).collect();
             s.host_set(&user, BatchOrigin::Edit, cells);
             structural
@@ -305,6 +309,7 @@ pub fn run() {
             recalc: recalc::Recalc::default(),
             source: std::sync::Mutex::new(None),
             last_save: std::sync::Mutex::new(None),
+            ip_names: std::sync::Mutex::new(collect_server::IpNames::default()),
         })
         .invoke_handler(tauri::generate_handler![
             excel_list_workbooks,
@@ -353,12 +358,18 @@ pub fn run() {
             service::participant_reject,
             service::participant_kick,
             service::participant_unlock,
+            people::ip_names_get,
+            people::ip_names_set,
+            people::ip_names_put,
+            people::ip_names_import,
+            people::ip_names_export,
         ])
         .setup(|app| {
             // 오래된 기록 파일 정리(최근 것만 남긴다).
             if let Some(dir) = recovery::sessions_dir(app.handle()) {
                 recovery::cleanup(&dir);
             }
+            *app.state::<AppState>().ip_names.lock().unwrap() = people::load(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

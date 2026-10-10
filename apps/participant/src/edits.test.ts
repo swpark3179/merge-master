@@ -54,7 +54,34 @@ function welcome(over: Partial<Welcome> = {}): Welcome {
   };
 }
 
+/** 표 아래에 행이 붙은 새 시트(같은 통합문서·시트, 행만 늘어남). */
+function grown(w: Welcome, extra: number): Welcome {
+  const m = w.model;
+  const model: SheetModel = {
+    ...m,
+    rows: m.rows + extra,
+    cells: [...m.cells.map((c) => ({ ...c })), ...Array.from({ length: extra * m.cols }, () => ({ s: 0 }))],
+    rowHeights: [...m.rowHeights, ...Array(extra).fill(15)],
+  };
+  return { ...w, model, rowOwner: [...w.rowOwner, ...Array(extra).fill(2)] };
+}
+
 describe("EditState", () => {
+  it("표 아래에 행이 붙어도 되돌리기 기록은 남고, 다른 시트로 바뀌면 지운다", () => {
+    const w = welcome();
+    const s = new EditState(w, "c");
+    s.applied(s.edit([{ row: 1, col: 1, value: 5 }])!.batch, [{ row: 1, col: 1, value: 5, ver: 1 }], [], []);
+    const next = grown(
+      { ...w, model: { ...w.model, cells: w.model.cells.map((c, i) => (i === 3 ? { ...c, v: 5 } : c)) } },
+      2,
+    );
+    s.load(next);
+    expect(s.model.rows).toBe(5);
+    expect(s.canUndo()).toBe(true);
+    s.load({ ...next, model: { ...next.model, sheet: "다른 시트", rows: 2, cells: next.model.cells.slice(0, 4) } });
+    expect(s.canUndo()).toBe(false);
+  });
+
   it("낙관적으로 그리고, 답이 오면 서버가 정규화한 값으로 바꾼다", () => {
     const s = new EditState(welcome(), "c");
     const b = s.edit([{ row: 1, col: 1, value: "9,800" }])!;

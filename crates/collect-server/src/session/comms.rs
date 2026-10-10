@@ -156,8 +156,12 @@ pub struct CommsSnapshot {
 }
 
 impl State {
-    /// 호스트 이름(공지·강조·채팅에 보인다): 요청자, 없으면 '호스트'.
+    /// 호스트 이름(공지·강조·채팅·접속자 목록에 보인다): 호스트 PC의 IP가 IP 명단에 있으면 그 이름, 없으면 요청자,
+    /// 그것도 없으면 '호스트'.
     pub(super) fn host_name(&self) -> String {
+        if let Some(name) = self.host_ips.iter().find_map(|ip| self.ip_names.get(*ip)) {
+            return name.to_string();
+        }
         let r = self.config.requester.trim();
         if r.is_empty() { "호스트".into() } else { r.to_string() }
     }

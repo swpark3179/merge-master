@@ -486,3 +486,111 @@ async fn welcome_carries_versions_and_locks_and_replace_resets_them() {
     let w = d.welcome();
     assert!(w.versions.is_empty() && w.locks.is_empty());
 }
+
+fn add_rows(st: &mut State, c: &Client, count: u32) {
+    st.handle(Command::Client { conn: c.conn, msg: ClientMsg::AddRows { count } });
+}
+
+#[tokio::test]
+async fn participants_add_rows_when_allowed() {
+    let mut st = State::new(fixture());
+    let mut a = connect(&mut st, 1);
+    let mut b = connect(&mut st, 2);
+    join(&mut st, &a, "정하늘", None);
+    join(&mut st, &b, "최도윤", None);
+    a.take();
+    b.take();
+    let rows = st.model.rows;
+    add_rows(&mut st, &a, 1);
+    assert!(
+        a.take()
+            .iter()
+            .any(|m| matches!(m, ServerMsg::Error { message } if message.contains("행을 추가할 수 없습니다")))
+    );
+    assert_eq!(st.model.rows, rows);
+
+    host(&mut st, |s| {
+        s.config.permissions.add_rows = true;
+        s.changed();
+    });
+    a.take();
+    b.take();
+    let mut feed = st.host_feed.subscribe();
+    add_rows(&mut st, &a, 2);
+    assert_eq!(st.model.rows, rows + 2);
+    assert_eq!(st.versions.len(), st.model.cells.len());
+    let (r0, key) = (rows, st.config.assignment.key_col.unwrap());
+    // 행 배정 기준 열에 추가한 사람 이름 → 그 사람의 행. 수식(G)은 위 행에서 내려 쓴다.
+    assert_eq!(value(&st, r0, key), text("정하늘"));
+    assert_eq!(st.access.row_owner(r0), st.access.person("정하늘"));
+    assert!(st.model.cell(CellRef::new(r0, G)).unwrap().f.is_some());
+    assert_eq!(st.log.last().map(|e| e.origin), Some(BatchOrigin::AddRow));
+    let msgs = a.take();
+    let w = msgs.iter().find_map(|m| match m {
+        ServerMsg::Welcome(w) => Some(w),
+        _ => None,
+    });
+    assert_eq!(w.map(|w| w.model.rows), Some(rows + 2), "모두에게 새 시트");
+    assert!(msgs.iter().any(
+        |m| matches!(m, ServerMsg::RowsAdded { by, range } if by == "정하늘" && range.row == r0 && range.rows == 2)
+    ));
+    assert!(b.take().iter().any(|m| matches!(m, ServerMsg::RowsAdded { .. })));
+    assert!(matches!(feed.try_recv(), Ok(HostEvent::Reset)));
+
+    // 새 행의 입력 칸: 추가한 사람만(행 배정 기준이 있으므로). 잠금 열(D 비목)도 새 행에서는 입력할 수 있고,
+    // 수식(G)·행 배정 기준(C) 칸은 그대로 잠겨 있다.
+    set(&mut st, &a, "n1", vec![cell(r0, F, text("1,200"), 0), cell(r0, 3, text("새 비목"), 0)]);
+    let (ok, _, rejected) = applied(&a.take());
+    assert!(rejected.is_empty(), "{rejected:?}");
+    assert_eq!(ok[0].value, num(1200.0));
+    assert_eq!(value(&st, r0, 3), text("새 비목"));
+    set(&mut st, &a, "n1b", vec![cell(r0, key, text("최도윤"), 0), cell(r0, G, num(1.0), 0)]);
+    assert_eq!(applied(&a.take()).2.len(), 2);
+    assert!(
+        !st.access
+            .can_edit(collect_core::access::Viewer::Person(st.access.person("정하늘").unwrap()), CellRef::new(5, 3))
+    );
+    set(&mut st, &b, "n2", vec![cell(r0, H, text("남의 새 행"), 0)]);
+    assert_eq!(applied(&b.take()).2.len(), 1);
+    // 예외는 한 벌(입력 가능 + 기준 칸 입력 금지)이고, 이어서 추가하면 범위가 늘어난다.
+    let added: Vec<_> = st.config.exceptions.iter().filter(|e| e.note == super::edit::ADDED_ROWS_NOTE).collect();
+    assert_eq!(added.len(), 2);
+    add_rows(&mut st, &a, 1);
+    let added: Vec<_> = st.config.exceptions.iter().filter(|e| e.note == super::edit::ADDED_ROWS_NOTE).collect();
+    assert_eq!(added.len(), 2);
+    assert_eq!(added[0].range, CellRange::new(r0, 0, 3, st.model.cols));
+    a.take();
+    b.take();
+
+    // 마감되면 추가할 수 없다.
+    host(&mut st, |s| s.set_closed(true));
+    a.take();
+    add_rows(&mut st, &a, 1);
+    assert!(a.take().iter().any(|m| matches!(m, ServerMsg::Error { .. })));
+    assert_eq!(st.model.rows, rows + 3);
+}
+
+#[tokio::test]
+async fn added_rows_without_key_column_are_open_to_everyone_and_capped() {
+    let mut init = fixture();
+    init.config.assignment.key_col = None;
+    init.config.assignment.extra_people = vec!["가".into(), "나".into()];
+    init.config.permissions.add_rows = true;
+    let mut st = State::new(init);
+    let mut a = connect(&mut st, 1);
+    let mut b = connect(&mut st, 2);
+    join(&mut st, &a, "가", None);
+    join(&mut st, &b, "나", None);
+    a.take();
+    add_rows(&mut st, &a, 500); // 한 번에 MAX_ADD_ROWS까지만
+    let r0 = st.model.rows - super::edit::MAX_ADD_ROWS;
+    assert_eq!(st.baseline.rows + super::edit::MAX_ADD_ROWS, st.model.rows);
+    b.take();
+    set(&mut st, &b, "x", vec![cell(r0, F, text("5"), 0)]);
+    assert!(applied(&b.take()).2.is_empty(), "담당자 없는 새 행은 누구나");
+    for _ in 0..(super::edit::MAX_ADDED_ROWS / super::edit::MAX_ADD_ROWS) {
+        add_rows(&mut st, &a, super::edit::MAX_ADD_ROWS);
+    }
+    assert_eq!(st.model.rows - st.baseline.rows, super::edit::MAX_ADDED_ROWS);
+    assert!(a.take().iter().any(|m| matches!(m, ServerMsg::Error { message } if message.contains("까지 추가"))));
+}

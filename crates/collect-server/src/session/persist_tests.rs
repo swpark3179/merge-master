@@ -146,3 +146,39 @@ async fn recommitting_while_serving_keeps_the_service_in_the_new_file() {
         Some(r#"{"port":8091,"slug":"q4","running":true}"#)
     );
 }
+
+/// 승인받은 브라우저(토큰)와 참여자가 추가한 행은 앱을 다시 켜도 남는다.
+#[tokio::test]
+async fn approved_tokens_and_added_rows_come_back() {
+    use super::tests::join_unlisted;
+    let path = temp("tokens.sqlite");
+    let mut init = fixture();
+    init.store = Some(Store::open(&path).unwrap());
+    init.config.permissions.add_rows = true;
+    let mut st = State::new(init);
+    let mut a = connect(&mut st, 1);
+    join_unlisted(&mut st, &a, "김민수", None);
+    st.handle(Command::Approve {
+        name: "김민수".into(),
+        range: None,
+        note: String::new(),
+        reply: tokio::sync::oneshot::channel().0,
+    });
+    let token = a.welcome().token;
+    let rows = st.model.rows;
+    st.handle(Command::Client { conn: 1, msg: ClientMsg::AddRows { count: 1 } });
+    set(&mut st, &a, "n1", rows, F, CellValue::Number(7.0));
+    st.store.as_ref().unwrap().flush().unwrap();
+    drop(st);
+
+    let mut st = State::new(recover(&path).unwrap().init);
+    assert_eq!(st.model.rows, rows + 1);
+    assert_eq!(st.model.cell(CellRef::new(rows, F)).unwrap().v, CellValue::Number(7.0));
+    assert_eq!(st.access.row_owner(rows), st.access.person("김민수"));
+    let mut back = connect(&mut st, 1);
+    join_unlisted(&mut st, &back, "김민수", Some(&token));
+    assert_eq!(back.welcome().token, token, "다시 승인받지 않는다");
+    let mut other = connect(&mut st, 2);
+    join_unlisted(&mut st, &other, "김민수", Some("다른 토큰"));
+    assert!(matches!(other.take()[..], [ServerMsg::Pending { .. }]));
+}

@@ -3,7 +3,7 @@ import { selectionRange, buildLayout } from "@mm/grid";
 import type { CellRange, ConfigEdit, ConfigView, FormatEdit, HostEvent, SheetModel } from "@mm/shared";
 import { decodeFlags } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CellWrite } from "../../api";
 import { api, errorText } from "../../api";
@@ -49,12 +49,23 @@ export function useConfig(initial: SheetModel, active: boolean) {
     return () => void off.then((f) => f());
   }, [refresh]);
 
-  // 공유 중 참여자 입력·되돌리기도 이 화면 시트에 반영한다(옛 값 위에 고쳐 쓰지 않게). `reset`은 이 화면의 동작이
-  // 결과(시트·설정 보기)를 직접 돌려받으므로 무시한다.
+  // 공유 중 참여자 입력·되돌리기도 이 화면 시트에 반영한다(옛 값 위에 고쳐 쓰지 않게). `reset`은 대개 이 화면의
+  // 동작이 결과(시트·설정 보기)를 직접 돌려받으므로, 참여자가 행을 추가해 시트 크기가 바뀐 때만 다시 읽는다.
+  const rows = useRef(initial.rows);
+  rows.current = model.rows;
   useEffect(() => {
     const off = listen<HostEvent>("sheet-changes", (e) => {
       const ev = e.payload;
-      if (ev.type === "cells") setModel((m) => withValues(m, ev.cells));
+      if (ev.type === "reset") {
+        void api
+          .monitorGet()
+          .then((d) => {
+            if (d.model.rows === rows.current) return;
+            setModel(d.model);
+            refresh();
+          })
+          .catch(() => {});
+      } else if (ev.type === "cells") setModel((m) => withValues(m, ev.cells));
       else if (ev.type === "styles")
         setModel((m) => {
           const cells = m.cells.slice();
@@ -67,7 +78,7 @@ export function useConfig(initial: SheetModel, active: boolean) {
         });
     });
     return () => void off.then((f) => f());
-  }, []);
+  }, [refresh]);
 
   const run = useCallback(async <T>(f: () => Promise<T>): Promise<T | null> => {
     setBusy(true);

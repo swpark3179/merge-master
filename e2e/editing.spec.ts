@@ -1,6 +1,8 @@
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { expect, test } from "@playwright/test";
 
+import { enter } from "./join";
+
 // 4단계 동시 편집: 개발 서버(collect-dev-server --required F --dev-admin)에 여러 브라우저를 붙여 확인한다.
 // 서버 상태가 테스트 사이에 남으므로 테스트마다 다른 사람(행)을 쓴다.
 // 열: F 신청 금액(숫자·천원·필수) · G 증감률(수식) · H 산출 근거(글자) · I 집행 시기(목록)
@@ -27,10 +29,7 @@ async function newPage(browser: Browser): Promise<Page> {
 
 async function open(browser: Browser, name: string, path = "/q4"): Promise<Page> {
   const page = await newPage(browser);
-  await page.goto(path);
-  await page.getByLabel("이름").fill(name);
-  await page.getByRole("button", { name: "참여하기" }).click();
-  await expect(page.locator(".status")).toContainText("실시간 동기화");
+  await enter(page, name, path);
   return page;
 }
 
@@ -58,7 +57,7 @@ test("그리드에서 입력하면 정규화되어 다른 사람에게 바로 �
   const before = await a.locator(".mine-progress b").textContent();
   await typeInto(a, 17, F, "9,800");
   await expect(text(a, 17, F)).toHaveText("9,800");
-  await expect(a.locator(".formula-bar .addr")).toHaveText("F19"); // Enter는 아래 칸으로
+  await expect(a.locator(".cell-detail .addr")).toHaveText("F19"); // Enter는 아래 칸으로
   await expect(text(b, 17, F)).toHaveText("9,800");
   await expect(a.locator(".mine-progress b")).not.toHaveText(before!);
   await expect(a.locator(".status")).toContainText("내 변경 1건");
@@ -87,12 +86,7 @@ test("편집 중인 칸은 다른 사람에게 잠기고, 확정하거나 호스
   // 정하늘의 H18:H22를 새 참여자에게도 범위 배정해 두 사람이 같은 칸을 편집할 수 있게 한다.
   const helper = unique("공유");
   const b = await newPage(browser);
-  await b.goto("/q4");
-  await b.getByLabel("이름").fill(helper);
-  await b.getByRole("button", { name: "참여하기" }).click();
-  await expect(b.getByText("호스트 승인을 기다리는 중")).toBeVisible();
-  expect((await request.post("/__dev/approve", { data: { name: helper, range: "H18:H22" } })).ok()).toBe(true);
-  await expect(b.locator(".status")).toContainText("실시간 동기화");
+  await enter(b, helper, "/q4", "H18:H22");
   const a = await open(browser, "정하늘");
 
   await cell(a, 17, H).click();
@@ -136,12 +130,7 @@ test("한글 입력(IME 확정)도 첫 글자부터 받는다", async ({ browser
 test("끊긴 사이 같은 칸을 다른 사람이 바꿨으면 내 값으로 덮어쓰고 알린다", async ({ browser, request }) => {
   const helper = unique("충돌");
   const b = await newPage(browser);
-  await b.goto("/q4");
-  await b.getByLabel("이름").fill(helper);
-  await b.getByRole("button", { name: "참여하기" }).click();
-  await expect(b.getByText("호스트 승인을 기다리는 중")).toBeVisible();
-  expect((await request.post("/__dev/approve", { data: { name: helper, range: "H28:H32" } })).ok()).toBe(true);
-  await expect(b.locator(".status")).toContainText("실시간 동기화");
+  await enter(b, helper, "/q4", "H28:H32");
   const a = await open(browser, "오세린");
   await a.evaluate(() => window.__mmTest!.offline(true));
   await typeInto(a, 30, H, "오프라인 값");
@@ -197,7 +186,7 @@ test("목록 칸은 드롭다운에서 고른다", async ({ browser }) => {
   const a = await open(browser, "오세린");
   await cell(a, 27, I).click();
   await a.getByRole("button", { name: "목록 열기" }).click();
-  await a.getByRole("option", { name: "2분기" }).click();
+  await a.locator(".cell-list").getByRole("option", { name: "2분기" }).click();
   await expect(text(a, 27, I)).toHaveText("2분기");
   // Alt+↓로 열면 지금 값(2분기)에서 시작한다.
   await cell(a, 28, I).click();
@@ -258,12 +247,12 @@ test("행 단위 폼(1g): 형식별 입력·자동 저장·이력·다음 미입
   await a.getByRole("button", { name: "다음 미입력 ›" }).click();
   await expect(a.locator(".row-head")).not.toContainText("13행");
   await a.getByRole("button", { name: "그리드에서 이 행 보기 →" }).click();
-  await expect(a.locator(".formula-bar .addr")).toHaveText(/^F\d+$/);
+  await expect(a.locator(".cell-detail .addr")).toHaveText(/^F\d+$/);
 });
 
 test("조회조건·내 담당만·필수 미입력만 필터", async ({ browser }) => {
   const a = await open(browser, "최도윤");
-  await expect(a.getByTestId("row-count")).toContainText("1,000행");
+  await expect(a.getByTestId("row-count")).toContainText("행 · 내 담당");
   await a.getByLabel("부서 조회조건").selectOption("재무팀");
   await expect(a.getByTestId("row-count")).toContainText("표시");
   const shown = await a.locator(".mmg-left .mmg-rowhead").count();
@@ -313,4 +302,86 @@ test("호스트가 취합을 마감하면 사유와 함께 읽기 전용이 되�
   expect((await request.post("/__dev/close", { data: { closed: false } })).ok()).toBe(true);
   await expect(a.locator(".readonly-bar")).toHaveCount(0);
   await expect(b.locator(".readonly-bar")).toHaveCount(0);
+});
+
+test("Alt+Enter 여러 줄은 그리드에 줄을 나눠 보이고, 사이드바 '셀 내용'에서 자세히 보고 고친다", async ({
+  browser,
+}) => {
+  const a = await open(browser, "오세린");
+  const b = await open(browser, "최도윤");
+  await cell(a, 28, H).click();
+  await a.keyboard.type("첫 줄");
+  await a.keyboard.press("Alt+Enter");
+  await a.keyboard.type("둘째 줄");
+  await a.keyboard.press("Enter");
+  const lines = (page: Page) => text(page, 28, H).evaluate((el) => (el as HTMLElement).innerText);
+  await expect.poll(() => lines(a)).toBe("첫 줄\n둘째 줄");
+  await expect.poll(() => lines(b)).toBe("첫 줄\n둘째 줄");
+  // 두 줄이 다 보이도록 행이 높아진다.
+  const height = await cell(a, 28, H).evaluate((el) => el.getBoundingClientRect().height);
+  expect(height).toBeGreaterThan(30);
+
+  // 사이드바(처음부터 열림)의 '셀 내용': 고른 칸의 위치와 내용 전체, 여기서 고친다.
+  await cell(a, 28, H).click();
+  const panel = a.locator(".side-panel");
+  await expect(panel.getByRole("tab", { name: "셀 내용" })).toHaveAttribute("aria-selected", "true");
+  await expect(panel.locator(".cell-detail .addr")).toHaveText("H29");
+  const box = panel.getByLabel("셀 내용 편집");
+  await expect(box).toHaveValue("첫 줄\n둘째 줄");
+  await box.fill("첫 줄\n둘째 줄\n셋째 줄");
+  await expect(cell(b, 28, H).locator(".lock-tag")).toHaveText("🔒 오세린"); // 고치는 동안 잠김
+  await box.press("Control+Enter");
+  await expect.poll(() => lines(b)).toBe("첫 줄\n둘째 줄\n셋째 줄");
+  await expect(cell(b, 28, H).locator(".lock-tag")).toHaveCount(0);
+  // 남의 칸은 읽기만 한다.
+  await cell(b, 28, H).click();
+  await expect(b.locator(".cell-detail .detail-value")).toContainText("셋째 줄");
+  await expect(b.getByLabel("셀 내용 편집")).toHaveCount(0);
+
+  // 위쪽 버튼 하나로 사이드바를 닫고 연다.
+  await a.getByRole("button", { name: /^사이드바/ }).click();
+  await expect(a.locator(".side-panel")).toHaveCount(0);
+  await a.getByRole("button", { name: /^사이드바/ }).click();
+  await expect(a.locator(".side-panel")).toBeVisible();
+});
+
+// 표에 행을 붙이므로 이 파일의 마지막에 둔다(개발 서버 상태가 남는다).
+test("행 추가: 표 아래에 붙인 행은 모두에게 보이고 추가한 사람의 행이 된다", async ({ browser, request }) => {
+  const a = await open(browser, "한지우");
+  const b = await open(browser, "최도윤");
+  await expect(a.getByRole("button", { name: "+ 행 추가" })).toHaveCount(0);
+  expect((await request.post("/__dev/config", { data: { addRows: true } })).ok()).toBe(true);
+  try {
+    const count = async (page: Page) =>
+      Number((await page.getByTestId("row-count").textContent())!.split("행")[0]!.replace(/,/g, ""));
+    await expect(a.getByRole("button", { name: "+ 행 추가" })).toBeVisible();
+    const before = await count(a);
+    const row = 2 + before; // 머리글 2행 + 데이터 행
+    await a.getByRole("button", { name: "+ 행 추가" }).click();
+    await expect(a.locator(".toast", { hasText: "행을 추가했습니다" })).toBeVisible();
+    await expect.poll(() => count(a)).toBe(before + 1);
+    await expect.poll(() => count(b)).toBe(before + 1);
+    // 새 행으로 가 있다: 입력할 첫 칸(A)이 골라져 있고, 담당자 칸(C)에 내 이름.
+    await expect(a.locator(".cell-detail .addr")).toHaveText(`A${row + 1}`);
+    await expect(text(a, row, 2)).toHaveText("한지우");
+    await a.keyboard.type("연구");
+    await a.keyboard.press("Tab");
+    await expect(text(a, row, 0)).toHaveText("연구");
+    await typeInto(a, row, F, "777");
+    await expect(text(a, row, F)).toHaveText("777");
+    // 잠금 열(D 비목)도 새 행에서는 적을 수 있다. 담당자 칸(C)은 그대로 잠겨 있다.
+    await typeInto(a, row, 3, "새 비목");
+    await expect(text(a, row, 3)).toHaveText("새 비목");
+    await cell(a, row, 2).click();
+    await a.keyboard.type("x");
+    await expect(a.locator(".toast").last()).toContainText("이 칸은 입력할 수 없습니다");
+    await b.locator(".mmg-scroller").evaluate((el) => (el.scrollTop = el.scrollHeight));
+    await expect(text(b, row, F)).toHaveText("777");
+    // 남(최도윤)은 그 행에 입력할 수 없다.
+    await cell(b, row, H).click();
+    await b.keyboard.type("x");
+    await expect(b.locator(".toast").last()).toContainText("이 칸은 입력할 수 없습니다");
+  } finally {
+    await request.post("/__dev/config", { data: { addRows: false } });
+  }
 });

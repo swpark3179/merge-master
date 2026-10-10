@@ -11,6 +11,8 @@ interface Props {
   roster: string[];
   origin: { row: number; col: number };
   onRosterChanged: () => void;
+  /** 승인하며 IP 명단에 저장했다. */
+  onIpNamesChanged: () => void;
   onGoConfig: () => void;
   onError: (e: string) => void;
 }
@@ -22,10 +24,21 @@ function StatusText({ p }: { p: ParticipantRow }) {
 }
 
 /** 1c 접속자: 승인 대기 + 명단 표(상태·배정·현재 위치·필수 입력). */
-export function ParticipantsPanel({ running, snapshot, roster, origin, onRosterChanged, onGoConfig, onError }: Props) {
+export function ParticipantsPanel({
+  running,
+  snapshot,
+  roster,
+  origin,
+  onRosterChanged,
+  onIpNamesChanged,
+  onGoConfig,
+  onError,
+}: Props) {
   const [approving, setApproving] = useState<string | null>(null);
   const [range, setRange] = useState("");
   const [note, setNote] = useState("");
+  /** 승인하면서 그 IP를 IP 명단에 그 이름으로 저장(다음부터 바로 들어온다). */
+  const [remember, setRemember] = useState(false);
   const [menu, setMenu] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
   const rows: ParticipantRow[] =
@@ -89,7 +102,8 @@ export function ParticipantsPanel({ running, snapshot, roster, origin, onRosterC
         <div key={p.name} className="pending" role="alert">
           <b>승인 대기</b>
           <span>
-            ‘{p.name}’ — 명단에 없는 이름 · {p.ip}
+            ‘{p.name}’ — {rows.some((r) => r.name === p.name) ? "명단에 있는 이름" : "명단에 없는 이름"} · IP 명단 밖{" "}
+            <span className="mono">{p.ip}</span>
           </span>
           <span className="spacer" />
           {approving === p.name ? (
@@ -99,6 +113,10 @@ export function ParticipantsPanel({ running, snapshot, roster, origin, onRosterC
                 e.preventDefault();
                 void run(async () => {
                   await api.participantApprove(p.name, range.trim() || null, note);
+                  if (remember && p.ip) {
+                    await api.ipNamesPut(p.ip, p.name);
+                    onIpNamesChanged();
+                  }
                   setApproving(null);
                   setRange("");
                   setNote("");
@@ -114,6 +132,10 @@ export function ParticipantsPanel({ running, snapshot, roster, origin, onRosterC
                 onChange={(e) => setRange(e.target.value.toUpperCase())}
               />
               <input aria-label="배정 메모" placeholder="메모" value={note} onChange={(e) => setNote(e.target.value)} />
+              <label className="check small" title="다음부터 이 PC에서는 이름을 묻지 않고 바로 들어옵니다">
+                <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                IP 명단에 저장
+              </label>
               <button type="submit" className="small">
                 승인
               </button>
@@ -157,7 +179,7 @@ export function ParticipantsPanel({ running, snapshot, roster, origin, onRosterC
                 />
                 {p.name}
               </span>
-              <span>
+              <span title={p.ip ? `IP ${p.ip}` : undefined}>
                 <StatusText p={p} />
               </span>
               <span className="small">{p.assignment}</span>

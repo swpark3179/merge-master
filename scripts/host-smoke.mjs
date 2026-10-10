@@ -372,10 +372,18 @@ try {
   await expect(p2.getByText("박지훈 (기획팀) 님의 엑셀 취합 요청")).toBeVisible();
   await p2.getByLabel("이름").fill("이서연");
   await p2.getByRole("button", { name: "참여하기" }).click();
+  // 이 PC는 IP 명단 밖이라 명단에 있는 이름이어도 호스트가 승인해야 들어온다.
+  await expect(p2.getByText("호스트 승인을 기다리는 중")).toBeVisible();
+  await expect(svc.getByText("‘이서연’ — 명단에 있는 이름")).toBeVisible({ timeout: 10_000 });
+  await svc.getByRole("button", { name: "배정 후 승인" }).click();
+  await svc.getByRole("button", { name: "승인", exact: true }).click();
   await p2.locator(".mmg-cell", { hasText: "작성자 확인" }).waitFor();
   await p2.getByText("실시간 동기화").waitFor();
   const p2heads = await p2.locator(".mmg-rowhead").allTextContents();
-  check(!p2heads.includes("12") && p2heads.includes("13"), "참여자 입장 · 숨긴 행은 참여자에게도 보이지 않음");
+  check(
+    !p2heads.includes("12") && p2heads.includes("13"),
+    "IP 명단 밖: 이름 입력 → 승인 → 입장 · 숨긴 행은 참여자에게도 보이지 않음",
+  );
   const leeRow = svc.getByRole("row", { name: "이서연" });
   await expect(leeRow).toContainText("● 접속 중", { timeout: 10_000 });
   await expect(page.locator(".service-badge")).toContainText("접속 1 / 4");
@@ -430,6 +438,9 @@ try {
   await p4.goto(url);
   await p4.getByLabel("이름").fill("이서연");
   await p4.getByRole("button", { name: "참여하기" }).click();
+  await expect(svc.getByText("‘이서연’ — 명단에 있는 이름")).toBeVisible({ timeout: 10_000 });
+  await svc.getByRole("button", { name: "배정 후 승인" }).click();
+  await svc.getByRole("button", { name: "승인", exact: true }).click();
   await p4.getByText("실시간 동기화").waitFor();
   const lee = svc.getByRole("row", { name: "이서연" });
   await expect(lee).toContainText("● 접속 중", { timeout: 10_000 });
@@ -519,7 +530,7 @@ try {
   check(true, "셀 강조 → 참여자 노란 표시·말풍선 → 셀로 이동 → 호스트에 확인함");
 
   // 채팅: 참여자 → 전체, 호스트 → 1:1
-  await p4.getByRole("button", { name: /^채팅/ }).click();
+  await p4.locator(".side-panel").getByRole("tab", { name: /^채팅/ }).click();
   await p4.getByLabel("채팅 입력").fill("#F3 금액 확인 부탁드립니다");
   await p4.getByLabel("채팅 입력").press("Enter");
   await mon.getByRole("tab", { name: /^채팅/ }).click();

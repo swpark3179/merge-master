@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api, errorText } from "../../api";
 import { useToast } from "../../frame";
+import { IpNamesPanel } from "./IpNamesPanel";
 import { ParticipantsPanel } from "./ParticipantsPanel";
 
 interface Props {
@@ -34,6 +35,8 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   const [since, setSince] = useState<string | null>(null);
   const toast = useToast();
   const [recalc, setRecalc] = useState<RecalcStatus | null>(null);
+  /** IP 명단이 바뀌었다(승인하며 'IP 명단에 저장'). */
+  const [ipRev, setIpRev] = useState(0);
 
   // 수식 재계산(Excel 계산 사본) 상태
   useEffect(() => {
@@ -134,7 +137,7 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
       config?.description || "",
       config?.deadline ? `마감: ${formatDeadline(config.deadline)}` : "",
       `접속: ${url}`,
-      "같은 사내망에서 위 주소를 열고 이름만 입력하면 됩니다.",
+      "같은 사내망에서 위 주소를 여세요. 등록된 PC는 바로 들어오고, 그 밖은 이름을 입력하면 호스트가 승인합니다.",
     ]
       .filter(Boolean)
       .join("\n");
@@ -309,7 +312,9 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
               </button>
             </>
           )}
-          <div className="small muted">참여 방식: 이름만 입력 · 명단 외 이름은 승인 후 배정</div>
+          <div className="small muted">
+            참여 방식: IP 명단의 PC는 그 이름으로 바로 · 그 밖은 이름 입력 후 호스트 승인
+          </div>
           {error && <div className="error small">{error}</div>}
         </section>
       </div>
@@ -320,9 +325,12 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
         roster={roster}
         origin={origin}
         onRosterChanged={reload}
+        onIpNamesChanged={() => setIpRev((n) => n + 1)}
         onGoConfig={onGoConfig}
         onError={setError}
       />
+
+      <IpNamesPanel snapshot={snapshot} rev={ipRev} onError={setError} />
     </div>
   );
 }
