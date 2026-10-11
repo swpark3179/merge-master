@@ -12,7 +12,8 @@ import { formatRange, parseRange } from "@mm/shared";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, CANCELLED, errorText } from "../../api";
+import { CANCELLED, errorText } from "../../api";
+import { useApi } from "../../job";
 
 export const DEFAULT_ITEMS: ImportItems = {
   formulas: true,
@@ -82,6 +83,7 @@ function readOptions(form: ImportForm): ReadOptions {
  * 읽기는 한 번에 하나(Excel 스레드)라 초점 시트만 바로 읽고, 확정할 때 아직 읽지 않았거나 낡은 시트를 차례로 읽는다.
  */
 export function useImport(onExcelStatus: (running: boolean) => void, onCommitted: (m: SheetModel[]) => void) {
+  const api = useApi();
   const [status, setStatus] = useState<ExcelStatus | null>(null);
   const [bookId, setBookId] = useState<string | null>(null);
   /** 함께 채울 시트(통합문서 순서). */

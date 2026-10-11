@@ -2,7 +2,8 @@ import type { HostSnapshot, ParticipantRow, SheetCell, SheetModel } from "@mm/sh
 import { a1, personColor, sheetPrefix } from "@mm/shared";
 import { useState } from "react";
 
-import { api, errorText } from "../../api";
+import { errorText } from "../../api";
+import { useApi } from "../../job";
 
 interface Props {
   running: boolean;
@@ -43,6 +44,7 @@ export function ParticipantsPanel({
   onGoConfig,
   onError,
 }: Props) {
+  const api = useApi();
   const [approving, setApproving] = useState<string | null>(null);
   const [range, setRange] = useState("");
   /** 배정 범위의 시트(범위에 `시트!`를 적으면 그쪽이 먼저). */

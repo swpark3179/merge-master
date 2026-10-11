@@ -2,7 +2,7 @@ import type { CellRange, ColumnRule, ExceptionKind, InputFormat, Permissions } f
 import { colLetters, formatRange, personColor } from "@mm/shared";
 import { useEffect, useState } from "react";
 
-import { api } from "../../api";
+import { useApi } from "../../job";
 import type { ConfigState } from "./useConfig";
 
 function sheetRange(s: ConfigState, r: CellRange): string {
@@ -208,6 +208,7 @@ export function ExceptionsPanel({ s }: { s: ConfigState }) {
  * 행 배정도 범위 배정도 없는 입력 칸은 누구나 입력한다.
  */
 export function AssignBar({ s }: { s: ConfigState }) {
+  const api = useApi();
   const view = s.view!;
   const { assignment } = view.config;
   const [person, setPerson] = useState("");

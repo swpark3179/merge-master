@@ -19,7 +19,8 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { api, errorText } from "../../api";
+import { errorText, jobEvent } from "../../api";
+import { useApi, useJobId } from "../../job";
 import { sheetAddr, showValue, time } from "../monitor/MonitorScreen";
 
 const PAGE = 50;
@@ -71,6 +72,8 @@ interface Props {
 
 /** 5 히스토리(1h): 변경 기록(묶음)·필터·CSV, 셀 타임라인, 되돌리기, 스냅샷. 기록은 모든 시트, 시트로 거를 수 있다. */
 export function HistoryScreen({ active, sheets, sheet }: Props) {
+  const api = useApi();
+  const job = useJobId();
   /** 시트마다 지금 값·열 이름·명단(행 이름·항목 표시용). */
   const [data, setData] = useState<(MonitorData | undefined)[]>([]);
   /** 이 시트의 기록만(없으면 모든 시트). */
@@ -189,7 +192,7 @@ export function HistoryScreen({ active, sheets, sheet }: Props) {
   useEffect(() => {
     if (!active) return;
     let timer: number | undefined;
-    const off = listen("sheet-changes", () => {
+    const off = listen(jobEvent("sheet-changes", job), () => {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         void query(0);
