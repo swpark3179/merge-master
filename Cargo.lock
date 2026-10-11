@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "collect-core"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "collect-server"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "collect-store"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "collect-core",
  "rusqlite",
@@ -911,7 +911,7 @@ dependencies = [
 
 [[package]]
 name = "excel-com"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "collect-core",
  "serde",
@@ -2047,7 +2047,7 @@ dependencies = [
 
 [[package]]
 name = "merge-master"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "chrono",
  "collect-core",
