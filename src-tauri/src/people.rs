@@ -1,7 +1,8 @@
 //! 1c IP 명단: IP별 참여자 이름. 이 명단에 있는 IP에서 접속하면 이름을 묻지 않고 그 이름으로 들어오고, 명단 밖 IP는
 //! 이름을 입력한 뒤 호스트가 승인한다. 호스트 PC의 IP가 명단에 있으면 그 이름이 호스트 이름이다.
 //!
-//! 앱 설정 폴더의 `ip-names.json`에 두고(앱을 다시 켜도 남는다), 바꾸면 세션에도 알린다. JSON 파일로 내보내고 불러온다.
+//! 앱 설정 폴더의 `ip-names.json`에 두고(앱을 다시 켜도 남는다), 바꾸면 모든 업무의 세션에 알린다(명단은 업무 공통).
+//! JSON 파일로 내보내고 불러온다.
 
 use std::path::{Path, PathBuf};
 
@@ -43,16 +44,19 @@ fn view(app: &AppHandle, names: &IpNames) -> IpNamesView {
     }
 }
 
-/// 명단을 바꾼다: 파일에 남기고 세션에 알린다.
+/// 명단을 바꾼다: 파일에 남기고 모든 업무의 세션과 참여자 업무 목록('내 담당')에 알린다.
 fn replace(app: &AppHandle, state: &AppState, names: IpNames) -> CmdResult<IpNamesView> {
     let path = file(app).ok_or("앱 설정 폴더를 찾을 수 없습니다")?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("앱 설정 폴더를 만들 수 없습니다: {e}"))?;
     }
     std::fs::write(&path, names.to_json()).map_err(|e| format!("IP 명단을 저장할 수 없습니다: {e}"))?;
-    if let Ok(session) = state.session() {
-        session.set_ip_names(names.clone());
+    for job in state.all_jobs() {
+        if let Ok(session) = job.session() {
+            session.set_ip_names(names.clone());
+        }
     }
+    state.hub.set_ip_names(names.clone());
     let out = view(app, &names);
     *state.ip_names.lock().unwrap() = names;
     Ok(out)

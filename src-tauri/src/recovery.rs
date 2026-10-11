@@ -1,23 +1,14 @@
-//! 7단계 세션 복구: 앱을 다시 켰을 때 가장 최근 기록 파일에서 취합을 이어서 한다.
-//!
-//! 1a 화면이 [`recovery_check`]로 '이어서 하기'를 묻고, [`recovery_resume`]이 세션을 되살린 뒤 원본 Excel을 다시 찾고
-//! (앞 앱이 남긴 숨은 Excel 정리), 계산 사본을 열고, 서비스가 켜져 있었으면 같은 포트로 연다. 참여자 브라우저는 스스로
-//! 다시 붙는다(보내지 못한 입력은 대기열에서 다시 보내고, 이미 반영된 묶음은 한 번만 반영된다).
+//! 7단계 세션 복구의 기록 파일: 업무마다 시트를 확정할 때 `sessions\YYYYMMDD-HHMMSS-mmm.sqlite`를 만들고, 앱을 켜면
+//! 끝내지 않은 업무를 모두 되살린다([`crate::jobs::jobs_restore`]). 어느 파일을 되살리고 지울지는
+//! [`collect_server::session::files`]가 메타만 보고 정한다.
 
 use std::path::{Path, PathBuf};
 
-use collect_core::SheetModel;
-use collect_server::SessionHandle;
-use serde::Serialize;
-use tauri::{AppHandle, Manager, State};
-use ts_rs::TS;
+use collect_server::session::files::{StoreFile, cleanup_plan};
+use tauri::{AppHandle, Manager};
 
-use crate::service::ServiceInfo;
-use crate::{AppState, CmdResult, run_excel};
-
-/// 남겨 둘 기록 파일 수(더 오래된 것은 앱을 켤 때 지운다).
+/// 남겨 둘 기록 파일 수(더 오래된 것은 앱을 켤 때 지운다 — 끝내지 않은 업무의 지금 파일은 오래되어도 남긴다).
 const KEEP_FILES: usize = 20;
-const META_DISCARDED: &str = "discarded";
 
 pub(crate) fn sessions_dir(app: &AppHandle) -> Option<PathBuf> {
     Some(app.path().app_local_data_dir().ok()?.join("sessions"))
@@ -33,6 +24,30 @@ fn session_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// 기록 파일과 그 메타(최근 것부터). 읽을 수 없는 파일은 되살릴 수 없는 것으로 둔다.
+pub(crate) fn store_files(dir: &Path) -> Vec<(PathBuf, StoreFile)> {
+    session_files(dir)
+        .into_iter()
+        .map(|path| {
+            let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let file = match collect_store::peek(&path) {
+                Ok(peek) => StoreFile { name, meta: peek.meta, resumable: peek.resumable },
+                Err(_) => StoreFile { name, ..Default::default() },
+            };
+            (path, file)
+        })
+        .collect()
+}
+
+/// 새 기록 파일 이름(만든 시각, ms까지 — 업무 둘이 같은 초에 확정해도 겹치지 않게, 그래도 있으면 번호).
+pub(crate) fn new_file(dir: &Path) -> PathBuf {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S-%3f").to_string();
+    std::iter::once(dir.join(format!("{stamp}.sqlite")))
+        .chain((2..).map(|n| dir.join(format!("{stamp}-{n}.sqlite"))))
+        .find(|p| !p.exists())
+        .expect("끝없는 후보")
+}
+
 fn remove_with_sidecars(p: &Path) {
     let _ = std::fs::remove_file(p);
     for ext in ["-wal", "-shm"] {
@@ -40,121 +55,13 @@ fn remove_with_sidecars(p: &Path) {
     }
 }
 
-/// 최근 [`KEEP_FILES`]개만 남긴다.
+/// 최근 [`KEEP_FILES`]개와 끝내지 않은 업무의 지금 파일만 남긴다.
 pub(crate) fn cleanup(dir: &Path) {
-    for old in session_files(dir).into_iter().skip(KEEP_FILES) {
-        remove_with_sidecars(&old);
+    let files = store_files(dir);
+    let metas: Vec<StoreFile> = files.iter().map(|(_, f)| f.clone()).collect();
+    for i in cleanup_plan(&metas, KEEP_FILES) {
+        remove_with_sidecars(&files[i].0);
     }
-}
-
-#[derive(Debug, Clone, Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct RecoveryInfo {
-    /// 원본 통합문서 이름과 시트들(불러온 순서).
-    pub workbook: String,
-    pub sheets: Vec<String>,
-    /// 확정한 시각(`YYYYMMDD-HHMMSS`).
-    pub created: String,
-    #[ts(type = "number")]
-    pub changes: u64,
-    #[ts(optional, type = "number")]
-    pub last_change_ms: Option<i64>,
-    /// 서비스가 켜져 있었으면 그 포트·경로(이어서 하면 다시 연다).
-    #[ts(optional)]
-    pub port: Option<u16>,
-    #[ts(optional)]
-    pub slug: Option<String>,
-    pub closed: bool,
-}
-
-/// 이어서 할 수 있는 가장 최근 기록 파일.
-fn latest(app: &AppHandle) -> Option<(PathBuf, collect_store::Peek)> {
-    let path = session_files(&sessions_dir(app)?).into_iter().next()?;
-    let peek = collect_store::peek(&path).ok()?;
-    (peek.resumable && !peek.meta.get(META_DISCARDED).is_some_and(|v| v == "1")).then_some((path, peek))
-}
-
-#[tauri::command]
-pub fn recovery_check(app: AppHandle, state: State<'_, AppState>) -> Option<RecoveryInfo> {
-    if state.session.lock().unwrap().is_some() {
-        return None; // 이미 취합 중
-    }
-    let (_, peek) = latest(&app)?;
-    let meta = &peek.meta;
-    let server: Option<collect_server::ServerMeta> =
-        meta.get(collect_server::META_SERVER).and_then(|s| serde_json::from_str(s).ok());
-    let running = server.filter(|s| s.running);
-    let workbook = meta.get("workbook").cloned().unwrap_or_default();
-    Some(RecoveryInfo {
-        workbook: Path::new(&workbook).file_name().map_or(workbook.clone(), |n| n.to_string_lossy().to_string()),
-        sheets: collect_server::session::meta_sheets(meta),
-        created: meta.get("created").cloned().unwrap_or_default(),
-        changes: peek.changes,
-        last_change_ms: peek.last_change_ms,
-        port: running.as_ref().map(|s| s.port),
-        slug: running.map(|s| s.slug),
-        closed: meta.get("closed").is_some_and(|v| v == "1"),
-    })
-}
-
-#[derive(Serialize, TS)]
-#[serde(rename_all = "camelCase")]
-#[ts(export)]
-pub struct ResumeResult {
-    /// 되살린 시트들(세션 안 순번 순서).
-    pub models: Vec<SheetModel>,
-    /// 다시 연 서비스(켜져 있었을 때).
-    #[ts(optional)]
-    pub service: Option<ServiceInfo>,
-    /// 서비스를 다시 열지 못한 까닭(포트를 다른 프로그램이 씀 등). 취합은 이어서 할 수 있다.
-    #[ts(optional)]
-    pub service_error: Option<String>,
-}
-
-#[tauri::command]
-pub async fn recovery_resume(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ResumeResult> {
-    if state.session.lock().unwrap().is_some() {
-        return Err("이미 취합 중입니다".into());
-    }
-    let (path, _) = latest(&app).ok_or("이어서 할 취합이 없습니다")?;
-    let rec = collect_server::recover(&path)?;
-    let (workbook_id, sheets, server) = (rec.workbook_id.clone(), rec.sheets.clone(), rec.server.clone());
-    let session = SessionHandle::spawn(rec.init);
-    crate::people::attach(&state, &session);
-    crate::service::forward_participants(&app, &session);
-    crate::monitor::forward_events(&app, &session);
-    *state.session.lock().unwrap() = Some(session.clone());
-    *state.source.lock().unwrap() =
-        Some(crate::save::Source { workbook_id: workbook_id.clone(), sheets: sheets.clone() });
-    let models: Vec<SheetModel> = session.with(|s| s.sheets.iter().map(|x| x.model.clone()).collect()).await?;
-
-    // 앞 앱이 남긴 숨은 Excel(계산 사본·원본)을 정리하고, 계산 사본을 다시 연다. Excel이 없어도 취합은 이어서 한다.
-    let id = workbook_id.clone();
-    match run_excel(&state.excel, move |s| s.adopt_orphans(Some(&id))).await {
-        Ok(r) if r.closed_calc > 0 || r.adopted => tracing::info!("앞 앱이 남긴 Excel 정리: {r:?}"),
-        Ok(_) => {}
-        Err(e) => tracing::warn!("Excel 정리 실패: {e}"),
-    }
-    state.recalc.start(&app, state.excel.clone(), session, &models, &workbook_id, &sheets);
-
-    let (mut service, mut service_error) = (None, None);
-    if let Some(s) = server.filter(|s| s.running) {
-        match crate::service::start_service(&state, s.port, s.slug).await {
-            Ok(info) => service = Some(info),
-            Err(e) => service_error = Some(e),
-        }
-    }
-    Ok(ResumeResult { models, service, service_error })
-}
-
-/// '버리고 새로 시작': 그 파일은 다시 묻지 않는다(파일은 남는다).
-#[tauri::command]
-pub fn recovery_discard(app: AppHandle) -> CmdResult<()> {
-    let (path, _) = latest(&app).ok_or("이어서 할 취합이 없습니다")?;
-    let store = collect_store::Store::open(&path).map_err(|e| e.to_string())?;
-    store.meta(META_DISCARDED, "1");
-    store.flush().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -177,6 +84,8 @@ mod tests {
         assert!(left[0].ends_with("20261009-120024.sqlite"), "최근 것부터");
         assert!(!dir.join("20261009-120000.sqlite-wal").exists(), "딸린 파일도 지운다");
         assert!(dir.join("다른 파일.txt").exists());
+        let next = new_file(&dir);
+        assert!(next.extension().is_some_and(|e| e == "sqlite") && !next.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
