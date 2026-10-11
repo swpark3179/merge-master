@@ -203,6 +203,7 @@
 }
 
 .feed-item {
+  animation: mm-drop var(--dur-base) var(--ease-out);
   padding: 8px 10px;
   border-radius: 8px;
   background: var(--paper);
@@ -289,6 +290,7 @@ button.cell-ref {
 }
 
 .chat-msg {
+  animation: mm-drop var(--dur-base) var(--ease-out);
   max-width: 92%;
   padding: 8px 11px;
   border-radius: 8px;
@@ -522,6 +524,7 @@ button.cell-ref {
 }
 
 .modal-back {
+  animation: mm-fade-in 150ms var(--ease-out);
   position: fixed;
   inset: 0;
   z-index: 40;
@@ -532,6 +535,7 @@ button.cell-ref {
 }
 
 .modal {
+  animation: mm-dialog-in var(--dur-base) var(--ease-out);
   width: min(720px, 92vw);
   max-height: 80vh;
   background: #fff;

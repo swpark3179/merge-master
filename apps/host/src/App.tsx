@@ -23,11 +23,14 @@ export function App() {
   const [excelRunning, setExcelRunning] = useState<boolean | null>(null);
   const [version, setVersion] = useState("");
   const [toastText, setToastText] = useState("");
+  /** 알림마다 새로 그려 나타나는 동작을 다시 한다(같은 글이 또 와도). */
+  const [toastId, setToastId] = useState(0);
   const toastTimer = useRef(0);
   const [ending, setEnding] = useState<JobSummary | null>(null);
 
   const toast = useCallback((msg: string) => {
     setToastText(msg);
+    setToastId((n) => n + 1);
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToastText(""), 2200);
   }, []);
@@ -149,7 +152,11 @@ export function App() {
           {bannerNode}
         </div>
       )}
-      {toastText && <div className="toast-host">{toastText}</div>}
+      {toastText && (
+        <div key={toastId} className="toast-host" role="status">
+          {toastText}
+        </div>
+      )}
       {ending && (
         <EndJobDialog
           job={ending}

@@ -25,13 +25,15 @@ import {
   decodeFlags,
   displayValue,
   FLAG,
+  FLASH_MS,
   personColor,
   remaining,
+  scrollBehavior,
   sheetPrefix,
   splitCellRefs,
 } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CellWrite } from "../../api";
@@ -217,6 +219,9 @@ function SheetMonitor({
   const gridHost = useRef<HTMLDivElement>(null);
   const toast = useToast();
   const refreshTimer = useRef<number | undefined>(undefined);
+  /** 참여자가 방금 바꾼 칸(`행:열` → 바꾼 사람·번호). FLASH_MS가 지나면 지운다. */
+  const [recentEdits, setRecentEdits] = useState<ReadonlyMap<string, { by: string; seq: number }>>(new Map());
+  const flashSeq = useRef(0);
 
   const refresh = useCallback(() => {
     void api
@@ -255,6 +260,26 @@ function SheetMonitor({
       window.clearTimeout(refreshTimer.current);
       refreshTimer.current = window.setTimeout(refresh, 400);
       if (ev.sheet !== sheet) return;
+      // 바뀐 칸을 바꾼 사람 색으로 잠깐 물들인다(수식 결과는 by가 빈 문자열이라 빼고).
+      if (ev.type === "cells" && ev.by) {
+        const seq = ++flashSeq.current;
+        const keys = ev.cells.map((u) => `${u.row}:${u.col}`);
+        const by = ev.by;
+        setRecentEdits((m) => {
+          const next = new Map(m);
+          for (const k of keys) next.set(k, { by, seq });
+          return next;
+        });
+        window.setTimeout(
+          () =>
+            setRecentEdits((m) => {
+              const next = new Map(m);
+              for (const k of keys) if (next.get(k)?.seq === seq) next.delete(k);
+              return next;
+            }),
+          FLASH_MS,
+        );
+      }
       setData((d) => {
         if (!d) return d;
         const m = d.model;
@@ -426,6 +451,23 @@ function SheetMonitor({
   });
 
   const decorate = (r: number, c: number): CellDecoration | undefined => {
+    const d = decorateState(r, c);
+    const recent = recentEdits.get(`${r}:${c}`);
+    if (!recent) return d;
+    const who = roster.indexOf(recent.by);
+    const tint = who >= 0 ? ({ "--flash": personColor(who) } as CSSProperties) : undefined;
+    return {
+      ...d,
+      adornment: (
+        <>
+          <span key={recent.seq} className="cell-flash" style={tint} />
+          {d?.adornment}
+        </>
+      ),
+    };
+  };
+
+  const decorateState = (r: number, c: number): CellDecoration | undefined => {
     if (!model) return undefined;
     const i = r * model.cols + c;
     const f = flags[i] ?? 0;
@@ -1076,9 +1118,12 @@ function ChatPanel(props: {
   const list = useRef<HTMLDivElement>(null);
   const messages = comms?.chat ?? [];
   const last = messages[messages.length - 1]?.id ?? 0;
+  // 새 메시지가 오면 맨 아래로(처음 열 때는 바로, 그 뒤로는 부드럽게).
+  const scrolled = useRef(false);
   useEffect(() => {
     onSeen(last);
-    list.current?.scrollTo({ top: list.current.scrollHeight });
+    list.current?.scrollTo({ top: list.current.scrollHeight, behavior: scrollBehavior(!scrolled.current) });
+    scrolled.current = true;
   }, [last, onSeen]);
   const send = async () => {
     const target: ChatTo = to ? { kind: "person", name: to } : { kind: "all" };

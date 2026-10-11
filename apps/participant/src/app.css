@@ -72,6 +72,15 @@ button {
   background: var(--ink);
   color: #fff;
   cursor: pointer;
+  transition:
+    background-color var(--dur-fast),
+    border-color var(--dur-fast),
+    color var(--dur-fast),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
 /* 키보드 포커스: 텍스트 입력칸과 그리드는 따로 표시하고, 나머지는 바깥 테두리를 긋는다. */
@@ -233,30 +242,12 @@ button.link {
   display: block;
   height: 100%;
   background: var(--ink);
-  transition: width 0.3s ease-out;
+  transition: width var(--dur-slow) var(--ease-out);
 }
 
 .bar.indeterminate > span {
   width: 35%;
-  animation: slide 1.4s ease-in-out infinite;
-}
-
-@keyframes slide {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(300%);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .bar > span {
-    transition: none;
-  }
-  .bar.indeterminate > span {
-    animation: none;
-  }
+  animation: mm-slide 1.4s ease-in-out infinite;
 }
 
 /* ---------------------------------------------------------------- 1f 작업 화면 */
@@ -410,6 +401,7 @@ button.link {
 }
 
 .picker-item {
+  transition: border-color var(--dur-fast);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -424,6 +416,36 @@ button.link {
 .picker-item:hover,
 .picker-item:focus-visible {
   border-color: var(--accent);
+}
+
+/* 목록을 불러오는 동안의 자리(스켈레톤) */
+.picker-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.sk {
+  display: block;
+  width: 80%;
+  height: 12px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, var(--head) 0%, var(--paper) 50%, var(--head) 100%);
+  background-size: 200% 100%;
+  animation: mm-shimmer 1.4s linear infinite;
+}
+
+.sk.title {
+  width: 45%;
+  height: 18px;
+}
+
+.sk.short {
+  width: 55%;
 }
 
 .picker-head {

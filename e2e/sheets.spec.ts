@@ -36,6 +36,23 @@ async function typeInto(page: Page, r: number, c: number, value: string) {
   await page.keyboard.press("Enter");
 }
 
+/** 브라우저(IndexedDB)에 저장된 대기열의 칸 수. 저장은 비동기라, 입력 직후(수 ms 안에) 새로 고치면 아직 없을 수 있다. */
+async function storedCells(page: Page): Promise<number> {
+  return page.evaluate(
+    () =>
+      new Promise<number>((resolve) => {
+        const req = indexedDB.open("merge-master");
+        req.onerror = () => resolve(0);
+        req.onsuccess = () => {
+          const all = req.result.transaction("outbox", "readonly").objectStore("outbox").getAll();
+          all.onerror = () => resolve(0);
+          all.onsuccess = () =>
+            resolve((all.result as { cells: unknown[] }[][]).flat().reduce((n, b) => n + b.cells.length, 0));
+        };
+      }),
+  );
+}
+
 async function history(page: Page) {
   return (await (await page.request.get(`${ORIGIN}/__dev/history`)).json()) as {
     sheet: number;
@@ -125,6 +142,8 @@ test("끊긴 동안 다른 시트에 한 입력도 새로 고친 뒤 그 시트�
   await expect(a.locator(".status")).toContainText("오프라인");
   await typeInto(a, 7, E, "4");
   await expect(a.locator(".status")).toContainText("입력 1건이 대기 중");
+  // 사람이 새로 고치는 것보다 테스트가 훨씬 빠르다: 대기열이 저장된 뒤에 새로 고친다.
+  await expect.poll(() => storedCells(a)).toBe(1);
   await a.reload();
   await expect(a.locator(".status")).toContainText("실시간 동기화");
   await expect.poll(async () => (await history(a)).at(-1)).toMatchObject({ sheet: 1, row: 7, col: E, user: "신예준" });

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
 import "@mm/shared/tokens.css";
+import "@mm/shared/motion.css";
 import "./app.css";
 import "./monitor.css";
 

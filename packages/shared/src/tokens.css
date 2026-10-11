@@ -62,5 +62,13 @@
   --hl-soft: #fffbe6;
   --hl-ink: #5c4a00;
 
+  /* 동작(키프레임은 motion.css): 바뀐 곳을 눈이 따라가게 하는 데만 쓴다 */
+  --dur-fast: 120ms; /* hover, 눌림, 이름표 */
+  --dur-base: 200ms; /* 토스트, 탭, 스위치, 모달 */
+  --dur-slow: 320ms; /* 사이드 패널, 진행바 */
+  --dur-flash: 1200ms; /* 다른 사람의 편집 도착 */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+
   color-scheme: light;
 }

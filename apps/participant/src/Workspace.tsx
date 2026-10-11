@@ -377,7 +377,10 @@ export function Workspace({ s }: { s: SessionState }) {
     lastBlocked.current = now;
     if (s.readOnly) notify("마감되어 입력할 수 없습니다", "warn");
     else if (locker) notify(`${locker} 님이 입력 중입니다`, "warn");
-    else notify("이 칸은 입력할 수 없습니다. 흰 바탕의 내 담당 칸에 입력해 주세요", "warn");
+    else {
+      notify("이 칸은 입력할 수 없습니다. 흰 바탕의 내 담당 칸에 입력해 주세요", "warn");
+      setMineHint(true); // 말 대신 위치로도 알려 준다
+    }
   };
 
   const undo = () => {
@@ -486,6 +489,14 @@ export function Workspace({ s }: { s: SessionState }) {
 
   const colorOf = (name: string) => personColor(Math.max(0, w.roster.indexOf(name)));
 
+  /** 입력할 수 없는 칸에 쓰려 하면 잠깐 내 담당 칸을 깜빡인다(두 번 깜빡이는 동안만 둔다). */
+  const [mineHint, setMineHint] = useState(false);
+  useEffect(() => {
+    if (!mineHint) return;
+    const id = window.setTimeout(() => setMineHint(false), 1000);
+    return () => window.clearTimeout(id);
+  }, [mineHint]);
+
   // 강조된 칸: 칸 → (메모, 왼쪽 위 칸인지)
   const highlighted = useMemo(() => {
     const map = new Map<string, { note: string; head: boolean }>();
@@ -571,6 +582,7 @@ export function Workspace({ s }: { s: SessionState }) {
     const v = model.cells[i]?.v;
     if (f & FLAG.MINE && f & FLAG.REQUIRED && (v === undefined || v === null || v === "")) cls.push("deco-missing");
     if (sheet.pending.has(i)) cls.push("deco-pending");
+    if (mineHint && myRows[r] && f & FLAG.INPUT && f & FLAG.MINE) cls.push("deco-mine-hint");
     let style: CellDecoration["style"];
     let adornment: CellDecoration["adornment"];
     const hl = highlighted.get(`${r}:${c}`);
@@ -598,6 +610,18 @@ export function Workspace({ s }: { s: SessionState }) {
         <span className="peer-tag" style={{ background: peer.color }}>
           {peer.name}
         </span>
+      );
+    }
+    // 다른 사람이 방금 바꾼 칸은 그 사람 색으로 잠깐 물든다(내 편집에는 쓰지 않는다).
+    const recent = s.recentEdits.get(`${active}:${r}:${c}`);
+    if (recent) {
+      const who = w.roster.indexOf(recent.by);
+      const tint = who >= 0 ? ({ "--flash": personColor(who) } as CSSProperties) : undefined;
+      adornment = (
+        <>
+          <span key={recent.seq} className="cell-flash" style={tint} />
+          {adornment}
+        </>
       );
     }
     return { className: cls.join(" "), style, adornment };
@@ -676,6 +700,13 @@ export function Workspace({ s }: { s: SessionState }) {
   const dueAt = parseDeadline(w.session.deadline)?.getTime();
   const urgent = !overdue && dueAt !== undefined && dueAt - now < 3_600_000;
   const waiting = s.sheets.reduce((n, x) => n + x.outbox.reduce((k, b) => k + b.cells.length, 0), 0);
+  // '저장 중'은 답이 늦을 때만(400ms 넘게 대기할 때) 보인다. 편집마다 상태 글자가 깜빡이지 않게.
+  const [slowSave, setSlowSave] = useState(false);
+  useEffect(() => {
+    if (waiting === 0) return setSlowSave(false);
+    const id = window.setTimeout(() => setSlowSave(true), 400);
+    return () => window.clearTimeout(id);
+  }, [waiting > 0]); // eslint-disable-line react-hooks/exhaustive-deps
   const myChanges = s.sheets.reduce((n, x) => n + x.myChanges, 0);
   const lastSaved = Math.max(0, ...s.sheets.map((x) => x.lastSaved ?? 0)) || null;
   const shownRows = model.rows - model.headerRows - view.hiddenRows.filter((r) => r >= model.headerRows).length;
@@ -1000,7 +1031,7 @@ export function Workspace({ s }: { s: SessionState }) {
             ○ 오프라인
             {waiting > 0 ? ` — 입력 ${waiting}건이 대기 중입니다(다시 연결되면 보냅니다)` : " — 다시 연결하는 중…"}
           </span>
-        ) : waiting > 0 ? (
+        ) : waiting > 0 && slowSave ? (
           <span className="muted">◌ 저장 중… ({waiting}건)</span>
         ) : (
           <span className="ok">● 실시간 동기화</span>
@@ -1110,6 +1141,9 @@ function SheetTabs({ s, onSelect }: { s: SessionState; onSelect: (sheet: number)
   );
 }
 
+/** 토스트가 흐려지며 사라지는 시간(edit.css .toast.leaving과 같다). */
+const LEAVE_MS = 150;
+
 function Toast({
   notice,
   onDone,
@@ -1120,12 +1154,19 @@ function Toast({
   onAction: (a: NonNullable<Notice["action"]>) => void;
 }) {
   const { id, text, tone, action } = notice;
+  // 시간이 지나 사라질 때는 잠깐(LEAVE_MS) 흐려진 뒤 없앤다. 누르면 바로 없앤다.
+  const [leaving, setLeaving] = useState(false);
   useEffect(() => {
-    const t = window.setTimeout(() => onDone(id), tone === "error" ? 7000 : 5000);
+    const t = window.setTimeout(() => setLeaving(true), tone === "error" ? 7000 : 5000);
     return () => window.clearTimeout(t);
-  }, [id, onDone, tone]);
+  }, [tone]);
+  useEffect(() => {
+    if (!leaving) return;
+    const t = window.setTimeout(() => onDone(id), LEAVE_MS);
+    return () => window.clearTimeout(t);
+  }, [leaving, id, onDone]);
   return (
-    <div className={`toast ${tone}`} role={tone === "error" ? "alert" : "status"}>
+    <div className={`toast ${tone}${leaving ? " leaving" : ""}`} role={tone === "error" ? "alert" : "status"}>
       <span>{text}</span>
       {action && (
         <button

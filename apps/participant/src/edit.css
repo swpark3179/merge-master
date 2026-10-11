@@ -82,6 +82,7 @@ button.small {
 }
 
 .fill-menu .swatches {
+  animation: mm-drop var(--dur-fast) var(--ease-out);
   position: absolute;
   z-index: 20;
   top: 34px;
@@ -175,6 +176,7 @@ button.small {
 
 /* 연결 끊김(그리드 위): 입력은 막지 않는다. 다시 연결되면 잠깐 초록으로 바뀌었다가 접힌다. */
 .connection-bar {
+  animation: mm-drop var(--dur-base) var(--ease-out);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -208,6 +210,8 @@ button.small {
   left: 0;
   border-bottom: 6px solid var(--accent);
   border-right: 6px solid transparent;
+  /* 답이 빨리 오면 보이지 않게, 300ms 넘게 기다릴 때만 나타난다(편집마다 깜빡이지 않게). */
+  animation: mm-fade-in var(--dur-base) var(--ease-out) 300ms both;
 }
 
 .lock-tag {
@@ -226,6 +230,7 @@ button.small {
 }
 
 .toast {
+  animation: mm-rise var(--dur-base) var(--ease-out);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -235,6 +240,10 @@ button.small {
   background: #fff;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.14);
   font-size: 13px;
+}
+
+.toast.leaving {
+  animation: mm-leave 150ms var(--ease-in) forwards;
 }
 
 .toast.warn {
@@ -646,6 +655,7 @@ textarea.detail-text:focus {
 }
 
 .side-panel {
+  animation: mm-panel-in var(--dur-slow) var(--ease-out);
   position: relative;
   width: 310px;
   /* 창이 좁아져도 그리드 쪽을 남긴다(끈 너비는 SidePanel의 clampSideWidth와 같은 기준). */
@@ -746,6 +756,7 @@ body.side-resizing {
 }
 
 .chat-msg {
+  animation: mm-drop var(--dur-base) var(--ease-out);
   max-width: 92%;
   padding: 6px 8px;
   border-radius: 8px;
@@ -833,6 +844,10 @@ button.cell-ref {
 }
 
 .sheet-tabs button {
+  transition:
+    background-color var(--dur-base),
+    color var(--dur-base),
+    box-shadow var(--dur-base);
   display: inline-flex;
   flex: none;
   align-items: center;
