@@ -3,7 +3,8 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
-use collect_core::CellRange;
+use collect_core::CellRef;
+use collect_core::a1::parse_sheet_range;
 use collect_server::{HostSnapshot, ServerConfig, SessionHandle};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
@@ -108,21 +109,27 @@ pub fn participants_get(state: State<'_, AppState>) -> Option<HostSnapshot> {
     state.session().ok().map(|s| s.snapshot())
 }
 
-/// 명단에 없는 이름을 승인한다. `range`는 시트 주소(예: H500:H620)로, 주면 그 범위를 배정한다.
+/// 명단에 없는 이름을 승인한다. `range`는 `sheet` 시트의 주소(예: H500:H620, `인력계획!E5:E9`처럼 시트 이름을 붙여도
+/// 된다)로, 주면 그 범위를 배정한다.
 #[tauri::command]
 pub async fn participant_approve(
     app: AppHandle,
     state: State<'_, AppState>,
     name: String,
+    sheet: u32,
     range: Option<String>,
     note: String,
 ) -> CmdResult<()> {
     let session = state.session()?;
     let range = match range.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
         Some(text) => {
-            let origin = session.with(|s| s.model.origin).await?;
-            let sheet = CellRange::parse(text).map_err(|e| e.to_string())?;
-            Some(sheet.relative_to(origin).ok_or_else(|| format!("{text}은(는) 불러온 표 밖입니다"))?)
+            let sheets: Vec<(String, CellRef)> =
+                session.with(|s| s.sheets.iter().map(|x| (x.model.sheet.clone(), x.model.origin)).collect()).await?;
+            let names: Vec<&str> = sheets.iter().map(|(n, _)| n.as_str()).collect();
+            let (i, range) = parse_sheet_range(text, &names, sheet as usize).map_err(|e| e.to_string())?;
+            let origin = sheets.get(i).map(|(_, o)| *o).ok_or("없는 시트입니다")?;
+            let range = range.relative_to(origin).ok_or_else(|| format!("{text}은(는) 불러온 표 밖입니다"))?;
+            Some((i as u32, range))
         }
         None => None,
     };

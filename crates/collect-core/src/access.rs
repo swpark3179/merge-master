@@ -51,8 +51,61 @@ fn same_name(a: &str, b: &str) -> bool {
     a.trim() == b.trim()
 }
 
+/// 명단에 이름을 넣고(이미 있으면 그 자리) 인덱스를 돌려준다. 빈 이름은 넣지 않는다.
+fn add_name(name: &str, roster: &mut Vec<String>) -> Option<usize> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(roster.iter().position(|p| p == name).unwrap_or_else(|| {
+        roster.push(name.to_string());
+        roster.len() - 1
+    }))
+}
+
+/// 한 시트의 명단(셀 판정 없이 이름만): 행 배정 기준 열의 이름(나온 순서) + 직접 넣은 이름 + 범위 배정 받은 이름.
+pub fn roster_names(model: &SheetModel, config: &CollectConfig) -> Vec<String> {
+    let mut roster = Vec::new();
+    if let Some(key) = config.assignment.key_col.filter(|&k| k < model.cols) {
+        let index = MergeIndex::new(model);
+        for r in model.header_rows..model.rows {
+            if let Some(CellValue::Text(name)) = model.effective_value_in(&index, CellRef::new(r, key)) {
+                add_name(name, &mut roster);
+            }
+        }
+    }
+    for name in &config.assignment.extra_people {
+        add_name(name, &mut roster);
+    }
+    let bounds = model.bounds();
+    for a in &config.assignment.ranges {
+        if a.range.intersect(&bounds).is_some() {
+            add_name(&a.person, &mut roster);
+        }
+    }
+    roster
+}
+
+/// 여러 시트를 함께 취합할 때의 명단: 시트 순서대로 각 시트 명단을 잇는다(겹치는 이름은 처음 나온 자리).
+/// 이것을 씨앗으로 [`Access::compile_with`]를 부르면 사람 인덱스(색·진행률)가 시트마다 같다.
+pub fn union_roster<'a>(sheets: impl IntoIterator<Item = (&'a SheetModel, &'a CollectConfig)>) -> Vec<String> {
+    let mut roster = Vec::new();
+    for (model, config) in sheets {
+        for name in roster_names(model, config) {
+            add_name(&name, &mut roster);
+        }
+    }
+    roster
+}
+
 impl Access {
     pub fn compile(model: &SheetModel, config: &CollectConfig) -> Self {
+        Self::compile_with(model, config, &[])
+    }
+
+    /// `seed`(여러 시트의 합집합 명단)부터 명단을 시작한다. 이 시트에 담당이 없는 사람도 명단에 있어 담당자 없는 칸을
+    /// 입력할 수 있고, 사람 인덱스는 시트마다 같다.
+    pub fn compile_with(model: &SheetModel, config: &CollectConfig, seed: &[String]) -> Self {
         let (rows, cols) = (model.rows, model.cols);
         let n = (rows * cols) as usize;
         let idx = |at: CellRef| (at.row * cols + at.col) as usize;
@@ -131,19 +184,13 @@ impl Access {
             }
         }
 
-        // 명단: 행 배정 기준 열의 이름(나온 순서) + 직접 넣은 이름 + 범위 배정 받은 이름.
+        // 명단: (씨앗) + 행 배정 기준 열의 이름(나온 순서) + 직접 넣은 이름 + 범위 배정 받은 이름.
         let index = MergeIndex::new(model);
         let mut roster: Vec<String> = Vec::new();
-        let add = |name: &str, roster: &mut Vec<String>| -> Option<usize> {
-            let name = name.trim();
-            if name.is_empty() {
-                return None;
-            }
-            Some(roster.iter().position(|p| p == name).unwrap_or_else(|| {
-                roster.push(name.to_string());
-                roster.len() - 1
-            }))
-        };
+        for name in seed {
+            add_name(name, &mut roster);
+        }
+        let add = add_name;
         let mut row_owner = vec![-1i32; rows as usize];
         if let Some(key) = config.assignment.key_col.filter(|&k| k < cols) {
             for r in model.header_rows..rows {
@@ -527,5 +574,41 @@ mod tests {
         assert_ne!(flags[i("F7")] & flag::MINE, 0);
         assert_eq!(flags[i("F3")] & flag::MINE, 0);
         assert_ne!(Access::compile(&m, &cfg).viewer_flags(Viewer::Host)[i("F3")] & flag::MINE, 0);
+    }
+
+    #[test]
+    fn seeded_roster_keeps_indices_across_sheets() {
+        let (m, cfg) = setup();
+        // 두 번째 시트: 행 배정 없음, 범위 배정 한 사람(박지훈) — 담당자 없는 칸은 명단의 누구나.
+        let (m2, mut cfg2) = setup();
+        cfg2.assignment.key_col = None;
+        cfg2.assignment.ranges.push(RangeAssignment {
+            range: CellRange::parse("I3:I8").unwrap(),
+            person: "박지훈".into(),
+            note: String::new(),
+        });
+        assert_eq!(roster_names(&m2, &cfg2), ["박지훈"]);
+        // 셀 판정 없이 뽑은 명단도 compile과 같다(표 밖 범위 배정은 빠진다).
+        let mut cfg3 = cfg.clone();
+        cfg3.assignment.extra_people.push("정하늘".into());
+        cfg3.assignment.ranges.push(RangeAssignment {
+            range: CellRange::parse("Z100").unwrap(),
+            person: "표밖".into(),
+            note: String::new(),
+        });
+        assert_eq!(roster_names(&m, &cfg3), Access::compile(&m, &cfg3).roster());
+        let union = union_roster([(&m, &cfg), (&m2, &cfg2)]);
+        assert_eq!(union, ["이서연", "최도윤", "김민지", "박지훈"]);
+
+        let a = Access::compile_with(&m, &cfg, &union);
+        let b = Access::compile_with(&m2, &cfg2, &union);
+        assert_eq!(a.roster(), b.roster());
+        assert_eq!(a.person("박지훈"), Some(3));
+        // 첫 시트에 담당이 없는 박지훈은 거기서 아무 칸도 맡지 않지만, 둘째 시트의 담당자 없는 F열은 김민지도 쓴다.
+        assert!(!a.can_edit(Viewer::Person(3), at("F3")));
+        assert!(b.can_edit(Viewer::Person(2), at("F3")));
+        assert!(!b.can_edit(Viewer::Person(2), at("I3")));
+        assert!(b.can_edit(Viewer::Person(3), at("I3")));
+        assert_eq!(b.progress(&m2).by_person.len(), 4);
     }
 }

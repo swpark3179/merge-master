@@ -16,9 +16,20 @@ import type {
   NoticeTarget,
   ProgressStats,
   RangeAssignment,
+  SheetCell,
   SheetModel,
 } from "@mm/shared";
-import { a1, colLetters, decodeFlags, displayValue, FLAG, personColor, remaining, splitCellRefs } from "@mm/shared";
+import {
+  a1,
+  colLetters,
+  decodeFlags,
+  displayValue,
+  FLAG,
+  personColor,
+  remaining,
+  sheetPrefix,
+  splitCellRefs,
+} from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -26,6 +37,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CellWrite } from "../../api";
 import { api, errorText } from "../../api";
 import { useToast } from "../../frame";
+import { SheetTabs } from "../../SheetTabs";
 import { useHostEditor } from "../../useHostEditor";
 
 type Panel = "activity" | "notice" | "highlight" | "chat";
@@ -38,7 +50,22 @@ interface Props {
   /** 마지막으로 본 채팅 번호(안 읽은 수 계산). */
   chatSeen: number;
   onChatSeen: (id: number) => void;
+  /** 확정한 시트들(세션 안 순번 순서). */
+  sheets: SheetModel[];
+  /** 보고 있는 시트. 1b·1h와 같이 쓴다. */
+  sheet: number;
+  onSheet: (sheet: number) => void;
   onGoHistory: () => void;
+}
+
+/** 시트 주소: 시트가 둘 이상이면 `인력계획!F7`, 범위는 `F7:H9`. 좌표는 그 시트의 모델 좌표. */
+export function sheetAddr(sheets: SheetModel[], sheet: number, r: CellRef | CellRange): string {
+  const m = sheets[sheet];
+  const o = m?.origin ?? { row: 0, col: 0 };
+  const first = a1(o.row + r.row, o.col + r.col);
+  const many = "rows" in r && (r.rows > 1 || r.cols > 1);
+  const text = many ? `${first}:${a1(o.row + r.row + r.rows - 1, o.col + r.col + r.cols - 1)}` : first;
+  return sheets.length > 1 && m ? `${sheetPrefix(m.sheet)}${text}` : text;
 }
 
 interface Filter {
@@ -101,13 +128,13 @@ const ORIGIN_LABEL: Record<string, string> = {
   addRow: "행 추가",
 };
 
-/** 채팅 글: `#F7` 같은 셀 참조는 눌러서 그 칸으로 간다(HTML은 해석하지 않는다). */
-export function ChatText({ text, onRef }: { text: string; onRef: (r: CellRange) => void }) {
+/** 채팅 글: `#F7`·`#인력계획!F7` 같은 셀 참조는 눌러서 그 칸으로 간다(HTML은 해석하지 않는다). */
+export function ChatText({ text, onRef }: { text: string; onRef: (r: CellRange, sheet?: string) => void }) {
   return (
     <>
       {splitCellRefs(text).map((p, i) =>
         "ref" in p ? (
-          <button key={i} className="cell-ref" onClick={() => onRef(p.range)}>
+          <button key={i} className="cell-ref" onClick={() => onRef(p.range, p.sheet)}>
             #{p.ref}
           </button>
         ) : (
@@ -118,14 +145,67 @@ export function ChatText({ text, onRef }: { text: string; onRef: (r: CellRange) 
   );
 }
 
-/** 4 진행 모니터링(1d) + 소통 패널(1i 호스트 쪽). */
-export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onChatSeen, onGoHistory }: Props) {
+/** 다른 시트로 가서 보일 칸(시트를 바꾼 뒤 그 시트를 다 읽으면 간다). */
+interface Goto {
+  sheet: number;
+  range: CellRange;
+}
+
+/** 4 진행 모니터링(1d) + 소통 패널(1i 호스트 쪽). 시트를 바꾸면 그리드·필터·선택을 새로 시작하고 오른쪽 패널은 그대로 둔다. */
+export function MonitorScreen(props: Props) {
+  const at = Math.min(props.sheet, Math.max(0, props.sheets.length - 1));
+  const [panel, setPanel] = useState<Panel>("activity");
+  const [goto, setGoto] = useState<Goto | null>(null);
+  const { onSheet } = props;
+  const go = useCallback(
+    (g: Goto) => {
+      setGoto(g);
+      onSheet(g.sheet);
+    },
+    [onSheet],
+  );
+  return (
+    <SheetMonitor
+      key={at}
+      {...props}
+      sheet={at}
+      panel={panel}
+      setPanel={setPanel}
+      goto={goto?.sheet === at ? goto.range : null}
+      onGoto={go}
+      onArrived={() => setGoto(null)}
+    />
+  );
+}
+
+function SheetMonitor({
+  active,
+  snapshot,
+  comms,
+  running,
+  chatSeen,
+  onChatSeen,
+  sheets,
+  sheet,
+  onSheet,
+  onGoHistory,
+  panel,
+  setPanel,
+  goto,
+  onGoto,
+  onArrived,
+}: Props & {
+  panel: Panel;
+  setPanel: (p: Panel) => void;
+  goto: CellRange | null;
+  onGoto: (g: Goto) => void;
+  onArrived: () => void;
+}) {
   const [data, setData] = useState<MonitorData | null>(null);
   const [, setRev] = useState(0);
   const [progress, setProgress] = useState<ProgressStats | null>(null);
   const [activity, setActivity] = useState<Activity | null>(null);
   const [selection, setSelection] = useState<GridSelection | null>(null);
-  const [panel, setPanel] = useState<Panel>("activity");
   const [filter, setFilter] = useState<Filter>(NO_FILTER);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -137,31 +217,31 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
 
   const refresh = useCallback(() => {
     void api
-      .monitorProgress()
+      .monitorProgress(sheet)
       .then(setProgress)
       .catch(() => {});
     void api
-      .monitorActivity(40)
+      .monitorActivity(sheet, 40)
       .then(setActivity)
       .catch(() => {});
-  }, []);
+  }, [sheet]);
 
   const load = useCallback(async () => {
     try {
-      const d = await api.monitorGet();
+      const d = await api.monitorGet(sheet);
       setData(d);
       setProgress(d.view.progress);
       refresh();
     } catch (e) {
       setError(errorText(e));
     }
-  }, [refresh]);
+  }, [refresh, sheet]);
 
   useEffect(() => {
     if (active) void load();
   }, [active, load]);
 
-  // 셀 변경: 바뀐 칸만 고쳐 그린다. 진행률·활동은 잠깐 모았다가 새로 읽는다.
+  // 셀 변경: 이 시트의 바뀐 칸만 고쳐 그린다. 진행률·활동(모든 시트)은 잠깐 모았다가 새로 읽는다.
   useEffect(() => {
     const off = listen<HostEvent>("sheet-changes", (e) => {
       const ev = e.payload;
@@ -169,6 +249,9 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
         void load();
         return;
       }
+      window.clearTimeout(refreshTimer.current);
+      refreshTimer.current = window.setTimeout(refresh, 400);
+      if (ev.sheet !== sheet) return;
       setData((d) => {
         if (!d) return d;
         const m = d.model;
@@ -187,11 +270,9 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
         return { ...d, model };
       });
       setRev((r) => r + 1);
-      window.clearTimeout(refreshTimer.current);
-      refreshTimer.current = window.setTimeout(refresh, 400);
     });
     return () => void off.then((f) => f());
-  }, [load, refresh]);
+  }, [load, refresh, sheet]);
 
   useEffect(() => {
     if (!status) return;
@@ -253,46 +334,56 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
     Object.keys(filter.values).length > 0;
 
   const origin = model?.origin ?? { row: 0, col: 0 };
-  const addr = (at: CellRef) => a1(origin.row + at.row, origin.col + at.col);
-  const rangeLabel = (r: CellRange) =>
-    r.rows === 1 && r.cols === 1
-      ? addr(r)
-      : `${addr(r)}:${a1(origin.row + r.row + r.rows - 1, origin.col + r.col + r.cols - 1)}`;
+  /** 그 시트의 주소(시트가 여럿이면 시트 이름을 붙인다). */
+  const where = (s: number, r: CellRef | CellRange) => sheetAddr(sheets, s, r);
   const colorOf = (name: string) => {
     const i = roster.indexOf(name);
     return i >= 0 ? personColor(i) : "#222";
   };
 
-  /** 그 칸으로 간다(필터에 걸려 숨었으면 필터를 지운다). */
-  const reveal = (r: CellRange) => {
+  /** 그 시트의 칸으로 간다(다른 시트면 탭을 바꾼다, 필터에 걸려 숨었으면 필터를 지운다). */
+  const reveal = (s: number, r: CellRange) => {
+    if (s !== sheet) return onGoto({ sheet: s, range: r });
     if (hidden.has(r.row)) setFilter(NO_FILTER);
     requestAnimationFrame(() => grid.current?.reveal({ row: r.row, col: r.col }));
   };
-  /** 시트 주소 범위(채팅 #참조) → 모델 좌표로 옮겨서 간다. */
-  const revealSheet = (r: CellRange) =>
-    reveal({ row: r.row - origin.row, col: r.col - origin.col, rows: r.rows, cols: r.cols });
+  /** 시트 주소 범위(채팅 #참조, 시트 이름이 없으면 보고 있는 시트) → 그 시트의 모델 좌표로 옮겨서 간다. */
+  const revealSheet = (r: CellRange, name?: string) => {
+    const s = name === undefined ? sheet : sheets.findIndex((m) => m.sheet === name);
+    const o = sheets[s]?.origin;
+    if (!o) return toast(`‘${name}’ 시트는 취합하지 않습니다`);
+    reveal(s, { row: r.row - o.row, col: r.col - o.col, rows: r.rows, cols: r.cols });
+  };
+  // 다른 시트에서 이리로 데려왔다: 다 읽은 뒤 그 칸으로.
+  const ready = data !== null;
+  useEffect(() => {
+    if (!ready || !goto) return;
+    onArrived();
+    requestAnimationFrame(() => grid.current?.reveal({ row: goto.row, col: goto.col }));
+  }, [ready, goto, onArrived]);
 
   // ------------------------------------------------------------ 그리드 장식
   const editing = useMemo(() => {
     const map = new Map<string, string>();
-    for (const p of snapshot?.participants ?? []) if (p.editing) map.set(`${p.editing.row}:${p.editing.col}`, p.name);
+    for (const p of snapshot?.participants ?? [])
+      if (p.editing?.sheet === sheet) map.set(`${p.editing.row}:${p.editing.col}`, p.name);
     return map;
-  }, [snapshot]);
+  }, [snapshot, sheet]);
   const cursors = useMemo(() => {
     const map = new Map<string, string>();
     for (const p of snapshot?.participants ?? [])
-      if (p.cursor && p.status !== "offline") map.set(`${p.cursor.row}:${p.cursor.col}`, p.name);
+      if (p.cursor?.sheet === sheet && p.status !== "offline") map.set(`${p.cursor.row}:${p.cursor.col}`, p.name);
     return map;
-  }, [snapshot]);
+  }, [snapshot, sheet]);
   const highlighted = useMemo(() => {
     const set = new Set<string>();
     for (const h of comms?.highlights ?? []) {
-      if (!h.active) continue;
+      if (!h.active || h.sheet !== sheet) continue;
       for (let r = h.range.row; r < h.range.row + h.range.rows; r++)
         for (let c = h.range.col; c < h.range.col + h.range.cols; c++) set.add(`${r}:${c}`);
     }
     return set;
-  }, [comms]);
+  }, [comms, sheet]);
 
   // ------------------------------------------------------------ 호스트 칸 편집
   /** 바로 그리고(바뀐 칸은 `sheet-changes`로도 다시 온다) 세션에 보낸다. */
@@ -308,12 +399,12 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
       });
       setRev((r) => r + 1);
       setError(null);
-      api.sheetSetCells(cells).catch((e) => {
+      api.sheetSetCells(sheet, cells).catch((e) => {
         setError(errorText(e));
         void load();
       });
     },
-    [load],
+    [load, sheet],
   );
   const editor = useHostEditor({
     model: viewModel ?? EMPTY_MODEL,
@@ -391,17 +482,19 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
   const revertBatch = async (b: BatchView) => {
     let r = await api.historyRevertBatch(b.batch, false);
     if (r.changed === 0 && r.stale.length > 0) {
-      const ok = window.confirm(
-        `그 뒤에 다시 바뀐 칸 ${r.stale.length}개(${r.stale.map(addr).join(", ")})도 덮어씁니다. 되돌릴까요?`,
-      );
+      const stale = r.stale.map((c: SheetCell) => where(c.sheet, c)).join(", ");
+      const ok = window.confirm(`그 뒤에 다시 바뀐 칸 ${r.stale.length}개(${stale})도 덮어씁니다. 되돌릴까요?`);
       if (!ok) return;
       r = await api.historyRevertBatch(b.batch, true);
     }
-    setStatus(`${rangeLabel(b.range)} 묶음을 되돌렸습니다 (${r.changed}칸)`);
+    setStatus(`${where(b.sheet, b.range)} 묶음을 되돌렸습니다 (${r.changed}칸)`);
   };
 
   const p = progress;
-  const pct = p && p.required > 0 ? Math.round((p.filled / p.required) * 100) : 0;
+  const many = sheets.length > 1;
+  // 머리의 진행률·담당자별은 모든 시트 합(시트가 하나면 그 시트), 열별 완료는 보고 있는 시트.
+  const total = many && snapshot ? { filled: snapshot.filled, required: snapshot.required } : p;
+  const pct = total && total.required > 0 ? Math.round((total.filled / total.required) * 100) : 0;
   const left = remaining(view?.config.deadline, new Date(now));
   const people = snapshot?.participants ?? [];
   const unread = (comms?.chat ?? []).filter((m) => !m.host && m.id > chatSeen).length;
@@ -441,7 +534,7 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
         </span>
         <span className="stat" aria-label="전체 필수 진행률">
           <b>
-            {(p?.filled ?? 0).toLocaleString()}/{(p?.required ?? 0).toLocaleString()}
+            {(total?.filled ?? 0).toLocaleString()}/{(total?.required ?? 0).toLocaleString()}
           </b>
           필수 칸 채움 <span className="muted">{pct}%</span>
         </span>
@@ -541,7 +634,7 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
           <section aria-label="담당자별">
             <b>담당자별</b>
             {people.map((x) => {
-              const pp = p?.byPerson[x.color];
+              const pp = many ? x : p?.byPerson[x.color];
               const ratio = pp && pp.required > 0 ? Math.round((pp.filled / pp.required) * 100) : 0;
               const symbol = x.status === "online" ? "●" : x.status === "away" ? "◐" : "○";
               return (
@@ -549,7 +642,7 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
                   key={x.name}
                   className={`mon-person${filter.person === x.color ? " on" : ""}`}
                   onClick={() => setFilter({ ...NO_FILTER, person: filter.person === x.color ? null : x.color })}
-                  title="누르면 이 사람 행만 봅니다"
+                  title={many ? "모든 시트 합 · 누르면 이 시트에서 이 사람 행만 봅니다" : "누르면 이 사람 행만 봅니다"}
                 >
                   <span style={{ color: personColor(x.color) }}>{symbol}</span>
                   <span className="grow">{x.name}</span>
@@ -559,7 +652,7 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
             })}
           </section>
           <section aria-label="열별 완료">
-            <b>열별 완료</b>
+            <b>열별 완료{many ? ` · ${model.sheet}` : ""}</b>
             {(p?.byColumn ?? [])
               .filter((c) => c.required > 0)
               .map((c) => {
@@ -596,6 +689,12 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
             onKey={editor.onKey}
             onCellDoubleClick={editor.onCellDoubleClick}
           />
+          <SheetTabs
+            names={sheets.map((m) => m.sheet)}
+            active={sheet}
+            onSelect={onSheet}
+            badges={snapshot?.sheets.map((x) => x.required - x.filled)}
+          />
         </div>
 
         <aside className="mon-right">
@@ -623,10 +722,9 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
             <ActivityPanel
               activity={activity}
               snapshot={snapshot}
-              addr={addr}
-              rangeLabel={rangeLabel}
+              where={where}
               colorOf={colorOf}
-              labels={labels}
+              labelOf={(s, c) => (s === sheet ? labels[c] : undefined) || colLetters((sheets[s]?.origin.col ?? 0) + c)}
               onReveal={reveal}
               onRevert={(b) => void run(() => revertBatch(b))}
               onGoHistory={onGoHistory}
@@ -636,9 +734,10 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
           {panel === "highlight" && (
             <HighlightPanel
               comms={comms}
+              sheet={sheet}
               selection={sel}
               owners={owners}
-              rangeLabel={rangeLabel}
+              where={where}
               onReveal={reveal}
               onError={setError}
             />
@@ -647,6 +746,7 @@ export function MonitorScreen({ active, snapshot, comms, running, chatSeen, onCh
             <ChatPanel
               comms={comms}
               roster={roster}
+              many={many}
               colorOf={colorOf}
               onRef={revealSheet}
               onSeen={onChatSeen}
@@ -688,22 +788,24 @@ function ownersOf(
 function ActivityPanel(props: {
   activity: Activity | null;
   snapshot: HostSnapshot | null;
-  addr: (at: CellRef) => string;
-  rangeLabel: (r: CellRange) => string;
+  /** 그 시트의 주소. */
+  where: (sheet: number, r: CellRef | CellRange) => string;
   colorOf: (name: string) => string;
-  labels: string[];
-  onReveal: (r: CellRange) => void;
+  /** 그 시트의 열 이름. */
+  labelOf: (sheet: number, col: number) => string;
+  onReveal: (sheet: number, r: CellRange) => void;
   onRevert: (b: BatchView) => void;
   onGoHistory: () => void;
 }) {
-  const { activity, snapshot, addr, rangeLabel, colorOf, labels, onReveal, onRevert, onGoHistory } = props;
+  const { activity, snapshot, where, colorOf, labelOf, onReveal, onRevert, onGoHistory } = props;
   const editing = (snapshot?.participants ?? []).filter((p) => p.editing);
   return (
     <div className="feed" aria-label="실시간 활동">
       {editing.map((p) => (
         <div key={`e${p.name}`} className="feed-item editing">
           <span className="dot" style={{ background: personColor(p.color) }} />
-          {p.name} <span className="mono">{addr(p.editing!)}</span> 입력 중… <span className="tag">잠금</span>
+          {p.name} <span className="mono">{where(p.editing!.sheet, p.editing!)}</span> 입력 중…{" "}
+          <span className="tag">잠금</span>
         </div>
       ))}
       {(activity?.page.batches ?? []).map((b) => {
@@ -717,7 +819,8 @@ function ActivityPanel(props: {
               {b.count === 1 && b.origin === "edit" ? (
                 <>
                   {" "}
-                  <span className="mono">{addr(first)}</span> {showValue(first.old)} → <b>{showValue(first.new)}</b>
+                  <span className="mono">{where(b.sheet, first)}</span> {showValue(first.old)} →{" "}
+                  <b>{showValue(first.new)}</b>
                 </>
               ) : (
                 <>
@@ -726,11 +829,11 @@ function ActivityPanel(props: {
                   <b>
                     {ORIGIN_LABEL[b.origin] ?? "변경"} {b.count}셀
                   </b>{" "}
-                  <span className="mono">{rangeLabel(b.range)}</span>
+                  <span className="mono">{where(b.sheet, b.range)}</span>
                   <div className="small muted">
                     {b.entries
                       .slice(0, 3)
-                      .map((e) => `${labels[e.col] ?? ""} ${showValue(e.old)} → ${showValue(e.new)}`)
+                      .map((e) => `${labelOf(b.sheet, e.col)} ${showValue(e.old)} → ${showValue(e.new)}`)
                       .join(" · ")}
                     {b.entries.length > 3 ? " …" : ""}
                   </div>
@@ -742,7 +845,7 @@ function ActivityPanel(props: {
                 <button className="ghost small" onClick={() => onRevert(b)}>
                   되돌리기
                 </button>
-                <button className="ghost small" onClick={() => onReveal(b.range)}>
+                <button className="ghost small" onClick={() => onReveal(b.sheet, b.range)}>
                   셀로 이동
                 </button>
               </div>
@@ -861,19 +964,21 @@ function NoticePanel({
 
 function HighlightPanel(props: {
   comms: CommsSnapshot | null;
+  /** 보고 있는 시트(선택한 셀의 시트). */
+  sheet: number;
   selection: CellRange | null;
   owners: { names: string[]; open: boolean } | null;
-  rangeLabel: (r: CellRange) => string;
-  onReveal: (r: CellRange) => void;
+  where: (sheet: number, r: CellRef | CellRange) => string;
+  onReveal: (sheet: number, r: CellRange) => void;
   onError: (e: string) => void;
 }) {
-  const { comms, selection, owners, rangeLabel, onReveal, onError } = props;
+  const { comms, sheet, selection, owners, where, onReveal, onError } = props;
   const [note, setNote] = useState("");
   const [audience, setAudience] = useState<HighlightAudience>("owners");
   const add = async () => {
     if (!selection) return;
     try {
-      await api.highlightAdd(selection, note, audience);
+      await api.highlightAdd(sheet, selection, note, audience);
       setNote("");
     } catch (e) {
       onError(errorText(e));
@@ -882,7 +987,8 @@ function HighlightPanel(props: {
   return (
     <div className="panel-body" aria-label="셀 강조">
       <div className="small">
-        그리드에서 선택한 셀 <b className="mono">{selection ? rangeLabel(selection) : "— 그리드에서 셀을 고르세요"}</b>
+        그리드에서 선택한 셀{" "}
+        <b className="mono">{selection ? where(sheet, selection) : "— 그리드에서 셀을 고르세요"}</b>
       </div>
       <textarea
         aria-label="강조 메모"
@@ -913,8 +1019,8 @@ function HighlightPanel(props: {
           .map((h) => (
             <div key={h.id} className="sent-item">
               <div>
-                <button className="cell-ref" onClick={() => onReveal(h.range)}>
-                  {rangeLabel(h.range)}
+                <button className="cell-ref" onClick={() => onReveal(h.sheet, h.range)}>
+                  {where(h.sheet, h.range)}
                 </button>{" "}
                 {h.note}
               </div>
@@ -951,12 +1057,14 @@ function chatTarget(m: ChatMessage): ReactNode {
 function ChatPanel(props: {
   comms: CommsSnapshot | null;
   roster: string[];
+  /** 시트가 여럿이다(참조 예시에 시트 이름). */
+  many: boolean;
   colorOf: (name: string) => string;
-  onRef: (r: CellRange) => void;
+  onRef: (r: CellRange, sheet?: string) => void;
   onSeen: (id: number) => void;
   onError: (e: string) => void;
 }) {
-  const { comms, roster, colorOf, onRef, onSeen, onError } = props;
+  const { comms, roster, many, colorOf, onRef, onSeen, onError } = props;
   const [to, setTo] = useState("");
   const [text, setText] = useState("");
   const list = useRef<HTMLDivElement>(null);
@@ -1002,7 +1110,7 @@ function ChatPanel(props: {
         </select>
         <input
           aria-label="채팅 입력"
-          placeholder="메시지 · #셀 참조(예: #F7)"
+          placeholder={many ? "메시지 · #셀 참조(예: #F7, #인력계획!F7)" : "메시지 · #셀 참조(예: #F7)"}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {

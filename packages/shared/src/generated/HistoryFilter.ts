@@ -11,6 +11,10 @@ export type HistoryFilter = {
  */
 sinceMs?: number, user?: string, 
 /**
+ * 이 시트(세션 안 순번)의 칸만. `range`도 이 시트 기준이다.
+ */
+sheet?: number, 
+/**
  * 비어 있으면 모든 종류.
  */
 kinds: Array<ChangeKind>, 

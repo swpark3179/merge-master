@@ -15,10 +15,10 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::a1::{CellRange, CellRef};
-use crate::access::{Access, flag};
+use crate::a1::{CellRange, CellRef, sheet_prefix};
+use crate::access::{Access, flag, union_roster};
 use crate::config::CollectConfig;
-use crate::history::ChangeEntry;
+use crate::history::{ChangeEntry, SheetLabels, sheet_of};
 use crate::sheet::{Cell, CellStyle, CellValue, SheetModel};
 
 /// 칸에 쓸 값. `literal`이면 글자를 그대로 둔다(Excel이 숫자·날짜·수식으로 바꾸지 않게 앞에 `'`를 붙여 쓴다).
@@ -280,29 +280,34 @@ pub fn excel_time(at_ms: i64, offset_minutes: i32) -> f64 {
     (at_ms as f64 / 1000.0 + f64::from(offset_minutes) * 60.0) / 86_400.0 + UNIX_EPOCH_SERIAL
 }
 
-/// 이력 표: 시각 · 사용자 · 셀 · 항목 · 이전 값 · 새 값(오래된 것부터).
-pub fn history_table(
-    current: &SheetModel,
-    labels: &[String],
-    history: &[ChangeEntry],
-    offset_minutes: i32,
-) -> HistoryTable {
-    let header = ["시각", "사용자", "셀", "항목", "이전 값", "새 값"].map(String::from).to_vec();
+/// 이력 표: 시각 · 사용자 · (시트) · 셀 · 항목 · 이전 값 · 새 값(오래된 것부터). 시트가 둘 이상이면 '시트' 열을 더하고,
+/// 셀 주소는 그 기록의 시트 위치 기준이다.
+pub fn history_table(sheets: &[SheetLabels], history: &[ChangeEntry], offset_minutes: i32) -> HistoryTable {
+    let many = sheets.len() > 1;
+    let mut header = vec!["시각", "사용자"];
+    if many {
+        header.push("시트");
+    }
+    header.extend(["셀", "항목", "이전 값", "새 값"]);
+    let none = SheetLabels::default();
     let rows = history
         .iter()
         .map(|h| {
-            let addr = CellRef::new(h.row + current.origin.row, h.col + current.origin.col);
-            vec![
-                CellValue::Number(excel_time(h.at_ms, offset_minutes)),
-                CellValue::Text(h.user.clone()),
-                CellValue::Text(addr.to_string()),
-                CellValue::Text(labels.get(h.col as usize).cloned().unwrap_or_default()),
+            let sheet = sheet_of(sheets, h.sheet).unwrap_or(&none);
+            let mut row = vec![CellValue::Number(excel_time(h.at_ms, offset_minutes)), CellValue::Text(h.user.clone())];
+            if many {
+                row.push(CellValue::Text(sheet.name.clone()));
+            }
+            row.extend([
+                CellValue::Text(sheet.address(h)),
+                CellValue::Text(sheet.label(h.col)),
                 h.old.clone(),
                 h.new.clone(),
-            ]
+            ]);
+            row
         })
         .collect();
-    HistoryTable { header, rows, time_col: 0 }
+    HistoryTable { header: header.into_iter().map(String::from).collect(), rows, time_col: 0 }
 }
 
 /// 저장 계획. `skip`에 든 칸은 쓰지 않는다(충돌에서 'Excel 값 유지'를 고른 칸).
@@ -353,8 +358,9 @@ pub fn plan(
         (Vec::new(), Vec::new())
     };
 
-    let history =
-        (opts.history && !history.is_empty()).then(|| history_table(current, labels, history, offset_minutes));
+    let one = SheetLabels { name: current.sheet.clone(), origin: current.origin, labels: labels.to_vec() };
+    let history = (opts.history && !history.is_empty())
+        .then(|| history_table(std::slice::from_ref(&one), history, offset_minutes));
     ExportPlan {
         origin: current.origin,
         insert: row_insert(baseline, current),
@@ -471,6 +477,19 @@ pub struct PersonChanges {
     pub cells: u32,
 }
 
+/// 시트 하나의 저장 요약(여러 시트를 함께 취합할 때 시트마다).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SheetSummary {
+    pub name: String,
+    pub required: u32,
+    pub filled: u32,
+    pub changed_cells: u32,
+    pub added_rows: u32,
+    pub style_cells: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -493,9 +512,19 @@ pub struct SaveSummary {
     pub size_changes: u32,
     /// 참여자가 표 아래에 추가한 행 수(저장할 때 Excel에 끼워 넣는다).
     pub added_rows: u32,
+    /// 시트마다(불러온 순서).
+    pub sheets: Vec<SheetSummary>,
 }
 
 const MISSING_SAMPLES: usize = 12;
+
+/// 요약할 시트 하나: 기준 시트·지금 시트·그 시트 설정.
+#[derive(Clone, Copy)]
+pub struct SummaryInput<'a> {
+    pub baseline: &'a SheetModel,
+    pub current: &'a SheetModel,
+    pub config: &'a CollectConfig,
+}
 
 pub fn summary(
     baseline: &SheetModel,
@@ -503,70 +532,91 @@ pub fn summary(
     config: &CollectConfig,
     history: &[ChangeEntry],
 ) -> SaveSummary {
-    let access = Access::compile(current, config);
-    let progress = access.progress(current);
-    let mut people: Vec<PersonMissing> = progress
-        .by_person
-        .iter()
-        .enumerate()
-        .map(|(i, p)| PersonMissing {
-            name: p.name.clone(),
-            color: i as i32,
-            required: p.required,
-            filled: p.filled,
-            ..Default::default()
-        })
-        .collect();
-    for r in current.header_rows..current.rows {
-        for c in 0..current.cols {
-            let at = CellRef::new(r, c);
-            if access.flags(at) & flag::REQUIRED == 0 || current.cell(at).is_some_and(|cell| !cell.v.is_empty()) {
-                continue;
+    summary_all(&[SummaryInput { baseline, current, config }], history)
+}
+
+/// 여러 시트 요약: 필수·바뀐 칸은 모두 더하고, 담당자별은 합집합 명단([`union_roster`]) 순서로 합친다. 시트가 둘 이상이면
+/// 비어 있는 칸 주소에 시트 이름을 붙인다(`인력계획!F7`).
+pub fn summary_all(sheets: &[SummaryInput<'_>], history: &[ChangeEntry]) -> SaveSummary {
+    let roster = union_roster(sheets.iter().map(|s| (s.current, s.config)));
+    let many = sheets.len() > 1;
+    let mut out = SaveSummary {
+        people: roster
+            .iter()
+            .enumerate()
+            .map(|(i, name)| PersonMissing { name: name.clone(), color: i as i32, ..Default::default() })
+            .collect(),
+        last_change_ms: history.iter().map(|h| h.at_ms).max(),
+        history_entries: history.len() as u32,
+        ..Default::default()
+    };
+    for s in sheets {
+        let (baseline, current) = (s.baseline, s.current);
+        let access = Access::compile_with(current, s.config, &roster);
+        let progress = access.progress(current);
+        out.required += progress.required;
+        out.filled += progress.filled;
+        out.unassigned += progress.unassigned;
+        for (i, p) in progress.by_person.iter().enumerate() {
+            if let Some(person) = out.people.get_mut(i) {
+                person.required += p.required;
+                person.filled += p.filled;
             }
-            let addr = CellRef::new(r + current.origin.row, c + current.origin.col).to_string();
-            for p in access.owners(at) {
-                let person = &mut people[p];
-                if person.missing.len() < MISSING_SAMPLES {
-                    person.missing.push(addr.clone());
-                } else {
-                    person.more += 1;
+        }
+        let prefix = if many { sheet_prefix(&current.sheet) } else { String::new() };
+        for r in current.header_rows..current.rows {
+            for c in 0..current.cols {
+                let at = CellRef::new(r, c);
+                if access.flags(at) & flag::REQUIRED == 0 || current.cell(at).is_some_and(|cell| !cell.v.is_empty()) {
+                    continue;
+                }
+                let addr = format!("{prefix}{}", CellRef::new(r + current.origin.row, c + current.origin.col));
+                for p in access.owners(at) {
+                    let Some(person) = out.people.get_mut(p) else { continue };
+                    if person.missing.len() < MISSING_SAMPLES {
+                        person.missing.push(addr.clone());
+                    } else {
+                        person.more += 1;
+                    }
                 }
             }
         }
+        let changed = changed_cells(baseline, current).len() as u32;
+        let styled = style_changes(baseline, current).len() as u32;
+        let added = row_insert(baseline, current).map_or(0, |ins| ins.count);
+        let before: HashSet<&CellRange> = baseline.merges.iter().collect();
+        let after: HashSet<&CellRange> = current.merges.iter().collect();
+        out.changed_cells += changed;
+        out.style_cells += styled;
+        out.merge_changes += before.symmetric_difference(&after).count() as u32;
+        if comparable(baseline, current) {
+            out.size_changes += (size_changes(&baseline.col_widths, &current.col_widths).len()
+                + size_changes(&baseline.row_heights, &current.row_heights).len())
+                as u32;
+        }
+        out.added_rows += added;
+        out.sheets.push(SheetSummary {
+            name: current.sheet.clone(),
+            required: progress.required,
+            filled: progress.filled,
+            changed_cells: changed,
+            added_rows: added,
+            style_cells: styled,
+        });
     }
 
     // 명단에 있는 사람만 센다('Excel 값 유지' 같은 호스트 기록은 빼고).
-    let mut by_user: HashMap<&str, HashSet<(u32, u32)>> = HashMap::new();
-    for h in history.iter().filter(|h| access.person(&h.user).is_some()) {
-        by_user.entry(h.user.as_str()).or_default().insert((h.row, h.col));
+    let mut by_user: HashMap<&str, HashSet<(u32, u32, u32)>> = HashMap::new();
+    for h in history.iter().filter(|h| roster.iter().any(|n| n.trim() == h.user.trim())) {
+        by_user.entry(h.user.as_str()).or_default().insert((h.sheet, h.row, h.col));
     }
     let mut changed_by: Vec<PersonChanges> = by_user
         .into_iter()
         .map(|(name, cells)| PersonChanges { name: name.to_string(), cells: cells.len() as u32 })
         .collect();
     changed_by.sort_by(|a, b| b.cells.cmp(&a.cells).then_with(|| a.name.cmp(&b.name)));
-
-    let before: HashSet<&CellRange> = baseline.merges.iter().collect();
-    let after: HashSet<&CellRange> = current.merges.iter().collect();
-    SaveSummary {
-        required: progress.required,
-        filled: progress.filled,
-        unassigned: progress.unassigned,
-        people,
-        changed_cells: changed_cells(baseline, current).len() as u32,
-        changed_by,
-        last_change_ms: history.iter().map(|h| h.at_ms).max(),
-        history_entries: history.len() as u32,
-        style_cells: style_changes(baseline, current).len() as u32,
-        merge_changes: before.symmetric_difference(&after).count() as u32,
-        size_changes: if comparable(baseline, current) {
-            (size_changes(&baseline.col_widths, &current.col_widths).len()
-                + size_changes(&baseline.row_heights, &current.row_heights).len()) as u32
-        } else {
-            0
-        },
-        added_rows: row_insert(baseline, current).map_or(0, |ins| ins.count),
-    }
+    out.changed_by = changed_by;
+    out
 }
 
 #[cfg(test)]
@@ -680,6 +730,7 @@ mod tests {
             kind: ChangeKind::Edit,
             at_ms: 0,
             user: "이서연".into(),
+            sheet: 0,
             row: 2,
             col: 5,
             old: CellValue::Empty,
@@ -748,6 +799,7 @@ mod tests {
                 kind: ChangeKind::Edit,
                 at_ms: 10,
                 user: "이서연".into(),
+                sheet: 0,
                 row: 2,
                 col: 5,
                 old: CellValue::Empty,
@@ -760,6 +812,7 @@ mod tests {
                 kind: ChangeKind::Edit,
                 at_ms: 20,
                 user: "이서연".into(),
+                sheet: 0,
                 row: 2,
                 col: 5,
                 old: CellValue::Number(1.0),
@@ -773,6 +826,7 @@ mod tests {
                 kind: ChangeKind::Edit,
                 at_ms: 30,
                 user: "Excel(원본)".into(),
+                sheet: 0,
                 row: 3,
                 col: 5,
                 old: CellValue::Number(5000.0),
@@ -788,6 +842,80 @@ mod tests {
         assert_eq!(s.changed_cells, 1);
         assert_eq!(s.changed_by, [PersonChanges { name: "이서연".into(), cells: 1 }]);
         assert_eq!((s.last_change_ms, s.history_entries), (Some(30), 3));
+        assert_eq!(s.sheets.len(), 1);
+        assert_eq!((s.sheets[0].name.as_str(), s.sheets[0].changed_cells), ("예산신청서", 1));
+    }
+
+    #[test]
+    fn summary_adds_up_sheets_and_names_missing_cells_by_sheet() {
+        let base = budget();
+        let mut cfg = assigned(&base);
+        cfg.columns[5].required = true;
+        // 둘째 시트: 행 배정 없이 F열 필수(담당자 없는 칸 = 누구나), 한 칸 바꿈.
+        let mut base2 = budget();
+        base2.sheet = "인력 계획".into();
+        let mut cfg2 = CollectConfig::suggest(&base2);
+        cfg2.columns[5].required = true;
+        let mut now2 = base2.clone();
+        set(&mut now2, "F3", CellValue::Number(1.0));
+        let parts = [
+            SummaryInput { baseline: &base, current: &base, config: &cfg },
+            SummaryInput { baseline: &base2, current: &now2, config: &cfg2 },
+        ];
+        let mut e = ChangeEntry {
+            seq: 1,
+            at_ms: 5,
+            user: "김민지".into(),
+            batch: "b".into(),
+            origin: BatchOrigin::Edit,
+            kind: ChangeKind::Input,
+            sheet: 1,
+            row: 2,
+            col: 5,
+            old: CellValue::Empty,
+            new: CellValue::Number(1.0),
+        };
+        let mut f = e.clone();
+        f.sheet = 0; // 다른 시트의 같은 주소는 다른 칸
+        e.seq = 2;
+        let s = summary_all(&parts, &[f, e]);
+        assert_eq!((s.required, s.filled, s.unassigned), (12, 5, 6));
+        assert_eq!(s.people.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["이서연", "최도윤", "김민지"]);
+        assert_eq!(s.people[1].missing, ["예산신청서!F5", "예산신청서!F6"]);
+        assert_eq!(s.changed_cells, 1);
+        assert_eq!(s.changed_by, [PersonChanges { name: "김민지".into(), cells: 2 }]);
+        assert_eq!(
+            s.sheets.iter().map(|x| (x.name.as_str(), x.changed_cells)).collect::<Vec<_>>(),
+            [("예산신청서", 0), ("인력 계획", 1)]
+        );
+    }
+
+    #[test]
+    fn history_table_adds_a_sheet_column_for_many_sheets() {
+        let one = SheetLabels { name: "예산".into(), origin: CellRef::new(0, 0), labels: vec!["".into(); 9] };
+        let two = SheetLabels { name: "인력".into(), origin: CellRef::new(1, 0), labels: vec!["금액".into(); 9] };
+        let e = ChangeEntry {
+            seq: 1,
+            at_ms: 0,
+            user: "김민지".into(),
+            batch: "b".into(),
+            origin: BatchOrigin::Edit,
+            kind: ChangeKind::Input,
+            sheet: 1,
+            row: 2,
+            col: 5,
+            old: CellValue::Empty,
+            new: CellValue::Number(1.0),
+        };
+        let t = history_table(std::slice::from_ref(&one), std::slice::from_ref(&e), 0);
+        assert_eq!(t.header, ["시각", "사용자", "셀", "항목", "이전 값", "새 값"]);
+        assert_eq!(t.rows[0][2], CellValue::Text("F3".into()), "한 시트면 기록의 시트 번호와 상관없이 그 시트");
+        let t = history_table(&[one, two], &[e], 0);
+        assert_eq!(t.header, ["시각", "사용자", "시트", "셀", "항목", "이전 값", "새 값"]);
+        assert_eq!(
+            t.rows[0][2..5],
+            [CellValue::Text("인력".into()), CellValue::Text("F4".into()), CellValue::Text("금액".into())]
+        );
     }
 
     #[test]

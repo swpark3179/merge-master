@@ -3,7 +3,7 @@ import type { CellRef } from "./CellRef";
 import type { CellValue } from "./CellValue";
 import type { ChangeEntry } from "./ChangeEntry";
 
-export type Timeline = { at: CellRef, 
+export type Timeline = { sheet: number, at: CellRef, 
 /**
  * 불러온 원본 값.
  */

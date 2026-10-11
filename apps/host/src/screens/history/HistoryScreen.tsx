@@ -1,23 +1,26 @@
 import { cellText, effectiveColumn } from "@mm/grid";
 import type {
   BatchView,
+  CellRange,
   CellRef,
   ChangeEntry,
   ChangeKind,
   HistoryFilter,
   HistoryPage,
   MonitorData,
+  SheetCell,
+  SheetModel,
   SnapshotDiff,
   SnapshotView,
   Timeline,
 } from "@mm/shared";
-import { a1, parseRange, personColor } from "@mm/shared";
+import { parseSheetRange, personColor } from "@mm/shared";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { api, errorText } from "../../api";
-import { showValue, time } from "../monitor/MonitorScreen";
+import { sheetAddr, showValue, time } from "../monitor/MonitorScreen";
 
 const PAGE = 50;
 
@@ -60,11 +63,18 @@ function since(period: Period): number | undefined {
 
 interface Props {
   active: boolean;
+  /** 확정한 시트들(세션 안 순번 순서). */
+  sheets: SheetModel[];
+  /** 1b·1d에서 보던 시트: 시트 이름 없이 적은 셀/범위의 시트. */
+  sheet: number;
 }
 
-/** 5 히스토리(1h): 변경 기록(묶음)·필터·CSV, 셀 타임라인, 되돌리기, 스냅샷. */
-export function HistoryScreen({ active }: Props) {
-  const [sheet, setSheet] = useState<MonitorData | null>(null);
+/** 5 히스토리(1h): 변경 기록(묶음)·필터·CSV, 셀 타임라인, 되돌리기, 스냅샷. 기록은 모든 시트, 시트로 거를 수 있다. */
+export function HistoryScreen({ active, sheets, sheet }: Props) {
+  /** 시트마다 지금 값·열 이름·명단(행 이름·항목 표시용). */
+  const [data, setData] = useState<(MonitorData | undefined)[]>([]);
+  /** 이 시트의 기록만(없으면 모든 시트). */
+  const [only, setOnly] = useState<number | null>(null);
   const [period, setPeriod] = useState<Period>("today");
   const [user, setUser] = useState("");
   const [kinds, setKinds] = useState<ChangeKind[]>([]);
@@ -72,7 +82,7 @@ export function HistoryScreen({ active }: Props) {
   const [text, setText] = useState("");
   const [page, setPage] = useState<HistoryPage | null>(null);
   const [batches, setBatches] = useState<BatchView[]>([]);
-  const [cell, setCell] = useState<CellRef | null>(null);
+  const [cell, setCell] = useState<SheetCell | null>(null);
   const [timeline, setTimeline] = useState<Timeline | null>(null);
   const [snapshots, setSnapshots] = useState<SnapshotView[]>([]);
   const [picked, setPicked] = useState<number | null>(null);
@@ -81,36 +91,56 @@ export function HistoryScreen({ active }: Props) {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const model = sheet?.model;
-  const origin = model?.origin ?? { row: 0, col: 0 };
-  const labels = sheet?.view.labels ?? [];
-  const roster = sheet?.view.roster ?? [];
-  const addr = (at: CellRef) => a1(origin.row + at.row, origin.col + at.col);
+  const many = sheets.length > 1;
+  // 명단은 모든 시트의 합집합이라 어느 시트 것이든 같다.
+  const roster = data.find(Boolean)?.view.roster ?? [];
+  const labelsOf = (s: number) => data[s]?.view.labels ?? [];
+  const addr = (s: number, at: CellRef | CellRange) => sheetAddr(sheets, s, at);
 
-  // 범위 글자(시트 주소) → 모델 좌표. 틀리면 필터 없음.
-  const range = useMemo(() => {
-    const r = parseRange(rangeText.trim());
-    if (!r) return undefined;
-    return { row: r.row - origin.row, col: r.col - origin.col, rows: r.rows, cols: r.cols };
-  }, [rangeText, origin.row, origin.col]);
+  // 범위 글자(`F7:H7`, `인력계획!F7`) → 그 시트의 모델 좌표. 시트 이름이 없으면 고른 시트(없으면 보던 시트). 틀리면 필터 없음.
+  const target = useMemo(() => {
+    const p = parseSheetRange(rangeText);
+    if (!p) return undefined;
+    const s =
+      p.sheet === undefined
+        ? (only ?? sheet)
+        : sheets.findIndex((m) => m.sheet.toUpperCase() === p.sheet!.toUpperCase());
+    const o = sheets[s]?.origin;
+    if (!o) return undefined;
+    const r = p.range;
+    return { sheet: s, range: { row: r.row - o.row, col: r.col - o.col, rows: r.rows, cols: r.cols } };
+  }, [rangeText, only, sheet, sheets]);
 
   const filter: HistoryFilter = useMemo(
-    () => ({ sinceMs: since(period), user: user || undefined, kinds, range, text: text.trim() || undefined }),
-    [period, user, kinds, range, text],
+    () => ({
+      sinceMs: since(period),
+      user: user || undefined,
+      sheet: target?.sheet ?? only ?? undefined,
+      kinds,
+      range: target?.range,
+      text: text.trim() || undefined,
+    }),
+    [period, user, target, only, kinds, text],
   );
 
-  // 행 이름(조회조건 열: '재무팀 · 출장비').
-  const rowLabel = useMemo(() => {
-    if (!model || !sheet) return () => "";
-    const cols = sheet.view.config.columns.map((c, i) => (c.filter ? i : -1)).filter((i) => i >= 0);
-    const values = cols.map((c) => ({ c, v: effectiveColumn(model, c) }));
-    return (row: number) =>
-      values
-        .slice(-2)
-        .map(({ c, v }) => cellText(model, v[row], row, c))
-        .filter(Boolean)
-        .join(" · ");
-  }, [model, sheet]);
+  // 행 이름(조회조건 열: '재무팀 · 출장비'). 시트마다.
+  const rowLabels = useMemo(
+    () =>
+      data.map((d) => {
+        if (!d) return () => "";
+        const model = d.model;
+        const cols = d.view.config.columns.map((c, i) => (c.filter ? i : -1)).filter((i) => i >= 0);
+        const values = cols.map((c) => ({ c, v: effectiveColumn(model, c) }));
+        return (row: number) =>
+          values
+            .slice(-2)
+            .map(({ c, v }) => cellText(model, v[row], row, c))
+            .filter(Boolean)
+            .join(" · ");
+      }),
+    [data],
+  );
+  const rowLabel = (s: number, row: number) => rowLabels[s]?.(row) ?? "";
 
   const query = useCallback(
     async (offset: number) => {
@@ -134,22 +164,22 @@ export function HistoryScreen({ active }: Props) {
     [],
   );
   const loadTimeline = useCallback(
-    (at: CellRef) =>
+    (at: SheetCell) =>
       void api
-        .historyTimeline(at)
+        .historyTimeline(at.sheet, { row: at.row, col: at.col })
         .then(setTimeline)
         .catch(() => {}),
     [],
   );
 
+  const count = sheets.length;
   useEffect(() => {
     if (!active) return;
-    void api
-      .monitorGet()
-      .then(setSheet)
+    void Promise.all(Array.from({ length: count }, (_, i) => api.monitorGet(i)))
+      .then(setData)
       .catch((e) => setError(errorText(e)));
     loadSnapshots();
-  }, [active, loadSnapshots]);
+  }, [active, count, loadSnapshots]);
 
   useEffect(() => {
     if (active) void query(0);
@@ -194,11 +224,18 @@ export function HistoryScreen({ active }: Props) {
   };
 
   /** 되돌리기: 그 뒤 다시 바뀐 칸이 있으면 먼저 묻는다. */
-  const revert = async (label: string, attempt: (force: boolean) => Promise<{ changed: number; stale: CellRef[] }>) => {
+  const revert = async (
+    label: string,
+    attempt: (force: boolean) => Promise<{ changed: number; stale: SheetCell[] }>,
+  ) => {
     const r = await attempt(false);
     if (r.changed === 0 && r.stale.length > 0) {
+      const stale = r.stale
+        .slice(0, 5)
+        .map((c) => addr(c.sheet, c))
+        .join(", ");
       setConfirm({
-        message: `그 뒤에 다시 바뀐 칸 ${r.stale.length}개(${r.stale.slice(0, 5).map(addr).join(", ")})도 덮어씁니다.`,
+        message: `그 뒤에 다시 바뀐 칸 ${r.stale.length}개(${stale})도 덮어씁니다.`,
         run: async () => {
           const again = await attempt(true);
           setStatus(`${label}: ${again.changed}칸을 되돌렸습니다`);
@@ -227,9 +264,9 @@ export function HistoryScreen({ active }: Props) {
   const entryRow = (e: ChangeEntry, child: boolean) => (
     <div
       key={e.seq}
-      className={`hrow${child ? " child" : ""}${cell && cell.row === e.row && cell.col === e.col ? " on" : ""}`}
+      className={`hrow${child ? " child" : ""}${cell && cell.sheet === e.sheet && cell.row === e.row && cell.col === e.col ? " on" : ""}`}
       role="row"
-      onClick={() => setCell({ row: e.row, col: e.col })}
+      onClick={() => setCell({ sheet: e.sheet, row: e.row, col: e.col })}
     >
       {child ? (
         <>
@@ -245,9 +282,11 @@ export function HistoryScreen({ active }: Props) {
           </span>
         </>
       )}
-      <span className="mono">{addr(e)}</span>
+      <span className="mono">{addr(e.sheet, e)}</span>
       <span className="small muted">
-        {child ? labels[e.col] : `${rowLabel(e.row)}${labels[e.col] ? ` · ${labels[e.col]}` : ""}`}
+        {child
+          ? labelsOf(e.sheet)[e.col]
+          : `${rowLabel(e.sheet, e.row)}${labelsOf(e.sheet)[e.col] ? ` · ${labelsOf(e.sheet)[e.col]}` : ""}`}
       </span>
       <span>
         <span className="muted">{showValue(e.old)}</span> → <b>{showValue(e.new)}</b>{" "}
@@ -258,7 +297,7 @@ export function HistoryScreen({ active }: Props) {
           className="ghost small"
           onClick={(ev) => {
             ev.stopPropagation();
-            void run(() => revert(addr(e), (force) => api.historyRevert([e.seq], force)));
+            void run(() => revert(addr(e.sheet, e), (force) => api.historyRevert([e.seq], force)));
           }}
         >
           되돌리기
@@ -290,6 +329,20 @@ export function HistoryScreen({ active }: Props) {
             <option value="hour">최근 1시간</option>
             <option value="all">전체</option>
           </select>
+          {many && (
+            <select
+              aria-label="시트"
+              value={only ?? ""}
+              onChange={(e) => setOnly(e.target.value === "" ? null : Number(e.target.value))}
+            >
+              <option value="">시트: 전체</option>
+              {sheets.map((m, i) => (
+                <option key={i} value={i}>
+                  {m.sheet}
+                </option>
+              ))}
+            </select>
+          )}
           <select aria-label="사용자" value={user} onChange={(e) => setUser(e.target.value)}>
             <option value="">사용자: 전체</option>
             {(page?.users ?? []).map((u) => (
@@ -311,7 +364,7 @@ export function HistoryScreen({ active }: Props) {
           <input
             aria-label="셀/범위"
             className="mono"
-            placeholder="셀/범위 (예: F7:H7)"
+            placeholder={many ? "셀/범위 (예: F7:H7, 인력계획!E5)" : "셀/범위 (예: F7:H7)"}
             value={rangeText}
             onChange={(e) => setRangeText(e.target.value.toUpperCase())}
           />
@@ -361,13 +414,8 @@ export function HistoryScreen({ active }: Props) {
                     <span className="dot" style={{ background: userColor(b.user) }} />
                     {b.user}
                   </span>
-                  <span className="mono">
-                    {addr(b.range)}
-                    {b.range.rows > 1 || b.range.cols > 1
-                      ? `:${a1(origin.row + b.range.row + b.range.rows - 1, origin.col + b.range.col + b.range.cols - 1)}`
-                      : ""}
-                  </span>
-                  <span className="small muted">{rowLabel(b.range.row)}</span>
+                  <span className="mono">{addr(b.sheet, b.range)}</span>
+                  <span className="small muted">{rowLabel(b.sheet, b.range.row)}</span>
                   <span>
                     <b className={b.alert ? "error" : ""}>
                       {BATCH_LABEL[b.origin] ?? "변경"} · {b.count}셀
@@ -399,7 +447,7 @@ export function HistoryScreen({ active }: Props) {
 
       <aside className="history-side">
         <section className="card" aria-label="셀 타임라인">
-          <b>셀 타임라인{cell ? ` · ${addr(cell)}` : ""}</b>
+          <b>셀 타임라인{cell ? ` · ${addr(cell.sheet, cell)}` : ""}</b>
           {!timeline && <div className="muted small">기록에서 칸을 누르면 그 칸의 변경이 시간순으로 보입니다.</div>}
           {timeline && (
             <ol className="timeline">
@@ -410,8 +458,8 @@ export function HistoryScreen({ active }: Props) {
                     className="link"
                     onClick={() =>
                       void run(async () => {
-                        await api.historySetValue(timeline.at, timeline.original ?? null);
-                        setStatus(`${addr(timeline.at)}을(를) 원본 값으로 되돌렸습니다`);
+                        await api.historySetValue(timeline.sheet, timeline.at, timeline.original ?? null);
+                        setStatus(`${addr(timeline.sheet, timeline.at)}을(를) 원본 값으로 되돌렸습니다`);
                       })
                     }
                   >
@@ -432,8 +480,10 @@ export function HistoryScreen({ active }: Props) {
                         className="link"
                         onClick={() =>
                           void run(async () => {
-                            await api.historySetValue(timeline.at, e.new ?? null);
-                            setStatus(`${addr(timeline.at)}을(를) ${showValue(e.new)}(으)로 바꿨습니다`);
+                            await api.historySetValue(timeline.sheet, timeline.at, e.new ?? null);
+                            setStatus(
+                              `${addr(timeline.sheet, timeline.at)}을(를) ${showValue(e.new)}(으)로 바꿨습니다`,
+                            );
                           })
                         }
                       >
@@ -527,9 +577,9 @@ export function HistoryScreen({ active }: Props) {
                 <span>지금</span>
               </div>
               {diff.cells.map((d) => (
-                <div key={`${d.at.row}:${d.at.col}`} className="drow">
-                  <span className="mono">{addr(d.at)}</span>
-                  <span className="small muted">{diff.labels[d.at.col]}</span>
+                <div key={`${d.sheet}:${d.at.row}:${d.at.col}`} className="drow">
+                  <span className="mono">{addr(d.sheet, d.at)}</span>
+                  <span className="small muted">{diff.sheets[d.sheet]?.labels[d.at.col]}</span>
                   <span>{showValue(d.snapshot)}</span>
                   <span>
                     <b>{showValue(d.current)}</b>

@@ -81,6 +81,29 @@ pub enum ConfigEdit {
     },
 }
 
+/// 여러 시트를 함께 취합할 때 편집이 어디에 닿나([`crate::config::SessionCommon`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditReach {
+    /// 그 시트 설정만(열 역할·셀 예외·행 배정·범위 배정).
+    Sheet,
+    /// 모든 시트가 같이 쓰는 설정(제목·안내·마감, 직접 넣은 명단): 첫 시트에 하고 다른 시트에 옮겨 적는다.
+    Common,
+    /// 참여자 권한: 서식·남의 행·필터·행 추가는 그 시트에, '마감 후 읽기 전용'은 공통.
+    SheetAndCommon,
+}
+
+impl ConfigEdit {
+    pub fn reach(&self) -> EditReach {
+        match self {
+            ConfigEdit::SetMeta { .. } | ConfigEdit::AddPerson { .. } | ConfigEdit::RemovePerson { .. } => {
+                EditReach::Common
+            }
+            ConfigEdit::SetPermissions { .. } => EditReach::SheetAndCommon,
+            _ => EditReach::Sheet,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ConfigError {
     #[error("범위가 표 밖입니다: {0}")]

@@ -179,6 +179,27 @@ try {
   check(true, "이전에 읽은 범위로 되돌리면 다시 읽지 않음");
   await page.screenshot({ path: join(shots, "host-import-budget.png") });
 
+  // 여러 시트: 시트를 더 고르면 그 시트를 미리 보고 미리보기 아래에 고른 시트 탭, 크게 보기에도 같은 탭.
+  const previewTabs = page.locator(".preview").getByRole("tablist", { name: "시트" });
+  await page.getByRole("checkbox", { name: "코드표 불러오기" }).check();
+  await expect(page.getByRole("button", { name: "코드표", pressed: true })).toBeVisible();
+  await expect(previewTabs.getByRole("tab")).toHaveText(["예산신청서", "코드표"]);
+  await waitRead();
+  await page.getByRole("button", { name: /크게 보기/ }).click();
+  const big = page.getByRole("dialog", { name: /미리보기/ });
+  await expect(big.getByRole("tab", { name: "코드표" })).toHaveAttribute("aria-selected", "true");
+  await big.getByRole("tab", { name: "예산신청서" }).click();
+  await expect(big.locator(".mmg-cell").first()).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(big).toHaveCount(0);
+  await page.getByRole("checkbox", { name: "코드표 불러오기" }).uncheck();
+  await expect(previewTabs).toHaveCount(0);
+  await waitRead();
+  check(
+    (await page.getByLabel("데이터 범위").inputValue()) === "A1:I1002",
+    "시트를 더 골랐다 빼면 탭이 사라지고 범위는 그대로",
+  );
+
   // ------------------------------------------------------------ 1b: 예산신청서 취합 설정
   console.log("[1b 취합 설정]");
   await commitButton.click();
@@ -311,7 +332,9 @@ try {
   await expect(page.getByRole("button", { name: "다른시트", pressed: true })).toBeVisible();
   await expect(page.getByLabel("데이터 범위")).toHaveValue("A1:A2", { timeout: 30_000 });
   await waitRead();
+  // 시트 이름을 누르면 그 시트도 고르고 미리 본다. 이 흐름은 '제목있음' 하나만 취합한다.
   await page.getByRole("button", { name: "제목있음", exact: true }).click();
+  await page.getByRole("checkbox", { name: "다른시트 불러오기" }).uncheck();
   await expect(page.getByLabel("데이터 범위")).toHaveValue("A4:G25", { timeout: 30_000 });
   await waitRead();
   check(true, "제목·안내 행과 아래 빈 행을 뺀 표 범위 A4:G25");

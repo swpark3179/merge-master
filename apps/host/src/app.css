@@ -757,7 +757,40 @@ details.more > .more-body {
 
 .list-item.sheet {
   justify-content: flex-start;
-  padding: 12px 14px;
+  padding: 6px 14px;
+}
+
+.list-item.sheet input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* 시트 이름: 누르면 그 시트를 미리 본다(행 전체가 아닌 이름 칸이 버튼). */
+.list-item.sheet button.sheet-name {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.list-item.sheet button.sheet-name:hover:not(:disabled) {
+  border: 0;
+  background: transparent;
+  text-decoration: underline;
+}
+
+.list-item.sheet:not(.picked) {
+  color: var(--muted);
 }
 
 .import-status {
@@ -777,6 +810,25 @@ details.more > .more-body {
   min-height: 0;
   display: flex;
   gap: 16px;
+}
+
+/* 미리보기 그리드 + 그 아래 고른 시트 탭 */
+.preview-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-main .sheet-tabs {
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+}
+
+.preview-main:has(.sheet-tabs) .preview-grid {
+  border-radius: 8px 8px 0 0;
 }
 
 /* 호스트 그리드 스크롤바는 늘 보이게 한다(겹쳐 나타났다 사라지는 스크롤바면 표가 더 있는지 알기 어렵다). */
@@ -1038,6 +1090,29 @@ input.invalid {
 
 .preview-grid.stale {
   opacity: 0.45;
+}
+
+/* 1a 미리보기 크게 보기(창 가득) */
+.modal.preview-modal {
+  width: 96vw;
+  max-height: none;
+  height: 92vh;
+}
+
+.preview-modal .preview-grid {
+  flex: 1;
+}
+
+.field.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.field.inline input[type="number"] {
+  width: 56px;
+  text-align: center;
 }
 
 /* ---------------------------------------------------------------- 1b 취합 설정 */
@@ -2107,6 +2182,19 @@ button.big-btn {
   color: var(--ink);
 }
 
+/* 여러 시트: 시트별 요약 */
+.sheet-summary {
+  display: grid;
+  gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.sheet-summary .stat-row {
+  margin-top: 0;
+}
+
 /* 저장 전 확인(원본과 겹치는 칸) */
 .review {
   display: flex;
@@ -2359,4 +2447,54 @@ button.save-btn {
 
 .done-actions {
   margin-top: 6px;
+}
+
+/* 여러 시트: 그리드 아래 시트 탭(엑셀처럼) */
+.sheet-tabs {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  gap: 2px;
+  min-height: 30px;
+  padding: 0 8px;
+  overflow-x: auto;
+  border-top: 1px solid var(--line);
+  background: #f4f3f0;
+}
+
+.sheet-tabs button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  margin-top: -1px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-top-color: transparent;
+  border-radius: 0 0 6px 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.sheet-tabs button[aria-selected="true"] {
+  border-top-color: #fff;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 700;
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.sheet-tabs .count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #fde2e2;
+  color: #b42318;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
 }

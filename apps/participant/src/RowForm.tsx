@@ -25,7 +25,7 @@ export function RowForm({ s, myRows, row, onRow, onShowInGrid }: Props) {
   const sheet = s.sheet!;
   const model = sheet.model;
   const flags = s.flags;
-  const { columns, labels } = w;
+  const { columns, labels } = s.view!;
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"all" | "missing">("all");
   const hiddenRows = useMemo(() => new Set(model.hiddenRows), [model]);
@@ -80,7 +80,7 @@ export function RowForm({ s, myRows, row, onRow, onShowInGrid }: Props) {
   const { rowHistory } = s;
   useEffect(() => {
     if (current !== null) rowHistory(current);
-  }, [current, sheet.myChanges, rowHistory]);
+  }, [current, sheet.myChanges, rowHistory, s.active]);
 
   const fieldRefs = useRef<(HTMLElement | null)[]>([]);
 
@@ -125,7 +125,8 @@ export function RowForm({ s, myRows, row, onRow, onShowInGrid }: Props) {
           .slice(0, 12)
       : [];
 
-  const history = s.history?.row === current ? s.history.entries.slice(-3).reverse() : [];
+  const history =
+    s.history?.sheet === s.active && s.history.row === current ? s.history.entries.slice(-3).reverse() : [];
 
   return (
     <div className="row-form">
@@ -305,7 +306,13 @@ function Field({
   // 남이 먼저 잡았으면(잠금 거절) 이 칸을 떠난다.
   const { lockEvent } = s;
   useEffect(() => {
-    if (lockEvent?.kind === "denied" && lockEvent.at.row === at.row && lockEvent.at.col === at.col && focused) {
+    if (
+      lockEvent?.kind === "denied" &&
+      lockEvent.sheet === s.active &&
+      lockEvent.at.row === at.row &&
+      lockEvent.at.col === at.col &&
+      focused
+    ) {
       (document.activeElement as HTMLElement | null)?.blur();
       s.notify(
         lockEvent.by ? `${lockEvent.by} 님이 입력 중입니다` : (lockEvent.reason ?? "입력할 수 없습니다"),

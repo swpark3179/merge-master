@@ -134,7 +134,7 @@ async fn join_pending_approve_and_switch_over_websocket() {
     assert!(matches!(kicked, ServerMsg::Kicked { reason: KickReason::SwitchedDevice }));
 
     // 커서는 다른 참여자에게 전달된다.
-    send(&mut c, &ClientMsg::Cursor { at: Some(collect_core::CellRef::new(10, 5)) }).await;
+    send(&mut c, &ClientMsg::Cursor { sheet: 0, at: Some(collect_core::CellRef::new(10, 5)) }).await;
     let cur = until(&mut b, |m| matches!(m, ServerMsg::Cursor { .. })).await;
     assert!(matches!(cur, ServerMsg::Cursor { name, .. } if name == "김민지"));
 
@@ -178,10 +178,10 @@ async fn edits_flow_over_websocket_and_survive_restart() {
     let mut b = open(addr).await;
     let w = enter(&session, &mut a, "이서연").await;
     let tb = enter(&session, &mut b, "최도윤").await.token;
-    let row = w.row_owner.iter().position(|&o| o == 0).unwrap() as u32;
+    let row = w.sheets[0].row_owner.iter().position(|&o| o == 0).unwrap() as u32;
 
     let cells = vec![CellEdit { row, col: 5, value: CellValue::Text("9,800".into()), base: 0 }];
-    send(&mut a, &ClientMsg::SetCells { batch: "b1".into(), cells, origin: None }).await;
+    send(&mut a, &ClientMsg::SetCells { sheet: 0, batch: "b1".into(), cells, origin: None }).await;
     let ok = until(&mut a, |m| matches!(m, ServerMsg::Applied { .. })).await;
     assert!(matches!(ok, ServerMsg::Applied { cells, .. } if cells[0].value == CellValue::Number(9800.0)));
     let seen = until(&mut b, |m| matches!(m, ServerMsg::Cells { .. })).await;
@@ -204,7 +204,7 @@ async fn edits_flow_over_websocket_and_survive_restart() {
     let mut c = open(again.local_addr).await;
     send(&mut c, &ClientMsg::Join { name: "최도윤".into(), token: Some(tb), protocol: PROTOCOL_VERSION }).await;
     let ServerMsg::Welcome(w) = until(&mut c, |m| matches!(m, ServerMsg::Welcome(_))).await else { unreachable!() };
-    assert_eq!(w.model.cells[(row * w.model.cols + 5) as usize].v, CellValue::Number(9800.0));
+    assert_eq!(w.sheets[0].model.cells[(row * w.sheets[0].model.cols + 5) as usize].v, CellValue::Number(9800.0));
     let history = session.with(|s| s.history().len()).await.unwrap();
     assert_eq!(history, 1);
     again.stop().await;
@@ -218,8 +218,8 @@ async fn snapshot_is_published_before_host_job_returns() {
     for round in 0..20 {
         session
             .with(move |s| {
-                s.config.assignment.key_col = if round % 2 == 0 { None } else { Some(2) };
-                s.config.assignment.extra_people = vec!["한 명".into()];
+                s.sheets[0].config.assignment.key_col = if round % 2 == 0 { None } else { Some(2) };
+                s.sheets[0].config.assignment.extra_people = vec!["한 명".into()];
                 s.changed();
             })
             .await

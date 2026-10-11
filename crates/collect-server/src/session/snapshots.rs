@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use collect_core::CellValue;
-use collect_store::{SnapshotKind, SnapshotMeta, pack, unpack};
+use collect_store::{SnapshotKind, SnapshotMeta, pack_sheets, unpack_sheets};
 use tokio::time::Instant;
 
 use super::State;
@@ -34,8 +34,9 @@ impl Snapshots {
     }
 }
 
-pub(super) fn values_of(list: &[(SnapshotMeta, Vec<u8>)], id: u32) -> Option<Vec<CellValue>> {
-    list.iter().find(|(m, _)| m.id == id).and_then(|(_, data)| unpack(data).ok())
+/// 스냅샷의 셀 값(시트마다). 여러 시트 전의 스냅샷은 시트 하나.
+pub(super) fn values_of(list: &[(SnapshotMeta, Vec<u8>)], id: u32) -> Option<Vec<Vec<CellValue>>> {
+    list.iter().find(|(m, _)| m.id == id).and_then(|(_, data)| unpack_sheets(data).ok())
 }
 
 fn default_label(kind: SnapshotKind) -> &'static str {
@@ -48,10 +49,11 @@ fn default_label(kind: SnapshotKind) -> &'static str {
 }
 
 impl State {
-    /// 지금 시트 값으로 스냅샷을 남긴다.
+    /// 지금 시트(모든 시트) 값으로 스냅샷을 남긴다.
     pub(super) fn take_snapshot(&mut self, kind: SnapshotKind, label: &str) -> u32 {
-        let values: Vec<CellValue> = self.model.cells.iter().map(|c| c.v.clone()).collect();
-        let data = pack(&values);
+        let values: Vec<Vec<CellValue>> =
+            self.sheets.iter().map(|s| s.model.cells.iter().map(|c| c.v.clone()).collect()).collect();
+        let data = pack_sheets(&values);
         let id = self.snapshots.next_id;
         self.snapshots.next_id += 1;
         let label = if label.trim().is_empty() { default_label(kind).to_string() } else { label.trim().to_string() };

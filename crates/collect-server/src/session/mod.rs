@@ -18,8 +18,8 @@ mod snapshots;
 pub use comms::CommsData;
 pub use comms::{CommsSnapshot, HighlightAudience, HighlightSummary, NoticeSummary, NoticeTarget};
 pub use persist::{
-    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_SERVER, Recovered, Restore,
-    ServerMeta, recover,
+    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_SERVER, META_SHEETS, Recovered,
+    Restore, ServerMeta, meta_sheets, recover,
 };
 pub use snapshots::AUTO_SNAPSHOT;
 
@@ -27,14 +27,15 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
-use collect_core::access::{Access, ProgressStats};
-use collect_core::config::{CollectConfig, OthersRows};
+use collect_core::a1::sheet_prefix;
+use collect_core::access::{Access, ProgressStats, Viewer, union_roster};
+use collect_core::config::{CollectConfig, OthersRows, SessionCommon};
 use collect_core::detect::{TableGuess, column_labels};
-use collect_core::edit::ConfigEdit;
+use collect_core::edit::{ConfigEdit, EditReach};
 use collect_core::history::BatchOrigin;
-use collect_core::project::project;
-use collect_core::view::encode_flags;
-use collect_core::{CellRange, CellRef, CellStyle, CellValue, SheetModel};
+use collect_core::project::project_with;
+use collect_core::view::{ConfigView, config_view_with, encode_flags};
+use collect_core::{CellRange, CellRef, CellStyle, CellValue, SheetCell, SheetModel};
 use collect_store::{SnapshotKind, SnapshotMeta, Store};
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -43,8 +44,8 @@ use ts_rs::TS;
 
 use crate::ipnames::IpNames;
 use crate::protocol::{
-    CellUpdate, ChangeEntry, ChatTo, ClientMsg, KickReason, LockEntry, PROTOCOL_VERSION, PresenceEntry, PresenceStatus,
-    ServerMsg, SessionInfo, StyleChange, Welcome,
+    CellUpdate, ChangeEntry, ChatTo, ClientMsg, KickReason, LockEntry, PROTOCOL_VERSION, PersonProgress, PresenceEntry,
+    PresenceStatus, ServerMsg, SessionInfo, SheetView, StyleChange, Welcome,
 };
 
 /// 이만큼 입력·이동이 없으면 '자리 비움'.
@@ -66,9 +67,36 @@ pub(crate) enum Outgoing {
     Close,
 }
 
-pub struct SessionInit {
+/// 세션의 시트 하나: 지금 시트·그 시트 설정·기준 시트(엑셀 저장은 이것과 비교해 바뀐 칸만 쓴다).
+///
+/// 여러 시트를 함께 취합할 때 공통 설정([`SessionCommon`]: 제목·안내·요청자·마감·'마감 후 읽기 전용'·직접 넣은 명단)은
+/// **첫 시트 설정이 주인**이고, 세션이 다른 시트 설정에 옮겨 적는다(다른 시트에서 직접 고친 공통 설정은 덮어쓴다).
+#[derive(Debug, Clone)]
+pub struct SheetSlot {
     pub model: SheetModel,
     pub config: CollectConfig,
+    /// 불러온 시점(또는 마지막으로 원본에 저장한 시점)의 시트.
+    pub baseline: SheetModel,
+}
+
+impl SheetSlot {
+    pub fn new(model: SheetModel, config: CollectConfig) -> Self {
+        Self { baseline: model.clone(), model, config }
+    }
+}
+
+/// 첫 시트의 공통 설정을 다른 시트에 옮겨 적는다.
+fn sync_common(sheets: &mut [SheetSlot]) {
+    let Some((first, rest)) = sheets.split_first_mut() else { return };
+    let common = SessionCommon::of(&first.config);
+    for s in rest {
+        common.write_to(&mut s.config);
+    }
+}
+
+pub struct SessionInit {
+    /// 불러온 순서(= 통합문서 시트 순서). 하나 이상.
+    pub sheets: Vec<(SheetModel, CollectConfig)>,
     /// 셀 변경 기록·스냅샷을 남길 파일(없으면 메모리에만).
     pub store: Option<Store>,
     /// 기록 파일에서 되살릴 상태([`recover`]가 채운다).
@@ -77,7 +105,12 @@ pub struct SessionInit {
 
 impl SessionInit {
     pub fn new(model: SheetModel, config: CollectConfig) -> Self {
-        Self { model, config, store: None, restore: None }
+        Self::multi(vec![(model, config)])
+    }
+
+    pub fn multi(sheets: Vec<(SheetModel, CollectConfig)>) -> Self {
+        assert!(!sheets.is_empty(), "시트가 하나 이상 있어야 합니다");
+        Self { sheets, store: None, restore: None }
     }
 }
 
@@ -88,10 +121,12 @@ impl SessionInit {
 pub enum HostEvent {
     /// `by`가 빈 문자열이면 수식 재계산 결과.
     Cells {
+        sheet: u32,
         by: String,
         cells: Vec<CellUpdate>,
     },
     Styles {
+        sheet: u32,
         styles: Vec<CellStyle>,
         changes: Vec<StyleChange>,
     },
@@ -120,13 +155,14 @@ pub struct ParticipantRow {
     pub status: ParticipantStatus,
     /// 마지막 활동 뒤 지난 분(접속 중일 때).
     pub idle_mins: u32,
-    /// 예: "행 3–7, 13–17 + I3:I1002"
+    /// 예: "행 3–7, 13–17 + I3:I1002". 시트가 둘 이상이면 시트마다 "예산신청서: 행 3–7 · 인력계획: F3:F9".
     pub assignment: String,
     #[ts(optional)]
-    pub cursor: Option<CellRef>,
+    pub cursor: Option<SheetCell>,
     /// 지금 편집 중(잠근) 칸.
     #[ts(optional)]
-    pub editing: Option<CellRef>,
+    pub editing: Option<SheetCell>,
+    /// 필수 칸(모든 시트 합).
     pub required: u32,
     pub filled: u32,
     #[ts(optional)]
@@ -140,6 +176,16 @@ pub struct PendingRow {
     pub ip: String,
 }
 
+/// 시트 하나의 필수 진행률(1c·1d 시트 탭).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SheetProgress {
+    pub name: String,
+    pub required: u32,
+    pub filled: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -148,6 +194,7 @@ pub struct HostSnapshot {
     pub pending: Vec<PendingRow>,
     pub online: u32,
     pub roster: u32,
+    /// 필수 칸(모든 시트 합).
     pub required: u32,
     pub filled: u32,
     pub read_only: bool,
@@ -155,39 +202,43 @@ pub struct HostSnapshot {
     pub closed: bool,
     /// 참여자에게 보이는 호스트 이름(호스트 PC의 IP가 IP 명단에 있으면 그 이름).
     pub host_name: String,
+    /// 시트마다(불러온 순서).
+    pub sheets: Vec<SheetProgress>,
 }
 
-/// 수식 재계산 요청: 바뀐 입력 칸(모델 좌표)과 값. 호스트(Excel)가 계산해 [`SessionHandle::formula_results`]로 돌려준다.
+/// 수식 재계산 요청: 바뀐 입력 칸(시트 순번, 모델 좌표)과 값. 호스트(Excel)가 계산해 [`SessionHandle::formula_results`]로
+/// 돌려준다.
 #[derive(Debug, Clone)]
 pub struct RecalcRequest {
-    pub writes: Vec<(CellRef, CellValue)>,
+    pub writes: Vec<(u32, CellRef, CellValue)>,
 }
 
 /// 호스트가 `with` 안에서 요청한 일(작업이 끝난 뒤 순서대로 한다).
 enum Action {
-    Set { user: String, origin: BatchOrigin, cells: Vec<(CellRef, CellValue)> },
+    Set { user: String, origin: BatchOrigin, sheet: usize, cells: Vec<(CellRef, CellValue)> },
     Snapshot { kind: SnapshotKind, label: String },
     Close(bool),
     Notice { text: String, important: bool, target: NoticeTarget },
-    Highlight { range: CellRange, note: String, audience: HighlightAudience },
+    Highlight { sheet: usize, range: CellRange, note: String, audience: HighlightAudience },
     ClearHighlight(u32),
     Chat { to: ChatTo, text: String },
     Store(Store),
     Meta(String, String),
 }
 
+const NO_SHEET: &str = "없는 시트입니다";
+
 /// [`SessionHandle::with`] 안에서 호스트가 보는 세션 상태.
 pub struct Shared<'a> {
-    pub model: &'a mut SheetModel,
-    pub config: &'a mut CollectConfig,
-    /// 불러온 시점(또는 마지막으로 원본에 저장한 시점)의 시트. 엑셀 저장은 이것과 비교해 바뀐 칸만 쓴다.
-    pub baseline: &'a mut SheetModel,
+    /// 시트마다(불러온 순서). 시트를 더하거나 빼려면 [`Shared::replace`].
+    pub sheets: &'a mut [SheetSlot],
+    rt: &'a [SheetRt],
     history: &'a [ChangeEntry],
     snapshots: &'a [(SnapshotMeta, Vec<u8>)],
     closed: bool,
     host_name: String,
     changed: bool,
-    replaced: bool,
+    replacement: Option<Vec<(SheetModel, CollectConfig)>>,
     actions: Vec<Action>,
 }
 
@@ -203,13 +254,56 @@ impl Shared<'_> {
         self.changed = true;
     }
 
-    /// 다른 시트로 바꿨다(다시 불러와 확정): 셀 버전·잠금·이력을 새로 시작한다.
-    pub fn replace(&mut self, model: SheetModel, config: CollectConfig) {
-        *self.baseline = model.clone();
-        *self.model = model;
-        *self.config = config;
-        self.replaced = true;
+    /// 다른 시트(들)로 바꿨다(다시 불러와 확정): 작업이 끝나면 셀 버전·잠금·이력을 새로 시작한다.
+    pub fn replace(&mut self, sheets: Vec<(SheetModel, CollectConfig)>) {
+        assert!(!sheets.is_empty(), "시트가 하나 이상 있어야 합니다");
+        self.replacement = Some(sheets);
         self.changed = true;
+    }
+
+    fn slot(&self, sheet: usize) -> Result<&SheetSlot, String> {
+        self.sheets.get(sheet).ok_or_else(|| NO_SHEET.to_string())
+    }
+
+    /// 지금 명단(모든 시트 명단의 합집합, 사람 인덱스 = 색).
+    pub fn roster(&self) -> Vec<String> {
+        union_roster(self.sheets.iter().map(|s| (&s.model, &s.config)))
+    }
+
+    /// 1b·1d 화면이 그릴 설정 보기(합집합 명단 기준). `viewer`를 주면 그 참여자 시점.
+    pub fn view(&self, sheet: usize, viewer: Option<&str>) -> Result<ConfigView, String> {
+        let s = self.slot(sheet)?;
+        config_view_with(&s.model, &s.config, viewer, &self.roster()).map_err(|e| e.to_string())
+    }
+
+    /// 1b 설정 편집. 공통 설정(제목·안내·마감, 직접 넣은 명단)은 첫 시트에 하고 다른 시트에 옮겨 적는다
+    /// ([`ConfigEdit::reach`]).
+    pub fn apply(&mut self, sheet: usize, edit: ConfigEdit) -> Result<(), String> {
+        self.slot(sheet)?;
+        match edit.reach() {
+            EditReach::Sheet => {
+                let s = &mut self.sheets[sheet];
+                s.config.apply(&s.model, edit).map_err(|e| e.to_string())?;
+            }
+            EditReach::Common => {
+                let s = &mut self.sheets[0];
+                s.config.apply(&s.model, edit).map_err(|e| e.to_string())?;
+            }
+            EditReach::SheetAndCommon => {
+                let s = &mut self.sheets[sheet];
+                s.config.apply(&s.model, edit).map_err(|e| e.to_string())?;
+                let lock = s.config.permissions.lock_after_deadline;
+                self.sheets[0].config.permissions.lock_after_deadline = lock;
+            }
+        }
+        sync_common(self.sheets);
+        self.changed = true;
+        Ok(())
+    }
+
+    /// 세션이 센 필수 진행률(합집합 명단 기준). 이 작업 안에서 바꾼 설정은 작업이 끝난 뒤 반영된다.
+    pub fn progress(&self, sheet: usize) -> Option<&ProgressStats> {
+        self.rt.get(sheet).map(|r| &r.progress)
     }
 
     /// 셀 변경 기록(오래된 것부터).
@@ -219,9 +313,9 @@ impl Shared<'_> {
 
     /// 호스트가 칸 값을 바꾼다(되돌리기·이 값으로·'Excel 값 유지'). 참여자 입력처럼 버전·이력·진행률에 반영하고 알린다.
     /// 수식 칸은 건너뛴다.
-    pub fn host_set(&mut self, user: &str, origin: BatchOrigin, cells: Vec<(CellRef, CellValue)>) {
-        if !cells.is_empty() {
-            self.actions.push(Action::Set { user: user.to_string(), origin, cells });
+    pub fn host_set(&mut self, user: &str, origin: BatchOrigin, sheet: usize, cells: Vec<(CellRef, CellValue)>) {
+        if !cells.is_empty() && sheet < self.sheets.len() {
+            self.actions.push(Action::Set { user: user.to_string(), origin, sheet, cells });
         }
     }
 
@@ -247,14 +341,16 @@ impl Shared<'_> {
         self.snapshots.iter().map(|(m, _)| m.clone()).collect()
     }
 
-    /// 스냅샷의 셀 값(행 우선). 스냅샷 뒤에 표 아래에 붙인 행은 빈 칸으로 채워 지금 시트 크기로 돌려준다.
-    pub fn snapshot_values(&self, id: u32) -> Option<Vec<CellValue>> {
-        let mut values = snapshots::values_of(self.snapshots, id)?;
-        let cols = self.model.cols.max(1) as usize;
-        if values.len() < self.model.cells.len() && values.len() % cols == 0 {
-            values.resize(self.model.cells.len(), CellValue::Empty);
+    /// 스냅샷의 셀 값(시트마다 행 우선). 스냅샷 뒤에 표 아래에 붙인 행은 빈 칸으로 채워 지금 시트 크기로 돌려준다.
+    pub fn snapshot_values(&self, id: u32) -> Option<Vec<Vec<CellValue>>> {
+        let mut sheets = snapshots::values_of(self.snapshots, id)?;
+        for (values, slot) in sheets.iter_mut().zip(self.sheets.iter()) {
+            let cols = slot.model.cols.max(1) as usize;
+            if values.len() < slot.model.cells.len() && values.len() % cols == 0 {
+                values.resize(slot.model.cells.len(), CellValue::Empty);
+            }
         }
-        Some(values)
+        Some(sheets)
     }
 
     /// 지금 시트로 스냅샷을 남긴다(작업이 끝난 뒤).
@@ -262,20 +358,31 @@ impl Shared<'_> {
         self.actions.push(Action::Snapshot { kind: SnapshotKind::Manual, label: label.to_string() });
     }
 
-    /// 스냅샷 시점으로 되돌린다: 먼저 '복원 직전' 스냅샷을 남기고, 다른 칸을 스냅샷 값으로 바꾼다. 바꿀 칸 수를 돌려준다.
+    /// 스냅샷 시점으로 되돌린다: 먼저 '복원 직전' 스냅샷을 남기고, 시트마다 다른 칸을 스냅샷 값으로 바꾼다. 바꿀 칸 수를
+    /// 돌려준다.
     pub fn restore(&mut self, id: u32, user: &str) -> Result<usize, String> {
-        let values = self.snapshot_values(id).ok_or("스냅샷을 찾을 수 없습니다")?;
-        if values.len() != self.model.cells.len() {
+        let sheets = self.snapshot_values(id).ok_or("스냅샷을 찾을 수 없습니다")?;
+        if sheets.len() != self.sheets.len()
+            || sheets.iter().zip(self.sheets.iter()).any(|(v, s)| v.len() != s.model.cells.len())
+        {
             return Err("다른 시트의 스냅샷입니다".into());
         }
-        let cells: Vec<(CellRef, CellValue)> = collect_core::history::diff(&values, self.model)
-            .into_iter()
-            .map(|at| (at, values[(at.row * self.model.cols + at.col) as usize].clone()))
+        let plans: Vec<Vec<(CellRef, CellValue)>> = sheets
+            .iter()
+            .zip(self.sheets.iter())
+            .map(|(values, s)| {
+                collect_core::history::diff(values, &s.model)
+                    .into_iter()
+                    .map(|at| (at, values[(at.row * s.model.cols + at.col) as usize].clone()))
+                    .collect()
+            })
             .collect();
-        let n = cells.len();
+        let n: usize = plans.iter().map(Vec::len).sum();
         if n > 0 {
             self.actions.push(Action::Snapshot { kind: SnapshotKind::BeforeRestore, label: String::new() });
-            self.host_set(user, BatchOrigin::Restore, cells);
+            for (sheet, cells) in plans.into_iter().enumerate() {
+                self.host_set(user, BatchOrigin::Restore, sheet, cells);
+            }
         }
         Ok(n)
     }
@@ -285,9 +392,11 @@ impl Shared<'_> {
         self.actions.push(Action::Notice { text: text.to_string(), important, target });
     }
 
-    /// 셀을 강조한다(노란 표시 + 말풍선). 범위는 모델 좌표.
-    pub fn highlight(&mut self, range: CellRange, note: &str, audience: HighlightAudience) {
-        self.actions.push(Action::Highlight { range, note: note.to_string(), audience });
+    /// 셀을 강조한다(노란 표시 + 말풍선). 범위는 그 시트의 모델 좌표.
+    pub fn highlight(&mut self, sheet: usize, range: CellRange, note: &str, audience: HighlightAudience) {
+        if sheet < self.sheets.len() {
+            self.actions.push(Action::Highlight { sheet, range, note: note.to_string(), audience });
+        }
     }
 
     pub fn clear_highlight(&mut self, id: u32) {
@@ -319,14 +428,14 @@ pub(crate) enum Command {
     Connect { conn: ConnId, ip: IpAddr, outbox: mpsc::UnboundedSender<Outgoing> },
     Client { conn: ConnId, msg: ClientMsg },
     Disconnect { conn: ConnId },
-    Approve { name: String, range: Option<CellRange>, note: String, reply: oneshot::Sender<Result<(), String>> },
+    Approve { name: String, range: Option<(u32, CellRange)>, note: String, reply: oneshot::Sender<Result<(), String>> },
     Reject { name: String, reply: oneshot::Sender<Result<(), String>> },
     Kick { name: String, reply: oneshot::Sender<Result<(), String>> },
     Unlock { name: String, reply: oneshot::Sender<Result<(), String>> },
     With(HostJob),
     SetIpNames(IpNames),
     SetRecalc(Option<mpsc::UnboundedSender<RecalcRequest>>),
-    Formulas(Vec<(CellRef, CellValue)>),
+    Formulas(Vec<(u32, CellRef, CellValue)>),
     Tick,
 }
 
@@ -414,9 +523,9 @@ impl SessionHandle {
         .await
     }
 
-    /// 승인을 기다리는 참여자를 들인다: 명단에 없는 이름이면 명단에 넣고(범위를 주면 범위 배정도) 들인다.
+    /// 승인을 기다리는 참여자를 들인다: 명단에 없는 이름이면 명단에 넣고(범위를 주면 그 시트에 범위 배정도) 들인다.
     /// 같은 이름이 다른 기기에서 접속 중이면 그 연결은 끊는다.
-    pub async fn approve(&self, name: &str, range: Option<CellRange>, note: &str) -> Result<(), String> {
+    pub async fn approve(&self, name: &str, range: Option<(u32, CellRange)>, note: &str) -> Result<(), String> {
         let (name, note) = (name.to_string(), note.to_string());
         self.ask(|reply| Command::Approve { name, range, note, reply }).await?
     }
@@ -447,8 +556,8 @@ impl SessionHandle {
         self.send(Command::SetRecalc(tx));
     }
 
-    /// 재계산된 수식 칸 값(모델 좌표). 바뀐 칸만 참여자에게 보낸다.
-    pub fn formula_results(&self, values: Vec<(CellRef, CellValue)>) {
+    /// 재계산된 수식 칸 값(시트 순번, 모델 좌표). 바뀐 칸만 참여자에게 보낸다.
+    pub fn formula_results(&self, values: Vec<(u32, CellRef, CellValue)>) {
         self.send(Command::Formulas(values));
     }
 
@@ -500,7 +609,7 @@ struct Person {
     token: String,
     conn: Option<ConnId>,
     last_active: Instant,
-    cursor: Option<CellRef>,
+    cursor: Option<SheetCell>,
     ip: Option<IpAddr>,
 }
 
@@ -516,9 +625,8 @@ struct Lock {
     orphaned: Option<Instant>,
 }
 
-struct State {
-    model: SheetModel,
-    config: CollectConfig,
+/// 시트 하나에서 세션이 계산하거나 쌓는 것(시트·설정은 [`SheetSlot`]).
+struct SheetRt {
     access: Access,
     /// 필수 진행률. 시트·설정이 바뀔 때 다시 세고, 셀 수정은 증분으로 반영한다.
     progress: ProgressStats,
@@ -526,29 +634,61 @@ struct State {
     /// '남의 행 숨김'일 때 사람마다 보이는 행(머리글 포함). 읽기 전용 정책이면 비어 있다.
     visible: HashMap<usize, Vec<bool>>,
     has_formulas: bool,
+    // ---- 편집(edit.rs)
+    versions: Vec<u32>,
+    /// 칸(행 우선 인덱스) → 편집 잠금. 한 사람은 모든 시트를 통틀어 한 칸만 잠근다.
+    locks: HashMap<usize, Lock>,
+    /// 칸마다 마지막으로 바꾼 사람(충돌 판정: 내가 연달아 바꾼 것은 충돌이 아니다).
+    writer: HashMap<usize, String>,
+    /// 계산 사본에 있는 행 수(재계산을 켤 때의 시트). 그 뒤 붙인 행은 사본에 없어 저장할 때 계산한다.
+    recalc_rows: u32,
+    /// 사람마다 이 시트의 배정 요약(1c 접속자 표).
+    assignment: Vec<String>,
+}
+
+impl SheetRt {
+    fn new(slot: &SheetSlot) -> Self {
+        Self {
+            access: Access::compile(&slot.model, &slot.config),
+            progress: ProgressStats::default(),
+            labels: Vec::new(),
+            visible: HashMap::new(),
+            has_formulas: false,
+            versions: vec![0; slot.model.cells.len()],
+            locks: HashMap::new(),
+            writer: HashMap::new(),
+            recalc_rows: 0,
+            assignment: Vec::new(),
+        }
+    }
+
+    fn cell_of(&self, i: usize, cols: u32) -> CellRef {
+        let cols = cols.max(1);
+        CellRef::new(i as u32 / cols, i as u32 % cols)
+    }
+}
+
+struct State {
+    sheets: Vec<SheetSlot>,
+    rt: Vec<SheetRt>,
+    /// 모든 시트 명단의 합집합(사람 인덱스 = 색). 시트마다의 권한 엔진도 이 순서를 쓴다.
+    roster: Vec<String>,
+    /// 어느 시트에든 수식이 있다(수식은 다른 시트를 볼 수 있어, 어느 시트를 고쳐도 다시 계산한다).
+    any_formulas: bool,
     deadline: Option<chrono::NaiveDateTime>,
     /// 호스트가 취합을 마감했다(저장 뒤 '읽기 전용으로 전환' 등).
     closed: bool,
     /// 마감 시각이 지났거나 호스트가 마감했다.
     read_only: bool,
-    /// 불러온 시점(또는 마지막으로 원본에 저장한 시점)의 시트.
-    baseline: SheetModel,
     conns: HashMap<ConnId, Conn>,
     people: HashMap<String, Person>,
     pending: Vec<Pending>,
     last_presence: Vec<PresenceEntry>,
-    // ---- 편집(edit.rs)
-    versions: Vec<u32>,
-    locks: HashMap<usize, Lock>,
-    /// 칸마다 마지막으로 바꾼 사람(충돌 판정: 내가 연달아 바꾼 것은 충돌이 아니다).
-    writer: HashMap<usize, String>,
     /// 반영한 묶음(`이름 + NUL + 묶음 ID`). 다시 연결한 뒤 같은 묶음을 또 보내도 한 번만 반영한다.
     applied: HashSet<String>,
     log: Vec<ChangeEntry>,
     next_seq: u64,
     recalc: Option<mpsc::UnboundedSender<RecalcRequest>>,
-    /// 계산 사본에 있는 행 수(재계산을 켤 때의 시트). 그 뒤 붙인 행은 사본에 없어 저장할 때 계산한다.
-    recalc_rows: u32,
     /// 호스트가 관리하는 IP별 이름: 이 IP에서 오면 이름을 묻지 않고 그 이름으로 들어온다.
     ip_names: IpNames,
     /// 이 PC(호스트)의 IP. IP 명단에 있으면 그 이름이 호스트 이름이다.
@@ -585,17 +725,13 @@ fn parse_deadline(text: Option<&str>) -> Option<chrono::NaiveDateTime> {
 
 impl State {
     fn new(init: SessionInit) -> Self {
-        let SessionInit { model, config, store, restore } = init;
-        let cells = model.cells.len();
+        let SessionInit { sheets, store, restore } = init;
+        let sheets: Vec<SheetSlot> = sheets.into_iter().map(|(m, c)| SheetSlot::new(m, c)).collect();
         let mut s = Self {
-            access: Access::compile(&model, &config),
-            baseline: model.clone(),
-            model,
-            config,
-            progress: ProgressStats::default(),
-            labels: Vec::new(),
-            visible: HashMap::new(),
-            has_formulas: false,
+            rt: sheets.iter().map(SheetRt::new).collect(),
+            sheets,
+            roster: Vec::new(),
+            any_formulas: false,
             deadline: None,
             closed: false,
             read_only: false,
@@ -603,14 +739,10 @@ impl State {
             people: HashMap::new(),
             pending: Vec::new(),
             last_presence: Vec::new(),
-            versions: vec![0; cells],
-            locks: HashMap::new(),
-            writer: HashMap::new(),
             applied: HashSet::new(),
             log: Vec::new(),
             next_seq: 1,
             recalc: None,
-            recalc_rows: 0,
             ip_names: IpNames::default(),
             host_ips: local_ips(),
             comms: comms::Comms::default(),
@@ -637,6 +769,12 @@ impl State {
 
     fn feed(&self, event: HostEvent) {
         let _ = self.host_feed.send(event);
+    }
+
+    /// 클라이언트가 보낸 시트 순번(없는 시트면 `None`).
+    fn sheet_index(&self, sheet: u32) -> Option<usize> {
+        let i = sheet as usize;
+        (i < self.sheets.len()).then_some(i)
     }
 
     /// 명령 하나를 처리한다. 호스트 작업이면 상태를 내보낸 뒤 부를 일을 돌려준다.
@@ -672,7 +810,9 @@ impl State {
             Command::SetIpNames(names) => self.set_ip_names(names),
             Command::SetRecalc(tx) => {
                 self.recalc = tx;
-                self.recalc_rows = self.model.rows;
+                for (rt, slot) in self.rt.iter_mut().zip(&self.sheets) {
+                    rt.recalc_rows = slot.model.rows;
+                }
             }
             Command::Formulas(values) => self.formulas(values),
             Command::Tick => {
@@ -690,22 +830,22 @@ impl State {
         match msg {
             ClientMsg::Join { name, token, protocol } => self.join(conn, &name, token, protocol),
             ClientMsg::SwitchDevice { name } => self.switch_device(conn, &name),
-            ClientMsg::Cursor { at } => self.cursor(conn, at),
+            ClientMsg::Cursor { sheet, at } => self.cursor(conn, sheet, at),
             ClientMsg::Ping => {
                 self.touch(conn);
                 self.send(conn, ServerMsg::Pong);
             }
-            ClientMsg::Lock { at } => self.lock(conn, at),
-            ClientMsg::Unlock { at } => self.unlock(conn, at),
-            ClientMsg::SetCells { batch, cells, origin } => {
-                self.set_cells(conn, batch, cells, origin.unwrap_or_default())
+            ClientMsg::Lock { sheet, at } => self.lock(conn, sheet, at),
+            ClientMsg::Unlock { sheet, at } => self.unlock(conn, sheet, at),
+            ClientMsg::SetCells { sheet, batch, cells, origin } => {
+                self.set_cells(conn, sheet, batch, cells, origin.unwrap_or_default())
             }
-            ClientMsg::RowHistory { row } => self.row_history(conn, row),
-            ClientMsg::Format { range, patch } => self.format(conn, range, patch),
+            ClientMsg::RowHistory { sheet, row } => self.row_history(conn, sheet, row),
+            ClientMsg::Format { sheet, range, patch } => self.format(conn, sheet, range, patch),
             ClientMsg::AckNotice { id } => self.ack_notice(conn, id),
             ClientMsg::AckHighlight { id } => self.ack_highlight(conn, id),
             ClientMsg::Chat { to, text } => self.chat(conn, to, text),
-            ClientMsg::AddRows { count } => self.add_rows(conn, count),
+            ClientMsg::AddRows { sheet, count } => self.add_rows(conn, sheet, count),
         }
     }
 
@@ -732,20 +872,25 @@ impl State {
         }
     }
 
+    /// 명단에서 그 이름의 인덱스(색).
+    fn person(&self, name: &str) -> Option<usize> {
+        self.roster.iter().position(|p| p.trim() == name.trim())
+    }
+
     /// 입장한 연결과 그 사람(명단 인덱스).
     fn attached(&self) -> Vec<(ConnId, usize)> {
-        self.conns.iter().filter_map(|(id, c)| Some((*id, self.access.person(c.name.as_deref()?)?))).collect()
+        self.conns.iter().filter_map(|(id, c)| Some((*id, self.person(c.name.as_deref()?)?))).collect()
     }
 
     fn person_of(&self, conn: ConnId) -> Option<(String, usize)> {
         let name = self.conns.get(&conn)?.name.clone()?;
-        let p = self.access.person(&name)?;
+        let p = self.person(&name)?;
         Some((name, p))
     }
 
-    /// 그 사람에게 그 행이 보이는가('남의 행 숨김'이면 자기 행과 머리글만).
-    fn row_visible(&self, person: usize, row: u32) -> bool {
-        self.visible.get(&person).is_none_or(|v| v.get(row as usize).copied().unwrap_or(false))
+    /// 그 사람에게 그 시트의 그 행이 보이는가('남의 행 숨김'이면 자기 행과 머리글만).
+    fn row_visible(&self, sheet: usize, person: usize, row: u32) -> bool {
+        self.rt[sheet].visible.get(&person).is_none_or(|v| v.get(row as usize).copied().unwrap_or(false))
     }
 
     // ------------------------------------------------------------ 접속
@@ -775,7 +920,7 @@ impl State {
             return;
         }
         // 승인받은 적 있는 브라우저의 재접속(토큰 일치): 남아 있던 연결이 있으면 이쪽으로 넘긴다.
-        if self.access.person(name).is_some()
+        if self.person(name).is_some()
             && let (Some(token), Some(p)) = (&token, self.people.get(name))
             && p.token == *token
         {
@@ -798,6 +943,12 @@ impl State {
         self.send(conn, ServerMsg::Pending { name: name.to_string() });
     }
 
+    /// 명단에 이름을 더한다(공통 명단 = 첫 시트 설정).
+    fn add_person(&mut self, name: &str) -> Result<(), String> {
+        let first = &mut self.sheets[0];
+        first.config.apply(&first.model, ConfigEdit::AddPerson { name: name.into() }).map_err(|e| e.to_string())
+    }
+
     /// IP 명단에 있는 IP: 그 이름으로 바로 들어온다(명단에 없던 이름이면 명단에 더한다). 같은 이름이 다른 연결에서
     /// 접속 중이면 토큰이 맞을 때만 넘기고, 아니면 '이 기기로 전환'을 묻는다.
     fn join_known(&mut self, conn: ConnId, name: &str, token: Option<String>) {
@@ -811,9 +962,9 @@ impl State {
             }
             self.kick_conn(old, KickReason::SwitchedDevice);
         }
-        if self.access.person(name).is_none() {
-            if let Err(e) = self.config.apply(&self.model, ConfigEdit::AddPerson { name: name.into() }) {
-                self.send(conn, ServerMsg::Rejected { reason: e.to_string() });
+        if self.person(name).is_none() {
+            if let Err(e) = self.add_person(name) {
+                self.send(conn, ServerMsg::Rejected { reason: e });
                 return;
             }
             self.recompile();
@@ -887,9 +1038,11 @@ impl State {
         }
         self.pending.retain(|q| q.conn != conn);
         // 끊긴 사이 남겨 둔 잠금은 다시 이 사람 것으로 되살린다.
-        for lock in self.locks.values_mut() {
-            if lock.owner == name {
-                lock.orphaned = None;
+        for rt in &mut self.rt {
+            for lock in rt.locks.values_mut() {
+                if lock.owner == name {
+                    lock.orphaned = None;
+                }
             }
         }
         if let Some(w) = self.welcome(name) {
@@ -908,9 +1061,11 @@ impl State {
             p.conn = None;
             p.cursor = None;
             let now = Instant::now();
-            for lock in self.locks.values_mut() {
-                if lock.owner == name {
-                    lock.orphaned = Some(now);
+            for rt in &mut self.rt {
+                for lock in rt.locks.values_mut() {
+                    if lock.owner == name {
+                        lock.orphaned = Some(now);
+                    }
                 }
             }
             self.refresh_presence();
@@ -925,17 +1080,19 @@ impl State {
         self.refresh_presence(); // 자리 비움 → 접속 중으로 돌아왔을 수 있다
     }
 
-    fn cursor(&mut self, conn: ConnId, at: Option<CellRef>) {
+    fn cursor(&mut self, conn: ConnId, sheet: u32, at: Option<CellRef>) {
         let Some(name) = self.conns.get(&conn).and_then(|c| c.name.clone()) else { return };
-        let at = at.filter(|a| a.row < self.model.rows && a.col < self.model.cols);
+        let Some(si) = self.sheet_index(sheet) else { return };
+        let model = &self.sheets[si].model;
+        let at = at.filter(|a| a.row < model.rows && a.col < model.cols);
         if let Some(p) = self.people.get_mut(&name) {
-            p.cursor = at;
+            p.cursor = at.map(|a| SheetCell::new(sheet, a));
         }
         self.touch(conn);
         // '남의 행 숨김'이면 남의 행에 있는 커서는 보이지 않는다.
-        let msg = ServerMsg::Cursor { name, at };
+        let msg = ServerMsg::Cursor { name, sheet, at };
         for (id, p) in self.attached() {
-            if id != conn && at.is_none_or(|a| self.row_visible(p, a.row)) {
+            if id != conn && at.is_none_or(|a| self.row_visible(si, p, a.row)) {
                 self.send(id, msg.clone());
             }
         }
@@ -943,17 +1100,19 @@ impl State {
 
     // ------------------------------------------------------------ 호스트 명령
 
-    fn approve(&mut self, name: &str, range: Option<CellRange>, note: String) -> Result<(), String> {
+    fn approve(&mut self, name: &str, range: Option<(u32, CellRange)>, note: String) -> Result<(), String> {
         let name = name.trim();
         let waiting = self.pending.iter().find(|p| p.name == name).map(|p| p.conn);
         let mut changed = false;
-        if self.access.person(name).is_none() {
-            self.config.apply(&self.model, ConfigEdit::AddPerson { name: name.into() }).map_err(|e| e.to_string())?;
+        if self.person(name).is_none() {
+            self.add_person(name)?;
             changed = true;
         }
-        if let Some(range) = range {
+        if let Some((sheet, range)) = range {
+            let si = self.sheet_index(sheet).ok_or(NO_SHEET)?;
+            let slot = &mut self.sheets[si];
             let edit = ConfigEdit::AssignRange { range, person: name.into(), note };
-            self.config.apply(&self.model, edit).map_err(|e| e.to_string())?;
+            slot.config.apply(&slot.model, edit).map_err(|e| e.to_string())?;
             changed = true;
         }
         // 명단에 이미 있는 이름을 그대로 들일 때는 권한이 그대로라 모두에게 시트를 다시 보내지 않는다.
@@ -989,26 +1148,26 @@ impl State {
 
     fn host_job(&mut self, job: HostJob) -> Completion {
         let host_name = self.host_name();
-        let (changed, replaced, actions, done) = {
+        let (changed, replacement, actions, done) = {
             let mut shared = Shared {
-                model: &mut self.model,
-                config: &mut self.config,
-                baseline: &mut self.baseline,
+                sheets: &mut self.sheets,
+                rt: &self.rt,
                 history: &self.log,
                 snapshots: &self.snapshots.list,
                 closed: self.closed,
                 host_name,
                 changed: false,
-                replaced: false,
+                replacement: None,
                 actions: Vec::new(),
             };
             let done = job(&mut shared);
-            (shared.changed, shared.replaced, shared.actions, done)
+            (shared.changed, shared.replacement, shared.actions, done)
         };
-        if replaced {
-            self.versions = vec![0; self.model.cells.len()];
-            self.locks.clear();
-            self.writer.clear();
+        let replaced = replacement.is_some();
+        if let Some(sheets) = replacement {
+            // 다른 시트(들): 셀 버전·잠금·이력을 새로 시작한다.
+            self.sheets = sheets.into_iter().map(|(m, c)| SheetSlot::new(m, c)).collect();
+            self.rt = self.sheets.iter().map(SheetRt::new).collect();
             self.applied.clear();
             self.log.clear();
             self.next_seq = 1;
@@ -1029,7 +1188,7 @@ impl State {
         let new_store = actions.iter().any(|a| matches!(a, Action::Store(_)));
         for action in actions {
             match action {
-                Action::Set { user, origin, cells } => self.host_writes(&user, origin, cells),
+                Action::Set { user, origin, sheet, cells } => self.host_writes(&user, origin, sheet, cells),
                 Action::Snapshot { kind, label } => {
                     self.take_snapshot(kind, &label);
                 }
@@ -1040,7 +1199,7 @@ impl State {
                     }
                 }
                 Action::Notice { text, important, target } => self.send_notice(text, important, target),
-                Action::Highlight { range, note, audience } => self.add_highlight(range, note, audience),
+                Action::Highlight { sheet, range, note, audience } => self.add_highlight(sheet, range, note, audience),
                 Action::ClearHighlight(id) => self.clear_highlight(id),
                 Action::Chat { to, text } => self.host_chat(to, text),
                 Action::Store(store) => {
@@ -1068,42 +1227,64 @@ impl State {
 
     /// 권한·진행률·보이는 행·마감을 다시 계산한다(시트·설정이 바뀜).
     fn recompile(&mut self) {
-        self.access = Access::compile(&self.model, &self.config);
-        self.progress = self.access.progress(&self.model);
-        self.labels =
-            column_labels(&self.model, &TableGuess { range: self.model.bounds(), header_rows: self.model.header_rows });
-        self.has_formulas = self.model.cells.iter().any(|c| c.f.is_some());
-        self.visible.clear();
-        if self.config.permissions.others_rows == OthersRows::Hidden {
-            for p in 0..self.access.roster().len() {
-                let mut v = vec![false; self.model.rows as usize];
-                for r in 0..self.model.header_rows.min(self.model.rows) {
-                    v[r as usize] = true;
+        sync_common(&mut self.sheets);
+        self.roster = union_roster(self.sheets.iter().map(|s| (&s.model, &s.config)));
+        let many = self.sheets.len() > 1;
+        for (slot, rt) in self.sheets.iter().zip(self.rt.iter_mut()) {
+            let model = &slot.model;
+            rt.access = Access::compile_with(model, &slot.config, &self.roster);
+            rt.progress = rt.access.progress(model);
+            rt.labels = column_labels(model, &TableGuess { range: model.bounds(), header_rows: model.header_rows });
+            rt.has_formulas = model.cells.iter().any(|c| c.f.is_some());
+            rt.visible.clear();
+            if slot.config.permissions.others_rows == OthersRows::Hidden {
+                for p in 0..self.roster.len() {
+                    let mut v = vec![false; model.rows as usize];
+                    for r in 0..model.header_rows.min(model.rows) {
+                        v[r as usize] = true;
+                    }
+                    for r in rt.access.rows_of(p) {
+                        v[r as usize] = true;
+                    }
+                    rt.visible.insert(p, v);
                 }
-                for r in self.access.rows_of(p) {
-                    v[r as usize] = true;
-                }
-                self.visible.insert(p, v);
             }
+            rt.assignment = (0..self.roster.len())
+                .map(|p| {
+                    let summary = assignment_summary(model, &slot.config, &rt.access, p);
+                    match (many, summary.as_str()) {
+                        (true, NO_ASSIGNMENT) => String::new(),
+                        (true, _) => format!("{}: {summary}", model.sheet),
+                        _ => summary,
+                    }
+                })
+                .collect();
         }
-        self.deadline = parse_deadline(self.config.deadline.as_deref());
+        self.any_formulas = self.rt.iter().any(|rt| rt.has_formulas);
+        self.deadline = parse_deadline(self.sheets[0].config.deadline.as_deref());
         self.read_only = self.closed || self.deadline_passed();
         // 더는 편집할 수 없는 칸의 잠금은 푼다.
-        let stale: Vec<usize> = self
-            .locks
-            .iter()
-            .filter(|(i, l)| {
-                let at = CellRef::new(**i as u32 / self.model.cols.max(1), **i as u32 % self.model.cols.max(1));
-                self.read_only
-                    || self
-                        .access
-                        .person(&l.owner)
-                        .is_none_or(|p| !self.access.can_edit(collect_core::access::Viewer::Person(p), at))
-            })
-            .map(|(i, _)| *i)
-            .collect();
-        for i in stale {
-            self.locks.remove(&i);
+        for (slot, rt) in self.sheets.iter().zip(self.rt.iter_mut()) {
+            let cols = slot.model.cols;
+            let read_only = self.read_only;
+            let roster = &self.roster;
+            let access = &rt.access;
+            let stale: Vec<usize> = rt
+                .locks
+                .iter()
+                .filter(|(i, l)| {
+                    let at = CellRef::new(**i as u32 / cols.max(1), **i as u32 % cols.max(1));
+                    read_only
+                        || roster
+                            .iter()
+                            .position(|p| p.trim() == l.owner.trim())
+                            .is_none_or(|p| !access.can_edit(Viewer::Person(p), at))
+                })
+                .map(|(i, _)| *i)
+                .collect();
+            for i in stale {
+                rt.locks.remove(&i);
+            }
         }
     }
 
@@ -1125,7 +1306,7 @@ impl State {
     }
 
     fn deadline_passed(&self) -> bool {
-        self.config.permissions.lock_after_deadline
+        self.sheets[0].config.permissions.lock_after_deadline
             && self.deadline.is_some_and(|d| chrono::Local::now().naive_local() >= d)
     }
 
@@ -1141,7 +1322,7 @@ impl State {
         }
         self.read_only = now;
         if now {
-            let all: Vec<String> = self.locks.values().map(|l| l.owner.clone()).collect();
+            let all: Vec<String> = self.rt.iter().flat_map(|rt| rt.locks.values().map(|l| l.owner.clone())).collect();
             for owner in all {
                 self.release_locks_of(&owner);
             }
@@ -1161,43 +1342,63 @@ impl State {
 
     // ------------------------------------------------------------ 보기
 
-    fn welcome(&self, name: &str) -> Option<Welcome> {
-        let p = self.access.person(name)?;
-        let projection = project(&self.model, &self.config, name).ok()?;
-        let token = self.people.get(name).map(|x| x.token.clone()).unwrap_or_default();
-        let hidden = self.config.permissions.others_rows == OthersRows::Hidden;
-        let row_owner =
-            self.access.row_owners().iter().map(|&o| if hidden && o != p as i32 { -1 } else { o }).collect();
-        let cols = self.model.cols.max(1);
-        let versions = self
+    /// 그 사람의 필수 진행률(모든 시트 합).
+    fn total_progress(&self, p: usize) -> PersonProgress {
+        let mut out =
+            PersonProgress { name: self.roster.get(p).cloned().unwrap_or_default(), rows: 0, required: 0, filled: 0 };
+        for rt in &self.rt {
+            if let Some(x) = rt.progress.by_person.get(p) {
+                out.rows += x.rows;
+                out.required += x.required;
+                out.filled += x.filled;
+            }
+        }
+        out
+    }
+
+    fn sheet_view(&self, sheet: usize, name: &str, p: usize) -> SheetView {
+        let (slot, rt) = (&self.sheets[sheet], &self.rt[sheet]);
+        let projection = project_with(&rt.access, &slot.model, &slot.config, p);
+        let hidden = slot.config.permissions.others_rows == OthersRows::Hidden;
+        let row_owner = rt.access.row_owners().iter().map(|&o| if hidden && o != p as i32 { -1 } else { o }).collect();
+        let cols = slot.model.cols.max(1);
+        let versions = rt
             .versions
             .iter()
             .enumerate()
-            .filter(|(i, v)| **v > 0 && self.row_visible(p, *i as u32 / cols))
+            .filter(|(i, v)| **v > 0 && self.row_visible(sheet, p, *i as u32 / cols))
             .map(|(i, v)| (i as u32, *v))
             .collect();
-        let locks = self
+        let locks = rt
             .locks
             .iter()
-            .filter(|(i, l)| l.owner != name && self.row_visible(p, **i as u32 / cols))
-            .map(|(i, l)| LockEntry { at: CellRef::new(*i as u32 / cols, *i as u32 % cols), by: l.owner.clone() })
+            .filter(|(i, l)| l.owner != name && self.row_visible(sheet, p, **i as u32 / cols))
+            .map(|(i, l)| LockEntry { at: rt.cell_of(*i, cols), by: l.owner.clone() })
             .collect();
+        SheetView {
+            model: projection.model,
+            flags: encode_flags(&projection.flags),
+            versions,
+            locks,
+            columns: slot.config.columns.clone(),
+            labels: rt.labels.clone(),
+            permissions: slot.config.permissions,
+            row_owner,
+            progress: rt.progress.by_person.get(p).cloned().unwrap_or_default(),
+        }
+    }
+
+    fn welcome(&self, name: &str) -> Option<Welcome> {
+        let p = self.person(name)?;
+        let token = self.people.get(name).map(|x| x.token.clone()).unwrap_or_default();
         Some(Welcome {
             protocol: PROTOCOL_VERSION,
             name: name.to_string(),
             token,
             color: p as i32,
             session: self.info(),
-            model: projection.model,
-            flags: encode_flags(&projection.flags),
-            versions,
-            locks,
-            columns: self.config.columns.clone(),
-            labels: self.labels.clone(),
-            permissions: self.config.permissions,
-            roster: self.access.roster().to_vec(),
-            row_owner,
-            progress: self.progress.by_person.get(p).cloned().unwrap_or_default(),
+            roster: self.roster.clone(),
+            sheets: (0..self.sheets.len()).map(|i| self.sheet_view(i, name, p)).collect(),
             presence: self.presence(),
             notices: self.notices_for(name),
             highlights: self.highlights_for(name),
@@ -1218,7 +1419,7 @@ impl State {
             cursor: None,
             host: true,
         }];
-        for (i, name) in self.access.roster().iter().enumerate() {
+        for (i, name) in self.roster.iter().enumerate() {
             let Some(p) = self.people.get(name) else { continue };
             let Some(status) = self.status_of(p) else { continue };
             out.push(PresenceEntry { name: name.clone(), color: i as i32, status, cursor: p.cursor, host: false });
@@ -1237,23 +1438,32 @@ impl State {
     }
 
     fn info(&self) -> SessionInfo {
+        let config = &self.sheets[0].config;
         SessionInfo {
-            title: self.config.title.clone(),
-            description: self.config.description.clone(),
-            requester: self.config.requester.clone(),
-            deadline: self.config.deadline.clone(),
-            lock_after_deadline: self.config.permissions.lock_after_deadline,
+            title: config.title.clone(),
+            description: config.description.clone(),
+            requester: config.requester.clone(),
+            deadline: config.deadline.clone(),
+            lock_after_deadline: config.permissions.lock_after_deadline,
             read_only: self.read_only,
             closed: self.closed,
             online: self.people.values().filter(|p| p.conn.is_some()).count() as u32,
         }
     }
 
+    /// 그 사람이 잠근 칸(모든 시트 중 하나).
+    fn editing_of(&self, name: &str) -> Option<SheetCell> {
+        self.rt.iter().enumerate().find_map(|(s, rt)| {
+            rt.locks
+                .iter()
+                .find(|(_, l)| l.owner == name)
+                .map(|(i, _)| SheetCell::new(s as u32, rt.cell_of(*i, self.sheets[s].model.cols)))
+        })
+    }
+
     fn snapshot(&self) -> HostSnapshot {
-        let cols = self.model.cols.max(1);
         let participants: Vec<ParticipantRow> = self
-            .access
-            .roster()
+            .roster
             .iter()
             .enumerate()
             .map(|(i, name)| {
@@ -1263,12 +1473,13 @@ impl State {
                     Some(PresenceStatus::Away) => ParticipantStatus::Away,
                     None => ParticipantStatus::Offline,
                 };
-                let progress = self.progress.by_person.get(i);
-                let editing = self
-                    .locks
+                let progress = self.total_progress(i);
+                let parts: Vec<&str> = self
+                    .rt
                     .iter()
-                    .find(|(_, l)| l.owner == *name)
-                    .map(|(idx, _)| CellRef::new(*idx as u32 / cols, *idx as u32 % cols));
+                    .filter_map(|rt| rt.assignment.get(i).map(String::as_str))
+                    .filter(|a| !a.is_empty())
+                    .collect();
                 ParticipantRow {
                     name: name.clone(),
                     color: i as i32,
@@ -1276,11 +1487,11 @@ impl State {
                     idle_mins: person
                         .filter(|p| p.conn.is_some())
                         .map_or(0, |p| (p.last_active.elapsed().as_secs() / 60) as u32),
-                    assignment: assignment_summary(&self.model, &self.config, &self.access, i),
+                    assignment: if parts.is_empty() { NO_ASSIGNMENT.into() } else { parts.join(" · ") },
                     cursor: person.and_then(|p| p.cursor),
-                    editing,
-                    required: progress.map_or(0, |p| p.required),
-                    filled: progress.map_or(0, |p| p.filled),
+                    editing: self.editing_of(name),
+                    required: progress.required,
+                    filled: progress.filled,
                     ip: person.and_then(|p| p.ip).map(|ip| ip.to_string()),
                 }
             })
@@ -1297,14 +1508,26 @@ impl State {
                     ip: self.conns.get(&p.conn).map(|c| c.ip.to_string()).unwrap_or_default(),
                 })
                 .collect(),
-            required: self.progress.required,
-            filled: self.progress.filled,
+            required: self.rt.iter().map(|rt| rt.progress.required).sum(),
+            filled: self.rt.iter().map(|rt| rt.progress.filled).sum(),
             read_only: self.read_only,
             closed: self.closed,
             host_name: self.host_name(),
+            sheets: self
+                .sheets
+                .iter()
+                .zip(&self.rt)
+                .map(|(s, rt)| SheetProgress {
+                    name: s.model.sheet.clone(),
+                    required: rt.progress.required,
+                    filled: rt.progress.filled,
+                })
+                .collect(),
         }
     }
 }
+
+const NO_ASSIGNMENT: &str = "배정 없음";
 
 /// 배정 요약(시트 기준 행 번호·주소): "행 3–7, 13–17 + I3:I1002", 구간이 많으면 "행 3–7 외 39구간(200행)".
 pub fn assignment_summary(model: &SheetModel, config: &CollectConfig, access: &Access, person: usize) -> String {
@@ -1330,12 +1553,19 @@ pub fn assignment_summary(model: &SheetModel, config: &CollectConfig, access: &A
             format!("행 {} 외 {}구간({total}행)", span(&runs[0]), runs.len() - 1)
         });
     }
-    let name = &access.roster()[person];
+    let Some(name) = access.roster().get(person) else { return NO_ASSIGNMENT.into() };
     for a in config.assignment.ranges.iter().filter(|a| a.person.trim() == name) {
         let r = a.range;
         parts.push(CellRange::new(r.row + model.origin.row, r.col + model.origin.col, r.rows, r.cols).to_string());
     }
-    if parts.is_empty() { "배정 없음".into() } else { parts.join(" + ") }
+    if parts.is_empty() { NO_ASSIGNMENT.into() } else { parts.join(" + ") }
+}
+
+/// 시트 이름을 붙인 시트 주소(`인력계획!F7`). 시트가 하나뿐이면 이름 없이 `F7`.
+pub fn sheet_address(sheets: &[SheetSlot], sheet: usize, at: CellRef) -> String {
+    let Some(s) = sheets.get(sheet) else { return String::new() };
+    let addr = CellRef::new(at.row + s.model.origin.row, at.col + s.model.origin.col).to_string();
+    if sheets.len() > 1 { format!("{}{addr}", sheet_prefix(&s.model.sheet)) } else { addr }
 }
 
 #[cfg(test)]
@@ -1352,3 +1582,6 @@ mod comms_tests;
 
 #[cfg(test)]
 mod persist_tests;
+
+#[cfg(test)]
+mod sheets_tests;

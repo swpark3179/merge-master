@@ -3,7 +3,11 @@ import type { LastSave } from "./LastSave";
 import type { SaveSummary } from "./SaveSummary";
 import type { SourceStatus } from "./SourceStatus";
 
-export type SaveInfo = { summary: SaveSummary, workbook: string, sheet: string, 
+export type SaveInfo = { summary: SaveSummary, workbook: string, 
+/**
+ * 저장할 시트(세션 안 순번 순서).
+ */
+sheets: Array<string>, 
 /**
  * 원본이 지금 Excel에 열려 있으면 그 상태(닫혀 있으면 저장할 때 다시 연다).
  */

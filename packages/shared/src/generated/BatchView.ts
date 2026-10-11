@@ -8,6 +8,10 @@ import type { ChangeEntry } from "./ChangeEntry";
  */
 export type BatchView = { batch: string, atMs: number, user: string, origin: BatchOrigin, 
 /**
+ * 묶음의 시트(한 묶음은 한 시트 안에서만 바꾼다).
+ */
+sheet: number, 
+/**
  * 묶음 안 칸들을 덮는 범위.
  */
 range: CellRange, 

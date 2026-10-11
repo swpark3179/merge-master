@@ -23,28 +23,46 @@ pub(crate) const MSO_AUTOMATION_SECURITY_FORCE_DISABLE: i32 = 3;
 
 static NEXT_COPY: AtomicU32 = AtomicU32::new(1);
 
-pub(crate) struct CalcCopy {
-    app: Dispatch,
-    book: Dispatch,
+/// 계산 사본의 시트 하나: 불러온 범위의 시트 위치와 결과를 읽을 수식 칸.
+struct CalcSheet {
     sheet: Dispatch,
-    pub(crate) path: PathBuf,
     origin: CellRef,
     /// 수식 칸(모델 좌표)과 그 칸들을 덮는 최소 직사각형(한 번에 읽기).
     formulas: Vec<CellRef>,
     bounds: Option<CellRange>,
 }
 
+impl CalcSheet {
+    fn address(&self, at: CellRef) -> String {
+        CellRef::new(at.row + self.origin.row, at.col + self.origin.col).to_string()
+    }
+}
+
+pub(crate) struct CalcCopy {
+    app: Dispatch,
+    book: Dispatch,
+    /// 세션 안 시트 순번 순서(수식이 없는 시트도 — 다른 시트 수식이 그 칸을 볼 수 있다).
+    sheets: Vec<CalcSheet>,
+    pub(crate) path: PathBuf,
+}
+
 impl CalcCopy {
     fn close(self) {
         let _ = self.book.call("Close", vec![Var::bool(false)]);
         let _ = self.app.call("Quit", vec![]);
-        drop((self.sheet, self.book, self.app));
+        drop((self.sheets, self.book, self.app));
         let _ = std::fs::remove_file(&self.path);
     }
+}
 
-    fn address(&self, at: CellRef) -> String {
-        CellRef::new(at.row + self.origin.row, at.col + self.origin.col).to_string()
-    }
+/// 계산 사본에 열 시트 하나(세션 안 시트 순번 순서로 넘긴다).
+#[derive(Debug, Clone)]
+pub struct CalcTarget {
+    pub sheet: String,
+    /// 불러온 범위의 시트 위치.
+    pub origin: CellRef,
+    /// 결과를 읽어 올 수식 칸(모델 좌표).
+    pub formulas: Vec<CellRef>,
 }
 
 /// 셀에 쓸 값. 글자는 앞에 `'`를 붙여 Excel이 숫자·날짜·수식으로 바꾸지 않게 한다.
@@ -79,8 +97,7 @@ pub struct CalcInfo {
 }
 
 impl Session {
-    /// 통합문서의 현재 상태를 복사해 숨은 Excel에서 연다. 이미 열린 사본은 닫는다.
-    /// `formulas`는 결과를 읽어 올 수식 칸(모델 좌표), `origin`은 불러온 범위의 시트 위치.
+    /// 통합문서의 현재 상태를 복사해 숨은 Excel에서 연다(한 시트). [`Session::open_calc_multi`] 참고.
     pub fn open_calc(
         &mut self,
         workbook_id: &str,
@@ -88,6 +105,12 @@ impl Session {
         origin: CellRef,
         formulas: Vec<CellRef>,
     ) -> Result<CalcInfo> {
+        self.open_calc_multi(workbook_id, vec![CalcTarget { sheet: sheet.to_string(), origin, formulas }])
+    }
+
+    /// 통합문서의 현재 상태를 복사해 숨은 Excel에서 연다. 이미 열린 사본은 닫는다. 사본은 통합문서 전체라 시트를
+    /// 넘는 수식도 계산된다. `targets`는 세션 안 시트 순번 순서.
+    pub fn open_calc_multi(&mut self, workbook_id: &str, targets: Vec<CalcTarget>) -> Result<CalcInfo> {
         self.close_calc();
         let source = self.workbook(workbook_id)?;
         let name = source.get_string("Name")?;
@@ -122,16 +145,32 @@ impl Session {
             };
             // 칸마다 다시 계산하지 않도록 수동으로 두고, 모아 쓴 뒤 한 번 계산한다.
             let _ = app.put("Calculation", Var::i32(XL_CALCULATION_MANUAL));
-            let ws = book
-                .obj("Worksheets")?
-                .obj_call("Item", vec![Var::str(sheet)])
-                .map_err(|_| ExcelError::SheetNotFound(sheet.to_string()))?;
-            let bounds = bounding(&formulas);
-            Ok(CalcCopy { app, book, sheet: ws, path: path.clone(), origin, formulas, bounds })
+            let found = (|| -> Result<Vec<CalcSheet>> {
+                let worksheets = book.obj("Worksheets")?;
+                targets
+                    .into_iter()
+                    .map(|t| {
+                        let ws = worksheets
+                            .obj_call("Item", vec![Var::str(&t.sheet)])
+                            .map_err(|_| ExcelError::SheetNotFound(t.sheet.clone()))?;
+                        let bounds = bounding(&t.formulas);
+                        Ok(CalcSheet { sheet: ws, origin: t.origin, formulas: t.formulas, bounds })
+                    })
+                    .collect()
+            })();
+            match found {
+                Ok(sheets) => Ok(CalcCopy { app, book, sheets, path: path.clone() }),
+                Err(e) => {
+                    let _ = book.call("Close", vec![Var::bool(false)]);
+                    let _ = app.call("Quit", vec![]);
+                    Err(e)
+                }
+            }
         })();
         match opened {
             Ok(copy) => {
-                let info = CalcInfo { path: copy.path.clone(), formulas: copy.formulas.len() };
+                let formulas = copy.sheets.iter().map(|s| s.formulas.len()).sum();
+                let info = CalcInfo { path: copy.path.clone(), formulas };
                 self.calc = Some(copy);
                 Ok(info)
             }
@@ -142,26 +181,38 @@ impl Session {
         }
     }
 
-    /// 입력을 사본에 쓰고 다시 계산해 수식 칸 결과를 모두 돌려준다(바뀐 것만 고르는 일은 세션이 한다).
+    /// 입력(첫 시트)을 사본에 쓰고 다시 계산해 수식 칸 결과를 돌려준다. [`Session::calc_apply_multi`] 참고.
     pub fn calc_apply(&mut self, writes: &[(CellRef, CellValue)]) -> Result<Vec<(CellRef, CellValue)>> {
+        let writes: Vec<(u32, CellRef, CellValue)> = writes.iter().map(|(at, v)| (0, *at, v.clone())).collect();
+        Ok(self.calc_apply_multi(&writes)?.into_iter().filter(|(s, _, _)| *s == 0).map(|(_, at, v)| (at, v)).collect())
+    }
+
+    /// 입력(시트 순번, 모델 좌표)을 사본에 쓰고 한 번 다시 계산해 모든 시트의 수식 칸 결과를 돌려준다(바뀐 것만 고르는 일은
+    /// 세션이 한다).
+    pub fn calc_apply_multi(&mut self, writes: &[(u32, CellRef, CellValue)]) -> Result<Vec<(u32, CellRef, CellValue)>> {
         let copy = self.calc.as_ref().ok_or_else(|| ExcelError::Type("계산 사본이 열려 있지 않습니다".into()))?;
-        for (at, v) in writes {
-            let cell = copy.sheet.obj_call("Range", vec![Var::str(&copy.address(*at))])?;
+        for (sheet, at, v) in writes {
+            let Some(s) = copy.sheets.get(*sheet as usize) else { continue };
+            let cell = s.sheet.obj_call("Range", vec![Var::str(&s.address(*at))])?;
             cell.put("Value2", to_var(v))?;
         }
         copy.app.call("Calculate", vec![])?;
-        let Some(bounds) = copy.bounds else { return Ok(Vec::new()) };
-        let addr = format!(
-            "{}:{}",
-            copy.address(bounds.top_left()),
-            copy.address(CellRef::new(bounds.last_row(), bounds.last_col()))
-        );
-        let grid = copy.sheet.obj_call("Range", vec![Var::str(&addr)])?.get("Value2")?.into_grid()?;
-        Ok(copy
-            .formulas
-            .iter()
-            .map(|at| (*at, grid.value((at.row - bounds.row) as usize, (at.col - bounds.col) as usize)))
-            .collect())
+        let mut out = Vec::new();
+        for (i, s) in copy.sheets.iter().enumerate() {
+            let Some(bounds) = s.bounds else { continue };
+            let addr = format!(
+                "{}:{}",
+                s.address(bounds.top_left()),
+                s.address(CellRef::new(bounds.last_row(), bounds.last_col()))
+            );
+            let grid = s.sheet.obj_call("Range", vec![Var::str(&addr)])?.get("Value2")?.into_grid()?;
+            out.extend(
+                s.formulas.iter().map(|at| {
+                    (i as u32, *at, grid.value((at.row - bounds.row) as usize, (at.col - bounds.col) as usize))
+                }),
+            );
+        }
+        Ok(out)
     }
 
     /// 열려 있는 계산 사본 파일. 다시 확정해 사본이 바뀌었는지 확인할 때 쓴다.

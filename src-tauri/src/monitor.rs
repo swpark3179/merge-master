@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use collect_core::access::ProgressStats;
 use collect_core::history::{self, ChangeKind, HistoryFilter, HistoryPage};
-use collect_core::view::{ConfigView, config_view};
+use collect_core::view::ConfigView;
 use collect_core::{CellRange, SheetModel};
 use collect_server::protocol::ChatTo;
 use collect_server::{CommsSnapshot, HighlightAudience, NoticeTarget, SessionHandle};
@@ -55,34 +55,37 @@ pub(crate) fn forward_events(app: &AppHandle, session: &SessionHandle) {
     });
 }
 
+/// 그 시트의 지금 값과 호스트 시점 설정 보기.
 #[tauri::command]
-pub async fn monitor_get(state: State<'_, AppState>) -> CmdResult<MonitorData> {
+pub async fn monitor_get(state: State<'_, AppState>, sheet: usize) -> CmdResult<MonitorData> {
     state
         .session()?
-        .with(|s| {
-            let view = config_view(s.model, s.config, None).map_err(|e| e.to_string())?;
-            Ok(MonitorData { model: s.model.clone(), view })
+        .with(move |s| {
+            let view = s.view(sheet, None)?;
+            Ok(MonitorData { model: s.sheets[sheet].model.clone(), view })
         })
         .await?
 }
 
+/// 그 시트의 필수 진행률(세션이 센 것, 사람 인덱스 = 명단 색).
 #[tauri::command]
-pub async fn monitor_progress(state: State<'_, AppState>) -> CmdResult<ProgressStats> {
-    state.session()?.with(|s| collect_core::access::Access::compile(s.model, s.config).progress(s.model)).await
+pub async fn monitor_progress(state: State<'_, AppState>, sheet: usize) -> CmdResult<ProgressStats> {
+    state.session()?.with(move |s| s.progress(sheet).cloned().ok_or_else(|| "없는 시트입니다".to_string())).await?
 }
 
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct Activity {
+    /// 모든 시트의 최근 묶음(묶음마다 시트).
     pub page: HistoryPage,
-    /// 최근 1시간 안에 지워져 지금도 빈 칸이 있는 행('최근 삭제된 셀' 필터).
+    /// 그 시트에서 최근 1시간 안에 지워져 지금도 빈 칸이 있는 행('최근 삭제된 셀' 필터).
     pub deleted_rows: Vec<u32>,
 }
 
-/// 실시간 활동 피드: 최근 묶음(빨간 묶음 = 삭제가 든 여러 칸·큰 묶음).
+/// 실시간 활동 피드: 최근 묶음(빨간 묶음 = 삭제가 든 여러 칸·큰 묶음). `sheet`는 '최근 삭제된 셀'을 볼 시트.
 #[tauri::command]
-pub async fn monitor_activity(state: State<'_, AppState>, limit: Option<u32>) -> CmdResult<Activity> {
+pub async fn monitor_activity(state: State<'_, AppState>, sheet: usize, limit: Option<u32>) -> CmdResult<Activity> {
     let limit = limit.unwrap_or(30) as usize;
     let since = chrono::Utc::now().timestamp_millis() - RECENT_DELETE.as_millis() as i64;
     state
@@ -94,8 +97,9 @@ pub async fn monitor_activity(state: State<'_, AppState>, limit: Option<u32>) ->
                 .iter()
                 .filter(|e| {
                     e.kind == ChangeKind::Delete
+                        && e.sheet as usize == sheet
                         && e.at_ms >= since
-                        && s.model.cell(e.at()).is_some_and(|c| c.v.is_empty())
+                        && s.sheets.get(sheet).and_then(|x| x.model.cell(e.at())).is_some_and(|c| c.v.is_empty())
                 })
                 .map(|e| e.row)
                 .collect();
@@ -126,15 +130,16 @@ pub async fn notice_send(
     state.session()?.with(move |s| s.send_notice(&text, important, target)).await
 }
 
-/// `range`는 모델 좌표.
+/// `range`는 그 시트의 모델 좌표.
 #[tauri::command]
 pub async fn highlight_add(
     state: State<'_, AppState>,
+    sheet: usize,
     range: CellRange,
     note: String,
     audience: HighlightAudience,
 ) -> CmdResult<()> {
-    state.session()?.with(move |s| s.highlight(range, &note, audience)).await
+    state.session()?.with(move |s| s.highlight(sheet, range, &note, audience)).await
 }
 
 #[tauri::command]

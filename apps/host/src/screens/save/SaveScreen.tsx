@@ -8,8 +8,9 @@ import type {
   SaveInfo,
   SaveOptions,
   SaveResult,
+  SheetCell,
 } from "@mm/shared";
-import { a1, personColor } from "@mm/shared";
+import { a1, personColor, sheetPrefix } from "@mm/shared";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -41,7 +42,21 @@ function clock(ms: number): string {
   return `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-const key = (at: CellRef) => `${at.row}:${at.col}`;
+/** 시트 안의 충돌 칸. */
+interface SheetConflict {
+  sheet: number;
+  c: Conflict;
+}
+
+const key = (sheet: number, at: CellRef) => `${sheet}:${at.row}:${at.col}`;
+
+/** 저장 전 확인의 칸 주소: 시트가 여럿이면 `인력계획!F7`. */
+function checkAddr(check: SaveCheck | null, sheet: number, at: CellRef): string {
+  const sc = check?.sheets[sheet];
+  const o = sc?.origin ?? { row: 0, col: 0 };
+  const cell = a1(o.row + at.row, o.col + at.col);
+  return sc && check!.sheets.length > 1 ? `${sheetPrefix(sc.name)}${cell}` : cell;
+}
 
 /** 6 저장·마감: 취합 요약 → 원본과 비교 → 엑셀로 저장 → (선택) 마감. */
 export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
@@ -106,7 +121,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
     run("저장하는 중…", async () => {
       setResult(null);
       const c = await api.saveCheck(options);
-      const needsReview = c.report.conflicts.length > 0 || c.report.suspicious || c.targetExists;
+      const needsReview = c.sheets.some((x) => x.report.conflicts.length > 0) || c.suspicious || c.targetExists;
       if (needsReview) {
         setCheck(c);
         return;
@@ -116,8 +131,12 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
 
   /** 확인 결과(`c`)와 고른 값으로 저장한다. */
   const doSaveWith = async (c: SaveCheck, decisions: Record<string, "collected" | "excel">, forced: boolean) => {
-    const pick = (want: "collected" | "excel") =>
-      c.report.conflicts.filter((x) => (decisions[key(x.at)] ?? "collected") === want).map((x) => x.at);
+    const pick = (want: "collected" | "excel"): SheetCell[] =>
+      c.sheets.flatMap((sc, sheet) =>
+        sc.report.conflicts
+          .filter((x) => (decisions[key(sheet, x.at)] ?? "collected") === want)
+          .map((x) => ({ sheet, row: x.at.row, col: x.at.col })),
+      );
     const r = await api.saveRun(options, pick("excel"), pick("collected"), forced);
     setResult(r);
     setCheck(null);
@@ -143,10 +162,13 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
     () => (s?.people ?? []).slice().sort((a, b) => b.required - b.filled - (a.required - a.filled)),
     [s],
   );
-  const origin = check?.origin ?? { row: 0, col: 0 };
-  const addr = (at: CellRef) => a1(origin.row + at.row, origin.col + at.col);
-  const conflicts: Conflict[] = check?.report.conflicts ?? [];
-  const reviewReady = !check?.report.suspicious || force;
+  const addr = (sheet: number, at: CellRef) => checkAddr(check, sheet, at);
+  const conflicts: SheetConflict[] = (check?.sheets ?? []).flatMap((sc, sheet) =>
+    sc.report.conflicts.map((c) => ({ sheet, c })),
+  );
+  const drifted = (check?.sheets ?? []).map((sc, sheet) => ({ sc, sheet })).filter((x) => x.sc.report.driftCount > 0);
+  const reviewReady = !check?.suspicious || force;
+  const perSheet = s && s.sheets.length > 1 ? s.sheets : [];
 
   if (!info) {
     return (
@@ -243,6 +265,25 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
                 <span className="ok">● 입력 받는 중{info.running ? "" : " (서비스 중지됨)"}</span>
               )}
             </div>
+            {perSheet.length > 0 && (
+              <div className="sheet-summary small" role="table" aria-label="시트별 요약">
+                {perSheet.map((x) => (
+                  <div key={x.name} className="stat-row" role="row" aria-label={x.name}>
+                    <b>{x.name}</b>
+                    <span>
+                      바뀐 칸 <b>{x.changedCells.toLocaleString()}</b>
+                    </span>
+                    <span className={x.required > x.filled ? "warn" : "ok"}>
+                      {x.required > x.filled
+                        ? `필수 미입력 ${(x.required - x.filled).toLocaleString()}`
+                        : "필수 칸 모두 채움"}
+                    </span>
+                    {x.addedRows > 0 && <span>추가된 행 {x.addedRows.toLocaleString()}</span>}
+                    {x.styleCells > 0 && <span className="muted">서식 {x.styleCells.toLocaleString()}칸</span>}
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
 
@@ -257,20 +298,22 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
                 <div className="row">
                   <button
                     className="ghost small"
-                    onClick={() => setChoice(Object.fromEntries(conflicts.map((c) => [key(c.at), "collected"])))}
+                    onClick={() =>
+                      setChoice(Object.fromEntries(conflicts.map((x) => [key(x.sheet, x.c.at), "collected"])))
+                    }
                   >
                     모두 참여자 값
                   </button>
                   <button
                     className="ghost small"
-                    onClick={() => setChoice(Object.fromEntries(conflicts.map((c) => [key(c.at), "excel"])))}
+                    onClick={() => setChoice(Object.fromEntries(conflicts.map((x) => [key(x.sheet, x.c.at), "excel"])))}
                   >
                     모두 원본 값
                   </button>
                 </div>
                 <div className="conflicts" role="table" aria-label="충돌 칸">
-                  {conflicts.map((c) => {
-                    const k = key(c.at);
+                  {conflicts.map(({ sheet, c }) => {
+                    const k = key(sheet, c.at);
                     const pick = choice[k] ?? "collected";
                     const opt = (want: "excel" | "collected", label: string, v: CellValue | undefined) => (
                       <label className={`opt${pick === want ? " on" : ""}`}>
@@ -286,11 +329,11 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
                       </label>
                     );
                     return (
-                      <div key={k} className="conflict" role="row" aria-label={addr(c.at)}>
+                      <div key={k} className="conflict" role="row" aria-label={addr(sheet, c.at)}>
                         <div>
-                          <div className="where">{check.labels[c.at.col] || "칸"}</div>
+                          <div className="where">{check.sheets[sheet]?.labels[c.at.col] || "칸"}</div>
                           <div className="mono muted small">
-                            {addr(c.at)} · 불러올 때 {show(c.original)}
+                            {addr(sheet, c.at)} · 불러올 때 {show(c.original)}
                           </div>
                         </div>
                         {opt("excel", "원본", c.excel)}
@@ -301,17 +344,20 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
                 </div>
               </>
             )}
-            {check.report.driftCount > 0 && (
-              <div className={`small${check.report.suspicious ? " error" : " muted"}`}>
-                {check.report.suspicious
-                  ? `원본 표 위치가 바뀐 것 같습니다: 취합하지 않는 칸 ${check.report.driftCount.toLocaleString()}개가 불러올 때와 다릅니다(행·열을 넣거나 지웠을 수 있음). 그대로 저장하면 엉뚱한 칸에 쓸 수 있습니다.`
-                  : `참고: 취합하지 않는 칸 ${check.report.driftCount}개가 Excel에서 바뀌었습니다(${check.report.drift
-                      .slice(0, 5)
-                      .map(addr)
-                      .join(", ")}). 이 칸들은 건드리지 않습니다.`}
-              </div>
-            )}
-            {check.report.suspicious && (
+            {drifted.map(({ sc, sheet }) => {
+              const where = check.sheets.length > 1 ? `‘${sc.name}’ 시트의 ` : "";
+              return (
+                <div key={sheet} className={`small${sc.report.suspicious ? " error" : " muted"}`}>
+                  {sc.report.suspicious
+                    ? `원본 표 위치가 바뀐 것 같습니다: ${where}취합하지 않는 칸 ${sc.report.driftCount.toLocaleString()}개가 불러올 때와 다릅니다(행·열을 넣거나 지웠을 수 있음). 그대로 저장하면 엉뚱한 칸에 쓸 수 있습니다.`
+                    : `참고: ${where}취합하지 않는 칸 ${sc.report.driftCount}개가 Excel에서 바뀌었습니다(${sc.report.drift
+                        .slice(0, 5)
+                        .map((at) => addr(sheet, at))
+                        .join(", ")}). 이 칸들은 건드리지 않습니다.`}
+                </div>
+              );
+            })}
+            {check.suspicious && (
               <label className="check error">
                 <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
                 확인했습니다. 그래도 저장
@@ -338,7 +384,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
           <div className="card-head">
             <b>저장 방법</b>
             <span className="muted small">
-              원본 {info.source?.name ?? info.workbook} · {info.sheet}{" "}
+              원본 {info.source?.name ?? info.workbook} · {info.sheets.join(", ")}{" "}
               {info.source
                 ? `(Excel에 열려 있음${info.source.background ? " · 숨은 Excel" : ""})`
                 : "(닫혀 있음 — 저장할 때 다시 엽니다)"}

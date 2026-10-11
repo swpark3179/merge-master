@@ -79,6 +79,9 @@ pub struct ChangeEntry {
     #[serde(default)]
     pub origin: BatchOrigin,
     pub kind: ChangeKind,
+    /// 세션 안 시트 순번(불러온 순서). 여러 시트를 취합하기 전의 기록은 0.
+    #[serde(default)]
+    pub sheet: u32,
     pub row: u32,
     pub col: u32,
     #[ts(as = "Option<CellValue>", optional)]
@@ -105,6 +108,9 @@ pub struct HistoryFilter {
     pub since_ms: Option<i64>,
     #[ts(optional)]
     pub user: Option<String>,
+    /// 이 시트(세션 안 순번)의 칸만. `range`도 이 시트 기준이다.
+    #[ts(optional)]
+    pub sheet: Option<u32>,
     /// 비어 있으면 모든 종류.
     pub kinds: Vec<ChangeKind>,
     /// 이 범위(모델 좌표)에 걸친 칸만.
@@ -135,6 +141,9 @@ impl HistoryFilter {
         if self.user.as_deref().is_some_and(|u| !u.is_empty() && u != e.user) {
             return false;
         }
+        if self.sheet.is_some_and(|s| s != e.sheet) {
+            return false;
+        }
         if !self.kinds.is_empty() && !self.kinds.contains(&e.kind) {
             return false;
         }
@@ -161,6 +170,8 @@ pub struct BatchView {
     pub at_ms: i64,
     pub user: String,
     pub origin: BatchOrigin,
+    /// 묶음의 시트(한 묶음은 한 시트 안에서만 바꾼다).
+    pub sheet: u32,
     /// 묶음 안 칸들을 덮는 범위.
     pub range: CellRange,
     /// 묶음 전체 칸 수(필터에 걸린 칸만 `entries`에 든다).
@@ -202,7 +213,11 @@ fn group(log: &[ChangeEntry]) -> Vec<&[ChangeEntry]> {
     let mut out = Vec::new();
     let mut start = 0;
     for i in 1..=log.len() {
-        if i == log.len() || log[i].batch != log[start].batch || log[i].user != log[start].user {
+        if i == log.len()
+            || log[i].batch != log[start].batch
+            || log[i].user != log[start].user
+            || log[i].sheet != log[start].sheet
+        {
             if start < i {
                 out.push(&log[start..i]);
             }
@@ -222,6 +237,7 @@ fn view(all: &[ChangeEntry], hit: Vec<ChangeEntry>) -> BatchView {
         at_ms: all.last().map_or(first.at_ms, |e| e.at_ms),
         user: first.user.clone(),
         origin: first.origin,
+        sheet: first.sheet,
         range: bounding(&refs),
         count,
         alert: (deletes > 0 && count >= 2) || count >= ALERT_CELLS || first.origin == BatchOrigin::Restore,
@@ -258,9 +274,9 @@ pub fn batch_entries<'a>(log: &'a [ChangeEntry], batch: &str) -> Vec<&'a ChangeE
     log.iter().filter(|e| e.batch == batch).collect()
 }
 
-/// 셀 타임라인: 그 칸의 기록(오래된 것부터).
-pub fn timeline(log: &[ChangeEntry], at: CellRef) -> Vec<ChangeEntry> {
-    log.iter().filter(|e| e.at() == at).cloned().collect()
+/// 셀 타임라인: 그 시트 그 칸의 기록(오래된 것부터).
+pub fn timeline(log: &[ChangeEntry], sheet: u32, at: CellRef) -> Vec<ChangeEntry> {
+    log.iter().filter(|e| e.sheet == sheet && e.at() == at).cloned().collect()
 }
 
 /// 되돌리기 계획: 바꿀 값과, 그 뒤 다시 바뀌어 지금 값이 기록과 다른 칸.
@@ -355,21 +371,60 @@ fn kind_label(k: ChangeKind) -> &'static str {
     }
 }
 
-/// CSV(Excel에서 열 수 있게 앞에 BOM). 셀 주소는 시트 기준.
-pub fn to_csv(entries: &[ChangeEntry], origin: CellRef, labels: &[String], offset_minutes: i32) -> String {
-    let mut out = String::from("\u{feff}시각,사용자,셀,항목,종류,이전 값,새 값,묶음\r\n");
+/// 기록을 시트 주소로 보일 때 쓰는 시트 정보(세션 안 순번 순서).
+#[derive(Debug, Clone, Default)]
+pub struct SheetLabels {
+    pub name: String,
+    /// 불러온 범위의 시트 위치.
+    pub origin: CellRef,
+    /// 열 이름(머리글 기준).
+    pub labels: Vec<String>,
+}
+
+impl SheetLabels {
+    pub fn of(model: &SheetModel) -> Self {
+        let table = crate::detect::TableGuess { range: model.bounds(), header_rows: model.header_rows };
+        Self { name: model.sheet.clone(), origin: model.origin, labels: crate::detect::column_labels(model, &table) }
+    }
+
+    /// 기록의 시트 주소(`F7`).
+    pub fn address(&self, e: &ChangeEntry) -> String {
+        CellRef::new(e.row + self.origin.row, e.col + self.origin.col).to_string()
+    }
+
+    pub fn label(&self, col: u32) -> String {
+        self.labels.get(col as usize).cloned().unwrap_or_default()
+    }
+}
+
+/// 기록의 시트 정보. 시트가 하나뿐이면 기록의 시트 번호와 상관없이 그 시트다(한 시트만 넘겨 쓰는 경우).
+pub fn sheet_of(sheets: &[SheetLabels], sheet: u32) -> Option<&SheetLabels> {
+    if sheets.len() == 1 { sheets.first() } else { sheets.get(sheet as usize) }
+}
+
+/// CSV(Excel에서 열 수 있게 앞에 BOM). 셀 주소는 시트 기준이고, 시트가 둘 이상이면 '시트' 열을 더한다.
+pub fn to_csv(entries: &[ChangeEntry], sheets: &[SheetLabels], offset_minutes: i32) -> String {
+    let many = sheets.len() > 1;
+    let mut out = String::from(if many {
+        "\u{feff}시각,사용자,시트,셀,항목,종류,이전 값,새 값,묶음\r\n"
+    } else {
+        "\u{feff}시각,사용자,셀,항목,종류,이전 값,새 값,묶음\r\n"
+    });
+    let none = SheetLabels::default();
     for e in entries {
-        let addr = CellRef::new(e.row + origin.row, e.col + origin.col).to_string();
-        let row = [
-            local_time(e.at_ms, offset_minutes),
-            e.user.clone(),
-            addr,
-            labels.get(e.col as usize).cloned().unwrap_or_default(),
+        let sheet = sheet_of(sheets, e.sheet).unwrap_or(&none);
+        let mut row = vec![local_time(e.at_ms, offset_minutes), e.user.clone()];
+        if many {
+            row.push(sheet.name.clone());
+        }
+        row.extend([
+            sheet.address(e),
+            sheet.label(e.col),
             kind_label(e.kind).to_string(),
             plain(&e.old),
             plain(&e.new),
             e.batch.clone(),
-        ];
+        ]);
         out.push_str(&row.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(","));
         out.push_str("\r\n");
     }
@@ -402,6 +457,7 @@ mod tests {
             batch: batch.into(),
             origin,
             kind: ChangeKind::of(origin, &old, &new),
+            sheet: 0,
             row: c.row,
             col: c.col,
             old,
@@ -480,7 +536,20 @@ mod tests {
         let all: Vec<&ChangeEntry> = l.iter().filter(|e| e.at() == f7).collect();
         m.cell_mut(f7).unwrap().v = CellValue::Empty;
         assert!(revert_plan(&m, &all).changes.is_empty(), "지금 값이 이미 처음 값(빈 칸)");
-        assert_eq!(timeline(&l, f7).len(), 2);
+        assert_eq!(timeline(&l, 0, f7).len(), 2);
+        assert!(timeline(&l, 1, f7).is_empty(), "다른 시트의 같은 주소는 따로");
+    }
+
+    #[test]
+    fn sheets_split_batches_and_filter() {
+        let mut l = log();
+        // 같은 묶음 ID라도 시트가 다르면 다른 묶음(호스트가 시트마다 따로 쓴 복원 등).
+        l[4].sheet = 1;
+        let page = query(&l, &HistoryFilter::default(), 0, 10);
+        assert_eq!(page.total_batches, 5);
+        assert_eq!((page.batches[0].sheet, page.batches[0].count), (1, 1));
+        let only = query(&l, &HistoryFilter { sheet: Some(1), ..Default::default() }, 0, 10);
+        assert_eq!((only.total_batches, only.total_entries), (1, 1));
     }
 
     #[test]
@@ -497,10 +566,19 @@ mod tests {
 
     #[test]
     fn csv_export() {
-        let csv = to_csv(&log()[1..2], CellRef::new(0, 0), &vec![String::new(); 9], 540);
+        let one = SheetLabels { name: "예산".into(), origin: CellRef::new(0, 0), labels: vec![String::new(); 9] };
+        let csv = to_csv(&log()[1..2], std::slice::from_ref(&one), 540);
         let lines: Vec<&str> = csv.lines().collect();
-        assert!(lines[0].starts_with("\u{feff}시각,사용자"));
+        assert!(lines[0].starts_with("\u{feff}시각,사용자,셀"));
         assert_eq!(lines[1], "1970-01-01 09:00:02,최도윤,H7,,입력,,감사 출장 6회,b");
+        // 시트가 둘 이상이면 '시트' 열, 주소는 그 시트의 위치 기준.
+        let two = SheetLabels { name: "인력".into(), origin: CellRef::new(2, 1), labels: vec!["".into(); 9] };
+        let mut e = log()[1].clone();
+        e.sheet = 1;
+        let csv = to_csv(&[e], &[one, two], 540);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert!(lines[0].starts_with("\u{feff}시각,사용자,시트,셀"));
+        assert_eq!(lines[1], "1970-01-01 09:00:02,최도윤,인력,I9,,입력,,감사 출장 6회,b");
         assert_eq!(csv_field("a,\"b\""), "\"a,\"\"b\"\"\"");
         assert_eq!(local_time(1_791_000_000_000, 540), "2026-10-03 13:00:00");
     }

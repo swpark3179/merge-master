@@ -1,4 +1,4 @@
-import type { CollectConfig, HostSnapshot, LanAddress, RecalcStatus, ServiceInfo } from "@mm/shared";
+import type { CollectConfig, HostSnapshot, LanAddress, RecalcStatus, ServiceInfo, SheetModel } from "@mm/shared";
 import { formatDeadline } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
@@ -14,13 +14,13 @@ interface Props {
   service: ServiceInfo | null;
   onService: (s: ServiceInfo | null) => void;
   snapshot: HostSnapshot | null;
-  /** 시트 기준 좌표 변환용(현재 위치 표시). */
-  origin: { row: number; col: number };
+  /** 확정한 시트들(현재 위치 주소·승인 범위의 시트). */
+  sheets: SheetModel[];
   onGoConfig: () => void;
 }
 
 /** 1c 서비스 시작 · 접속자 관리. */
-export function ServiceScreen({ active, hasSheet, service, onService, snapshot, origin, onGoConfig }: Props) {
+export function ServiceScreen({ active, hasSheet, service, onService, snapshot, sheets, onGoConfig }: Props) {
   const [config, setConfig] = useState<CollectConfig | null>(null);
   const [roster, setRoster] = useState<string[]>([]);
   const [lans, setLans] = useState<LanAddress[]>([]);
@@ -54,7 +54,8 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   const reload = useCallback(async () => {
     if (!hasSheet) return;
     try {
-      const v = await api.configView(null);
+      // 명단은 모든 시트의 합집합이고, 제목·안내·마감은 모든 시트가 같다: 첫 시트로 읽는다.
+      const v = await api.configView(0, null);
       setConfig(v.config);
       setRoster(v.roster);
     } catch (e) {
@@ -78,6 +79,7 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
     const next = { ...config, ...patch };
     try {
       const v = await api.configApply(
+        0,
         {
           op: "setMeta",
           title: next.title,
@@ -95,7 +97,9 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
 
   const setLock = async (on: boolean) => {
     if (!config) return;
+    // '마감 후 읽기 전용'은 모든 시트에 같이 걸린다(다른 권한은 첫 시트 것 그대로).
     const v = await api.configApply(
+      0,
       { op: "setPermissions", permissions: { ...config.permissions, lockAfterDeadline: on } },
       null,
     );
@@ -347,7 +351,7 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
         running={service !== null}
         snapshot={snapshot}
         roster={roster}
-        origin={origin}
+        sheets={sheets}
         onRosterChanged={reload}
         onIpNamesChanged={() => setIpRev((n) => n + 1)}
         onGoConfig={onGoConfig}

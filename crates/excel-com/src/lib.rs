@@ -14,7 +14,7 @@ mod thread;
 mod variant;
 mod writer;
 
-pub use calc::CalcInfo;
+pub use calc::{CalcInfo, CalcTarget};
 pub use dispatch::{Dispatch, com_calls};
 pub use error::{ExcelError, Result};
 pub use inspect::{ColumnInfo, SheetInspection, ValidationInfo};

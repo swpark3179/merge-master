@@ -7,12 +7,12 @@ import type {
   CellValue,
   Rejection,
   SheetModel,
+  SheetView,
   StyleChange,
-  Welcome,
 } from "@mm/shared";
 
 /**
- * 참여자 화면의 편집 상태(React와 분리한 순수 로직).
+ * 참여자 화면의 편집 상태(React와 분리한 순수 로직). 시트 하나에 하나씩(되돌리기도 시트마다).
  *
  * - 낙관적 반영: 입력하면 바로 그리고, 서버 답(`applied`)이 오면 서버가 정규화한 값으로 바꾼다.
  * - 대기 중 칸(`pending`): 답을 못 받은 칸은 다른 사람의 수정이 와도 내 값을 계속 보인다(나중 입력이 이긴다).
@@ -22,6 +22,8 @@ import type {
 
 export interface Batch {
   batch: string;
+  /** 세션 안 시트 순번(불러온 순서). */
+  sheet: number;
   cells: CellEdit[];
   /** 히스토리·활동 피드 표시용(붙여넣기·범위 지우기·실행 취소·내 변경 되돌리기). */
   origin?: BatchOrigin;
@@ -76,12 +78,14 @@ export class EditState {
   private seq = 0;
 
   constructor(
-    welcome: Welcome,
+    view: SheetView,
     private readonly clientId: string,
+    /** 세션 안 시트 순번. 묶음에 함께 보낸다. */
+    public sheet = 0,
     outbox: Batch[] = [],
   ) {
-    this.outbox = outbox.map((b) => ({ ...b, cells: b.cells.map((c) => ({ ...c })) }));
-    this.load(welcome);
+    this.outbox = outbox.map((b) => ({ ...b, sheet, cells: b.cells.map((c) => ({ ...c })) }));
+    this.load(view);
   }
 
   get cols(): number {
@@ -101,7 +105,7 @@ export class EditState {
   }
 
   /** 입장·재접속·설정 변경으로 새 시트를 받았다. 아직 답을 못 받은 내 입력은 그 위에 다시 그린다. */
-  load(welcome: Welcome) {
+  load(welcome: SheetView) {
     // 호스트가 다른 시트로 다시 불러왔으면 되돌리기 기록은 의미가 없다. 표 아래에 행이 붙은 것(행만 늘어남)은 같은
     // 시트라 좌표가 그대로이므로 기록을 남긴다.
     const grown =
@@ -155,7 +159,7 @@ export class EditState {
       this.pending.set(i, batch);
     }
     if (cells.length === 0) return null;
-    const b: Batch = origin ? { batch, cells, origin } : { batch, cells };
+    const b: Batch = origin ? { batch, sheet: this.sheet, cells, origin } : { batch, sheet: this.sheet, cells };
     this.outbox.push(b);
     if (record === "undo") {
       this.undoStack.push({ batch, cells: undo });

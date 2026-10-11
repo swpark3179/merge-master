@@ -25,7 +25,7 @@ export const DEFAULT_ITEMS: ImportItems = {
   includeHidden: false,
 };
 
-/** 1a 입력값. 머리글·틀 고정은 다시 읽지 않고 반영하고, 범위·가져올 항목이 바뀌면 다시 읽는다. */
+/** 1a 입력값(시트마다). 머리글·틀 고정은 다시 읽지 않고 반영하고, 범위·가져올 항목이 바뀌면 다시 읽는다. */
 export interface ImportForm {
   range: string;
   /** 범위 첫 행부터 센 머리글 행 수. */
@@ -35,6 +35,17 @@ export interface ImportForm {
   items: ImportItems;
 }
 
+/** 고른 시트 하나의 감지·입력값·읽기 결과. */
+export interface SheetImport {
+  inspection: SheetInspection | null;
+  form: ImportForm | null;
+  result: ImportResult | null;
+  /** `result`를 읽을 때의 범위·항목(지금 입력값과 다르면 다시 읽어야 한다). */
+  resultKey: string | null;
+}
+
+const EMPTY: SheetImport = { inspection: null, form: null, result: null, resultKey: null };
+
 export const EXCEL_EXTENSIONS = ["xlsx", "xlsm", "xlsb", "xls"];
 
 type Busy = "list" | "open" | "inspect" | "read" | "commit" | null;
@@ -42,33 +53,75 @@ type Busy = "list" | "open" | "inspect" | "read" | "commit" | null;
 /** 범위·항목을 고친 뒤 다시 읽기까지 기다리는 시간(입력 중에는 읽지 않는다). */
 const REREAD_DELAY_MS = 600;
 
-export function useImport(onExcelStatus: (running: boolean) => void, onCommitted: (m: SheetModel) => void) {
+function formOf(ins: SheetInspection, items: ImportItems): ImportForm {
+  return {
+    range: formatRange(ins.table),
+    headerRows: ins.headerRows,
+    frozenCols: Math.min(Math.max(ins.frozenCols - ins.table.col, 0), ins.table.cols),
+    items,
+  };
+}
+
+/** 읽기 결과가 맞는지 보는 열쇠: 통합문서·시트·범위·가져올 항목. 범위가 잘못되었으면 `null`. */
+function readKey(bookId: string, sheet: string, form: ImportForm): string | null {
+  const range = parseRange(form.range);
+  return range ? JSON.stringify([bookId, sheet, formatRange(range), form.items]) : null;
+}
+
+function readOptions(form: ImportForm): ReadOptions {
+  return {
+    range: formatRange(parseRange(form.range)!),
+    headerRows: form.headerRows,
+    frozenCols: form.frozenCols,
+    items: form.items,
+  };
+}
+
+/**
+ * 1a 불러오기. 통합문서에서 시트를 하나 이상 고르고(체크), 미리 보는 시트(초점)의 범위·머리글·틀 고정을 고친다.
+ * 읽기는 한 번에 하나(Excel 스레드)라 초점 시트만 바로 읽고, 확정할 때 아직 읽지 않았거나 낡은 시트를 차례로 읽는다.
+ */
+export function useImport(onExcelStatus: (running: boolean) => void, onCommitted: (m: SheetModel[]) => void) {
   const [status, setStatus] = useState<ExcelStatus | null>(null);
   const [bookId, setBookId] = useState<string | null>(null);
-  const [sheet, setSheet] = useState<string | null>(null);
-  const [inspection, setInspection] = useState<SheetInspection | null>(null);
-  const [form, setForm] = useState<ImportForm | null>(null);
-  const [result, setResult] = useState<ImportResult | null>(null);
-  const [resultKey, setResultKey] = useState<string | null>(null);
+  /** 함께 채울 시트(통합문서 순서). */
+  const [selected, setSelected] = useState<string[]>([]);
+  /** 미리 보고 범위를 고치는 시트(고른 시트 중 하나). */
+  const [sheet, setFocus] = useState<string | null>(null);
+  const [per, setPer] = useState<Record<string, SheetImport>>({});
   const [progress, setProgress] = useState<ReadProgress | null>(null);
+  /** 확정하며 다른 시트를 읽는 중이면 그 시트와 몇 번째인지. */
+  const [step, setStep] = useState<{ sheet: string; n: number; of: number } | null>(null);
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState<string | null>(null);
   const readToken = useRef(0);
   const readNow = useRef(false);
   const itemsRef = useRef<ImportItems>(DEFAULT_ITEMS);
+  const perRef = useRef(per);
+  perRef.current = per;
 
   const book = status?.workbooks.find((b) => b.id === bookId) ?? null;
+  const cur = (sheet && per[sheet]) || EMPTY;
+
+  const patch = useCallback((name: string, p: Partial<SheetImport>) => {
+    setPer((all) => ({ ...all, [name]: { ...(all[name] ?? EMPTY), ...p } }));
+  }, []);
 
   const pick = useCallback((b: WorkbookInfo) => {
+    const first = b.activeSheet || b.sheets[0] || null;
     setBookId(b.id);
-    setSheet(b.activeSheet || b.sheets[0] || null);
+    setPer({});
+    setSelected(first ? [first] : []);
+    setFocus(first);
   }, []);
 
   /** '다른 파일': 고른 통합문서를 놓고 목록으로 돌아간다. */
   const unpick = useCallback(() => {
     readToken.current++;
     setBookId(null);
-    setSheet(null);
+    setSelected([]);
+    setFocus(null);
+    setPer({});
   }, []);
 
   const refresh = useCallback(async () => {
@@ -81,7 +134,9 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
       // 고른 통합문서가 아직 열려 있으면 그대로 두고, 아니면 사용자가 다시 고르게 한다.
       setBookId((current) => {
         if (current && st.workbooks.some((b) => b.id === current)) return current;
-        setSheet(null);
+        setSelected([]);
+        setFocus(null);
+        setPer({});
         return null;
       });
     } catch (e) {
@@ -118,58 +173,75 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
     [onExcelStatus, pick],
   );
 
-  // 시트를 고르면 사전 감지 → 감지값으로 바로 읽는다.
+  /** 통합문서 순서로 정렬. */
+  const ordered = useCallback(
+    (names: string[]) => (book ? book.sheets.filter((n) => names.includes(n)) : names),
+    [book],
+  );
+
+  /** 미리 볼 시트를 바꾼다(아직 고르지 않은 시트면 함께 고른다). */
+  const setSheet = useCallback(
+    (name: string) => {
+      setSelected((list) => (list.includes(name) ? list : ordered([...list, name])));
+      setFocus(name);
+    },
+    [ordered],
+  );
+
+  /** 시트를 고르거나 뺀다(하나는 남긴다). 미리 보던 시트를 빼면 남은 첫 시트를 본다. */
+  const toggle = useCallback(
+    (name: string) => {
+      if (!selected.includes(name)) {
+        setSelected(ordered([...selected, name]));
+        setFocus(name);
+        return;
+      }
+      if (selected.length <= 1) return;
+      const rest = selected.filter((n) => n !== name);
+      setSelected(rest);
+      if (sheet === name) setFocus(rest[0] ?? null);
+    },
+    [selected, sheet, ordered],
+  );
+
+  // 처음 보는 시트는 사전 감지 → 감지값으로 바로 읽는다.
+  const inspected = sheet ? per[sheet]?.inspection !== undefined && per[sheet]?.inspection !== null : false;
   useEffect(() => {
-    if (!bookId || !sheet) return;
+    if (!bookId || !sheet || inspected) return;
     let alive = true;
     readToken.current++;
     setBusy("inspect");
     setError(null);
-    setInspection(null);
-    // 이전 시트의 범위로 새 시트를 읽지 않도록 입력값도 비운다(감지가 끝나면 다시 채운다).
-    setForm(null);
-    setResult(null);
-    setResultKey(null);
     api
       .inspectSheet(bookId, sheet)
       .then((ins) => {
         if (!alive) return;
-        setInspection(ins);
         readNow.current = true;
-        setForm({
-          range: formatRange(ins.table),
-          headerRows: ins.headerRows,
-          frozenCols: Math.min(Math.max(ins.frozenCols - ins.table.col, 0), ins.table.cols),
-          items: itemsRef.current,
-        });
+        patch(sheet, { inspection: ins, form: formOf(ins, itemsRef.current), result: null, resultKey: null });
       })
       .catch((e) => alive && setError(errorText(e)))
       .finally(() => alive && setBusy(null));
     return () => {
       alive = false;
     };
-  }, [bookId, sheet]);
+  }, [bookId, sheet, inspected, patch]);
 
-  const parsedRange = form ? parseRange(form.range) : null;
-  const key =
-    form && bookId && sheet && parsedRange
-      ? JSON.stringify([bookId, sheet, formatRange(parsedRange), form.items])
-      : null;
+  const form = cur.form;
+  const key = form && bookId && sheet ? readKey(bookId, sheet, form) : null;
 
   const read = useCallback(
-    async (readKey: string, options: ReadOptions) => {
-      if (!bookId || !sheet) return;
+    async (name: string, k: string, options: ReadOptions) => {
+      if (!bookId) return;
       const token = ++readToken.current;
       setBusy("read");
       setProgress(null);
       setError(null);
       try {
-        const r = await api.readSheet(bookId, sheet, options, (p) => {
+        const r = await api.readSheet(bookId, name, options, (p) => {
           if (token === readToken.current) setProgress(p);
         });
         if (token !== readToken.current) return;
-        setResult(r);
-        setResultKey(readKey);
+        patch(name, { result: r, resultKey: k });
       } catch (e) {
         if (token !== readToken.current) return;
         const msg = errorText(e);
@@ -181,23 +253,20 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
         }
       }
     },
-    [bookId, sheet],
+    [bookId, patch],
   );
 
   // 범위·항목이 바뀌면(입력이 멈춘 뒤) 다시 읽는다. 뒤의 읽기가 앞선 읽기를 취소한다.
   useEffect(() => {
-    if (!key || !form || !parsedRange || key === resultKey) return;
-    const options: ReadOptions = {
-      range: formatRange(parsedRange),
-      headerRows: form.headerRows,
-      frozenCols: form.frozenCols,
-      items: form.items,
-    };
+    if (!key || !form || !sheet || key === cur.resultKey) return;
+    const options = readOptions(form);
     const delay = readNow.current ? 0 : REREAD_DELAY_MS;
     readNow.current = false;
-    const t = window.setTimeout(() => void read(key, options), delay);
+    const name = sheet;
+    const t = window.setTimeout(() => void read(name, key, options), delay);
     return () => window.clearTimeout(t);
-    // 의존성은 key(범위·항목)만 둔다: 머리글·틀 고정만 바뀌었을 때는 다시 읽지 않는다.
+    // 의존성은 key(시트·범위·항목)만 둔다: 머리글·틀 고정만 바뀌었을 때는 다시 읽지 않는다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
   const cancel = useCallback(() => {
@@ -207,64 +276,119 @@ export function useImport(onExcelStatus: (running: boolean) => void, onCommitted
     setProgress(null);
   }, []);
 
-  const update = useCallback((patch: Partial<ImportForm>) => {
-    setForm((f) => {
-      if (!f) return f;
-      const next = { ...f, ...patch };
-      itemsRef.current = next.items;
-      return next;
-    });
-  }, []);
+  /** 미리 보는 시트의 입력값을 고친다. */
+  const update = useCallback(
+    (p: Partial<ImportForm>) => {
+      if (!sheet) return;
+      setPer((all) => {
+        const s = all[sheet];
+        if (!s?.form) return all;
+        const next = { ...s.form, ...p };
+        itemsRef.current = next.items;
+        return { ...all, [sheet]: { ...s, form: next } };
+      });
+    },
+    [sheet],
+  );
 
   /** 미리보기에는 머리글·틀 고정 조정을 바로 반영한다. */
-  const preview = useMemo<SheetModel | null>(() => {
-    if (!result || !form) return null;
-    const m = result.model;
+  const previewOf = useCallback((s: SheetImport | undefined): SheetModel | null => {
+    if (!s?.result || !s.form) return null;
+    const m = s.result.model;
     return {
       ...m,
-      headerRows: Math.min(Math.max(form.headerRows, 0), m.rows),
-      frozenCols: Math.min(Math.max(form.frozenCols, 0), m.cols),
+      headerRows: Math.min(Math.max(s.form.headerRows, 0), m.rows),
+      frozenCols: Math.min(Math.max(s.form.frozenCols, 0), m.cols),
     };
-  }, [result, form]);
+  }, []);
+  const preview = useMemo(() => previewOf(cur), [cur, previewOf]);
 
-  const stale = key !== null && key !== resultKey;
+  const stale = key !== null && key !== cur.resultKey;
 
-  /** 마지막으로 확정한 읽기 결과 + 머리글·틀 고정. 같으면 다시 확정하지 않는다(설정이 초기화되지 않게). */
+  /** 마지막으로 확정한 시트들의 읽기 결과 + 머리글·틀 고정. 같으면 다시 확정하지 않는다(설정이 초기화되지 않게). */
   const [committedSig, setCommittedSig] = useState<string | null>(null);
-  const sig = form && resultKey ? JSON.stringify([resultKey, form.headerRows, form.frozenCols]) : null;
-  const changedSinceCommit = sig === null || sig !== committedSig;
+  const sig = JSON.stringify(
+    selected.map((n) => [n, per[n]?.resultKey ?? null, per[n]?.form?.headerRows, per[n]?.form?.frozenCols]),
+  );
+  const changedSinceCommit = sig !== committedSig;
 
+  /** 고른 시트를 모두 확정한다: 아직 감지·읽기를 안 했거나 낡은 시트는 차례로 읽는다. */
   const commit = useCallback(async () => {
-    if (!form || stale) return;
+    if (!bookId || selected.length === 0) return;
     setBusy("commit");
+    setError(null);
     try {
-      const m = await api.commitImport(form.headerRows, form.frozenCols);
-      setCommittedSig(sig);
-      onCommitted(m);
+      const done: Record<string, SheetImport> = { ...perRef.current };
+      for (const [i, name] of selected.entries()) {
+        let s = done[name] ?? EMPTY;
+        if (!s.inspection || !s.form) {
+          setStep({ sheet: name, n: i + 1, of: selected.length });
+          const ins = await api.inspectSheet(bookId, name);
+          s = { ...s, inspection: ins, form: formOf(ins, itemsRef.current) };
+        }
+        const k = readKey(bookId, name, s.form!);
+        if (!k) throw new Error(`‘${name}’ 시트의 데이터 범위를 확인해 주세요`);
+        if (k !== s.resultKey || !s.result) {
+          setStep({ sheet: name, n: i + 1, of: selected.length });
+          const token = ++readToken.current;
+          const r = await api.readSheet(bookId, name, readOptions(s.form!), (p) => {
+            if (token === readToken.current) setProgress(p);
+          });
+          s = { ...s, result: r, resultKey: k };
+        }
+        done[name] = s;
+      }
+      setPer(done);
+      setStep(null);
+      setProgress(null);
+      const models = await api.commitImport(
+        bookId,
+        selected.map((name) => ({
+          sheet: name,
+          headerRows: done[name]!.form!.headerRows,
+          frozenCols: done[name]!.form!.frozenCols,
+        })),
+      );
+      setCommittedSig(
+        JSON.stringify(
+          selected.map((n) => [n, done[n]?.resultKey ?? null, done[n]?.form?.headerRows, done[n]?.form?.frozenCols]),
+        ),
+      );
+      onCommitted(models);
     } catch (e) {
-      setError(errorText(e));
+      const msg = errorText(e);
+      if (msg !== CANCELLED) setError(msg);
     } finally {
+      setStep(null);
+      setProgress(null);
       setBusy(null);
     }
-  }, [form, stale, sig, onCommitted]);
+  }, [bookId, selected, onCommitted]);
 
   return {
     status,
     book,
+    /** 미리 보는 시트. */
     sheet,
     setSheet,
+    selected,
+    toggle,
+    /** 시트마다 감지·읽기 상태. */
+    per,
     pick,
     unpick,
     refresh,
     openFile,
-    inspection,
+    inspection: cur.inspection,
     form,
     update,
-    rangeValid: parsedRange !== null,
-    result,
+    rangeValid: form ? parseRange(form.range) !== null : false,
+    result: cur.result,
     preview,
+    previewOf,
     stale,
     progress,
+    step,
     busy,
     error,
     cancel,

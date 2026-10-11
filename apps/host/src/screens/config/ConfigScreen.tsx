@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useToast } from "../../frame";
+import { SheetTabs } from "../../SheetTabs";
 import { useHostEditor } from "../../useHostEditor";
 import { cellsRole, rangeAccess } from "./access";
 import {
@@ -22,7 +23,11 @@ import { useConfig } from "./useConfig";
 type Tab = "roles" | "assign";
 
 interface Props {
-  model: SheetModel;
+  /** 확정한 시트들(세션 안 순번 순서). */
+  models: SheetModel[];
+  /** 보고 있는 시트. 다른 단계(모니터링 등)와 같이 쓴다. */
+  sheet: number;
+  onSheet: (sheet: number) => void;
   /** 화면이 보이는 중인지(다시 보일 때 설정을 새로 읽는다). */
   active: boolean;
 }
@@ -45,9 +50,27 @@ export function formatLabel(rule: ColumnRule | undefined): string {
   }
 }
 
-/** 1b 취합 설정: 위쪽 탭(열 역할 · 담당자 배정), 그리드(칸 편집·크기 조절), 오른쪽 상세. */
-export function ConfigScreen({ model: initial, active }: Props) {
-  const s = useConfig(initial, active);
+/** 1b 취합 설정: 위쪽 탭(열 역할 · 담당자 배정), 그리드(칸 편집·크기 조절)와 그 아래 시트 탭, 오른쪽 상세.
+ * 열 역할·셀 예외·담당자 배정·참여자 권한은 시트마다, 제목·안내·마감·직접 넣은 명단은 모든 시트가 같이 쓴다. */
+export function ConfigScreen({ models, sheet, onSheet, active }: Props) {
+  const at = Math.min(sheet, models.length - 1);
+  const tabs = <SheetTabs names={models.map((m) => m.sheet)} active={at} onSelect={onSheet} />;
+  // 시트를 바꾸면 선택·시점·편집기를 새로 시작한다(시트마다 좌표가 다르다).
+  return <SheetConfig key={at} initial={models[at]!} sheet={at} active={active} tabs={tabs} />;
+}
+
+function SheetConfig({
+  initial,
+  sheet,
+  active,
+  tabs,
+}: {
+  initial: SheetModel;
+  sheet: number;
+  active: boolean;
+  tabs: ReactNode;
+}) {
+  const s = useConfig(initial, sheet, active);
   const [fmt, setFmt] = useState(false);
   const [tab, setTab] = useState<Tab>("roles");
   const grid = useRef<SheetGridHandle>(null);
@@ -248,6 +271,7 @@ export function ConfigScreen({ model: initial, active }: Props) {
               <div className="placeholder muted">설정을 불러오는 중…</div>
             )}
           </div>
+          {tabs}
         </div>
         {tab === "roles" ? <Legend s={s} /> : <AccessFooter s={s} />}
       </div>

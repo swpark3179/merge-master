@@ -13,18 +13,20 @@ import type {
   PresenceEntry,
   ServerMsg,
   SessionInfo,
+  SheetCell,
   StylePatch,
   Welcome,
 } from "@mm/shared";
-import { a1, decodeFlags } from "@mm/shared";
+import { a1, decodeFlags, sheetPrefix } from "@mm/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Batch, CellChange } from "./edits";
 import { EditState } from "./edits";
-import { loadOutbox, outboxKey, saveOutbox } from "./outbox";
+import type { StoredBatch } from "./outbox";
+import { loadOutbox, outboxKey, saveOutbox, splitBySheet } from "./outbox";
 
 /** 서버 `protocol::PROTOCOL_VERSION`과 같아야 한다. */
-const PROTOCOL = 4;
+const PROTOCOL = 5;
 const RETRY_MS = [500, 1000, 2000, 4000, 8000];
 const PING_MS = 20_000;
 const CURSOR_MS = 100;
@@ -44,26 +46,27 @@ export interface Notice {
   id: number;
   text: string;
   tone: "info" | "warn" | "error";
-  /** 알림 안 버튼(예: 강조한 셀로 이동). */
-  action?: { label: string; range: CellRange; highlight?: number };
+  /** 알림 안 버튼(예: 강조한 셀로 이동). `sheet`가 있으면 그 시트로 가서. */
+  action?: { label: string; range: CellRange; highlight?: number; sheet?: number };
 }
 
 /** 편집 잠금 알림: 내가 잡은 결과(받음·남이 쓰는 중), 또는 어떤 칸의 잠금이 풀렸다(남이 끝냄·호스트가 풂). */
 export interface LockEvent {
   seq: number;
   kind: "granted" | "denied" | "released";
+  sheet: number;
   at: CellRef;
   by?: string;
   reason?: string;
 }
 
-/** 주소 경로(`/q4`)마다 이름·토큰을 따로 기억한다. */
-function storageKey(what: "name" | "token") {
+/** 주소 경로(`/q4`)마다 이름·토큰·보던 시트를 따로 기억한다. */
+function storageKey(what: "name" | "token" | "sheet") {
   const slug = location.pathname.split("/").filter(Boolean)[0] ?? "root";
   return `mm.${slug}.${what}`;
 }
 
-function load(what: "name" | "token"): string | null {
+function load(what: "name" | "token" | "sheet"): string | null {
   try {
     return localStorage.getItem(storageKey(what));
   } catch {
@@ -71,7 +74,7 @@ function load(what: "name" | "token"): string | null {
   }
 }
 
-function save(what: "name" | "token", value: string | null) {
+function save(what: "name" | "token" | "sheet", value: string | null) {
   try {
     if (value === null) localStorage.removeItem(storageKey(what));
     else localStorage.setItem(storageKey(what), value);
@@ -96,13 +99,18 @@ export function useSession() {
     return name && load("token") ? { kind: "joining", name } : { kind: "name" };
   });
   const [welcome, setWelcome] = useState<Welcome | null>(null);
+  /** 보고 있는 시트(세션 안 순번). 시트 이름을 주소 경로별로 기억한다. */
+  const [active, setActiveState] = useState(0);
+  const activeRef = useRef(0);
+  activeRef.current = active;
   const [presence, setPresence] = useState<PresenceEntry[]>([]);
   const [connected, setConnected] = useState(false);
-  const [progress, setProgress] = useState<PersonProgress | null>(null);
+  /** 시트마다 내 필수 진행률. */
+  const [progress, setProgress] = useState<PersonProgress[]>([]);
   const [readOnly, setReadOnly] = useState(false);
   /** 읽기 전용인 까닭(마감 시각이 지남 / 호스트가 마감함). */
   const [readOnlyReason, setReadOnlyReason] = useState<string | null>(null);
-  const [history, setHistory] = useState<{ row: number; entries: ChangeEntry[] } | null>(null);
+  const [history, setHistory] = useState<{ sheet: number; row: number; entries: ChangeEntry[] } | null>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
   /** 호스트가 보낸 공지·셀 강조·채팅. */
   const [announcements, setAnnouncements] = useState<NoticeView[]>([]);
@@ -110,7 +118,7 @@ export function useSession() {
   const [chat, setChat] = useState<ChatMessage[]>([]);
   const [lockEvent, setLockEvent] = useState<LockEvent | null>(null);
   /** 표 아래에 행이 붙었다(내가 추가했으면 그 행으로 간다). */
-  const [rowsAdded, setRowsAdded] = useState<{ seq: number; by: string; range: CellRange } | null>(null);
+  const [rowsAdded, setRowsAdded] = useState<{ seq: number; by: string; sheet: number; range: CellRange } | null>(null);
   const [, setRev] = useState(0);
 
   const ws = useRef<WebSocket | null>(null);
@@ -123,10 +131,11 @@ export function useSession() {
   /** 끊긴 사유가 '다시 붙지 말 것'인지. */
   const stopRetry = useRef(false);
   const cursorTimer = useRef<number | undefined>(undefined);
-  const pendingCursor = useRef<CellRef | null | undefined>(undefined);
-  const edits = useRef<EditState | null>(null);
+  const pendingCursor = useRef<{ sheet: number; at: CellRef | null } | undefined>(undefined);
+  /** 시트마다 편집 상태(불러온 순서). */
+  const edits = useRef<EditState[]>([]);
   /** 입장 전에 읽어 둔 오프라인 대기열(이름별). */
-  const saved = useRef(new Map<string, Batch[]>());
+  const saved = useRef(new Map<string, StoredBatch[]>());
   const saving = useRef<Promise<void>>(Promise.resolve());
   const noticeSeq = useRef(0);
   const lockSeq = useRef(0);
@@ -151,14 +160,22 @@ export function useSession() {
   const dismiss = useCallback((id: number) => setNotices((list) => list.filter((n) => n.id !== id)), []);
 
   const persist = useCallback(() => {
-    const st = edits.current;
+    const sheets = edits.current;
     const name = load("name");
-    if (!st || !name) return;
-    const batches = st.outbox.map((b) => ({ batch: b.batch, cells: b.cells }));
+    if (sheets.length === 0 || !name) return;
+    const batches: StoredBatch[] = sheets.flatMap((st) =>
+      st.outbox.map((b) => ({
+        batch: b.batch,
+        cells: b.cells,
+        origin: b.origin,
+        sheet: st.sheet,
+        sheetName: st.model.sheet,
+      })),
+    );
     saving.current = saving.current.then(() => saveOutbox(outboxKey(name), batches));
   }, []);
 
-  const refresh = useCallback(() => setRev(edits.current?.rev ?? 0), []);
+  const refresh = useCallback(() => setRev((n) => n + 1), []);
 
   const sendJoin = useCallback(
     async (name: string) => {
@@ -179,26 +196,51 @@ export function useSession() {
     [],
   );
 
+  /** 알림에 붙일 시트 이름(시트가 하나면 없음): `인력계획!`. */
+  const place = (sheet: number): string => {
+    const all = edits.current;
+    return all.length > 1 && all[sheet] ? sheetPrefix(all[sheet].model.sheet) : "";
+  };
+
+  /** 시트 순번이 가리키는 편집 상태(없는 시트면 `undefined`). */
+  const sheetOf = (sheet: number): EditState | undefined => edits.current[sheet];
+
   const onMessage = useCallback(
     (msg: ServerMsg) => {
-      const st = edits.current;
       switch (msg.type) {
         case "welcome": {
           save("name", msg.name);
           save("token", msg.token);
           wantJoin.current = msg.name; // 끊겼다 다시 붙으면 토큰으로 바로 입장
-          let state = st;
-          if (state && welcomeName.current === msg.name) state.load(msg);
-          else {
-            state = new EditState(msg, CLIENT_ID, saved.current.get(msg.name) ?? []);
-            edits.current = state;
-          }
+          const names = msg.sheets.map((v) => v.model.sheet);
+          const same = welcomeName.current === msg.name;
+          // 같은 사람이면 이름이 같은 시트의 편집 상태(대기열·되돌리기)를 이어 쓴다. 처음이면 저장해 둔 대기열을 나눠 싣는다.
+          const before = same ? edits.current : [];
+          const stored = same ? null : splitBySheet(saved.current.get(msg.name) ?? [], names);
+          const next = msg.sheets.map((view, i) => {
+            const old = before.find((e) => e.model.sheet === view.model.sheet);
+            if (old) {
+              old.sheet = i;
+              for (const b of old.outbox) b.sheet = i;
+              old.load(view);
+              return old;
+            }
+            return new EditState(view, CLIENT_ID, i, stored?.[i] ?? []);
+          });
+          edits.current = next;
           welcomeName.current = msg.name;
-          for (const b of state.outbox) send({ type: "setCells", batch: b.batch, cells: b.cells, origin: b.origin });
+          for (const st of next)
+            for (const b of st.outbox)
+              send({ type: "setCells", sheet: b.sheet, batch: b.batch, cells: b.cells, origin: b.origin });
+          // 보던 시트를 이어서 본다(처음이면 지난번에 보던 시트). 그 시트가 없어졌으면 첫 시트.
+          const keep = same ? before[activeRef.current]?.model.sheet : load("sheet");
+          const shown = Math.max(0, names.indexOf(keep ?? ""));
+          activeRef.current = shown;
+          setActiveState(shown);
           setWelcome(msg);
           setPresence(msg.presence);
           setInfo(msg.session);
-          setProgress(msg.progress);
+          setProgress(msg.sheets.map((v) => v.progress));
           setAnnouncements(msg.notices);
           setHighlights(msg.highlights);
           setChat(msg.chat);
@@ -245,47 +287,51 @@ export function useSession() {
         case "presence":
           setPresence(msg.people);
           break;
-        case "cursor":
-          setPresence((list) => list.map((p) => (p.name === msg.name ? { ...p, cursor: msg.at } : p)));
+        case "cursor": {
+          const cursor: SheetCell | undefined = msg.at ? { sheet: msg.sheet, ...msg.at } : undefined;
+          setPresence((list) => list.map((p) => (p.name === msg.name ? { ...p, cursor } : p)));
           break;
+        }
         case "applied": {
+          const st = sheetOf(msg.sheet);
           if (!st) break;
           const r = st.applied(msg.batch, msg.cells, msg.conflicts, msg.rejected);
           persist();
           refresh();
-          const origin = st.model.origin;
+          const where = (x: { row: number; col: number }) => `${place(msg.sheet)}${at(x, st.model.origin)}`;
           if (r.conflicts.length > 0) {
-            const first = at(r.conflicts[0]!, origin);
+            const first = where(r.conflicts[0]!);
             const more = r.conflicts.length > 1 ? ` 외 ${r.conflicts.length - 1}칸` : "";
             notify(`${first}${more}: 다른 사람이 먼저 바꾼 값을 내 입력으로 덮어썼습니다`, "warn");
           }
           if (r.rejected.length > 0) {
             const first = r.rejected[0]!;
             const more = r.rejected.length > 1 ? ` (외 ${r.rejected.length - 1}칸)` : "";
-            notify(`${at(first, origin)}: ${first.reason}${more}`, "error");
+            notify(`${where(first)}: ${first.reason}${more}`, "error");
           }
           break;
         }
         case "cells":
-          st?.cells(msg.cells);
+          sheetOf(msg.sheet)?.cells(msg.cells);
           refresh();
           break;
         case "lockResult":
           setLockEvent({
             seq: ++lockSeq.current,
             kind: msg.ok ? "granted" : "denied",
+            sheet: msg.sheet,
             at: msg.at,
             by: msg.by,
             reason: msg.reason,
           });
           break;
         case "lockChanged":
-          st?.lockChanged(msg.at, msg.by);
+          sheetOf(msg.sheet)?.lockChanged(msg.at, msg.by);
           refresh();
-          if (!msg.by) setLockEvent({ seq: ++lockSeq.current, kind: "released", at: msg.at });
+          if (!msg.by) setLockEvent({ seq: ++lockSeq.current, kind: "released", sheet: msg.sheet, at: msg.at });
           break;
         case "progress":
-          setProgress(msg.progress);
+          setProgress((list) => list.map((p, i) => (i === msg.sheet ? msg.progress : p)));
           break;
         case "readOnly":
           setReadOnly(msg.readOnly);
@@ -296,11 +342,11 @@ export function useSession() {
           );
           break;
         case "styles":
-          st?.styles(msg.styles, msg.changes);
+          sheetOf(msg.sheet)?.styles(msg.styles, msg.changes);
           refresh();
           break;
         case "history":
-          setHistory({ row: msg.row, entries: msg.entries });
+          setHistory({ sheet: msg.sheet, row: msg.row, entries: msg.entries });
           break;
         case "closing":
           setPhase((p) => (p.kind === "in" || p.kind === "pending" ? { kind: "closed" } : p));
@@ -311,12 +357,13 @@ export function useSession() {
           break;
         case "highlight": {
           setHighlights((list) => [...list.filter((h) => h.id !== msg.id), msg]);
-          const origin = st?.model.origin ?? { row: 0, col: 0 };
-          const where = a1(origin.row + msg.range.row, origin.col + msg.range.col);
+          const origin = sheetOf(msg.sheet)?.model.origin ?? { row: 0, col: 0 };
+          const where = `${place(msg.sheet)}${a1(origin.row + msg.range.row, origin.col + msg.range.col)}`;
           notify(`${msg.from} 님이 ${where} 셀을 강조했습니다${msg.note ? `: ${msg.note}` : ""}`, "info", {
             label: "셀로 이동",
             range: msg.range,
             highlight: msg.id,
+            sheet: msg.sheet,
           });
           break;
         }
@@ -327,7 +374,7 @@ export function useSession() {
           setChat((list) => [...list, msg].slice(-500));
           break;
         case "rowsAdded":
-          setRowsAdded({ seq: ++rowsSeq.current, by: msg.by, range: msg.range });
+          setRowsAdded({ seq: ++rowsSeq.current, by: msg.by, sheet: msg.sheet, range: msg.range });
           break;
         case "pong":
           break;
@@ -336,6 +383,7 @@ export function useSession() {
           break;
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [at, notify, persist, refresh, send, sendJoin],
   );
 
@@ -433,13 +481,15 @@ export function useSession() {
     setPhase({ kind: "name" });
   }, []);
 
+  /** 내 커서(지금 시트). 다른 사람에게 이름표로 보인다. */
   const cursor = useCallback(
     (at: CellRef | null) => {
-      pendingCursor.current = at;
+      pendingCursor.current = { sheet: activeRef.current, at };
       if (cursorTimer.current !== undefined) return;
       cursorTimer.current = window.setTimeout(() => {
         cursorTimer.current = undefined;
-        send({ type: "cursor", at: pendingCursor.current ?? undefined });
+        const c = pendingCursor.current;
+        if (c) send({ type: "cursor", sheet: c.sheet, at: c.at ?? undefined });
       }, CURSOR_MS);
     },
     [send],
@@ -449,7 +499,7 @@ export function useSession() {
   const ship = useCallback(
     (b: Batch | null) => {
       if (!b) return false;
-      send({ type: "setCells", batch: b.batch, cells: b.cells, origin: b.origin });
+      send({ type: "setCells", sheet: b.sheet, batch: b.batch, cells: b.cells, origin: b.origin });
       persist();
       refresh();
       return true;
@@ -457,17 +507,32 @@ export function useSession() {
     [persist, refresh, send],
   );
 
-  /** 칸을 바꾼다(값은 열 형식대로 정규화한 것). */
+  /** 지금 시트의 편집 상태. */
+  const current = () => edits.current[activeRef.current] ?? null;
+
+  /** 칸을 바꾼다(지금 시트, 값은 열 형식대로 정규화한 것). */
   const edit = useCallback(
-    (changes: CellChange[], origin?: BatchOrigin) => ship(edits.current?.edit(changes, "undo", origin) ?? null),
+    (changes: CellChange[], origin?: BatchOrigin) => ship(current()?.edit(changes, "undo", origin) ?? null),
     [ship],
   );
-  const undo = useCallback(() => ship(edits.current?.undo() ?? null), [ship]);
-  const redo = useCallback(() => ship(edits.current?.redo() ?? null), [ship]);
-  const lock = useCallback((at: CellRef) => send({ type: "lock", at }), [send]);
-  const unlock = useCallback((at: CellRef) => send({ type: "unlock", at }), [send]);
-  const rowHistory = useCallback((row: number) => send({ type: "rowHistory", row }), [send]);
-  const format = useCallback((range: CellRange, patch: StylePatch) => send({ type: "format", range, patch }), [send]);
+  /** 지금 시트에서 내 마지막 변경을 되돌린다(되돌리기는 시트마다). */
+  const undo = useCallback(() => ship(current()?.undo() ?? null), [ship]);
+  const redo = useCallback(() => ship(current()?.redo() ?? null), [ship]);
+  const lock = useCallback((at: CellRef) => send({ type: "lock", sheet: activeRef.current, at }), [send]);
+  const unlock = useCallback((at: CellRef) => send({ type: "unlock", sheet: activeRef.current, at }), [send]);
+  const rowHistory = useCallback((row: number) => send({ type: "rowHistory", sheet: activeRef.current, row }), [send]);
+  const format = useCallback(
+    (range: CellRange, patch: StylePatch) => send({ type: "format", sheet: activeRef.current, range, patch }),
+    [send],
+  );
+  /** 보는 시트를 바꾼다(편집기는 먼저 닫아야 한다 — 확정·취소는 지금 시트로 간다). */
+  const setActive = useCallback((sheet: number) => {
+    const st = edits.current[sheet];
+    if (!st || sheet === activeRef.current) return;
+    activeRef.current = sheet;
+    setActiveState(sheet);
+    save("sheet", st.model.sheet);
+  }, []);
   const ackNotice = useCallback(
     (id: number) => {
       setAnnouncements((list) => list.map((n) => (n.id === id ? { ...n, read: true } : n)));
@@ -483,19 +548,40 @@ export function useSession() {
     [send],
   );
   const sendChat = useCallback((to: ChatTo, text: string) => send({ type: "chat", to, text }), [send]);
-  /** 표 아래에 빈 행을 붙인다(참여자 권한 '행 추가'). 결과는 새 시트(`welcome`) + `rowsAdded`. */
-  const addRows = useCallback((count = 1) => send({ type: "addRows", count }), [send]);
+  /** 지금 시트 표 아래에 빈 행을 붙인다(그 시트의 참여자 권한 '행 추가'). 결과는 새 시트(`welcome`) + `rowsAdded`. */
+  const addRows = useCallback((count = 1) => send({ type: "addRows", sheet: activeRef.current, count }), [send]);
 
-  const flags = useMemo(() => (welcome ? decodeFlags(welcome.flags) : new Uint8Array()), [welcome]);
+  const view = welcome?.sheets[active] ?? null;
+  const flags = useMemo(() => (view ? decodeFlags(view.flags) : new Uint8Array()), [view]);
+  /** 모든 시트를 더한 내 필수 진행률. */
+  const total = useMemo<PersonProgress | null>(
+    () =>
+      progress.length === 0
+        ? null
+        : progress.reduce((t, p) => ({
+            name: p.name,
+            rows: t.rows + p.rows,
+            required: t.required + p.required,
+            filled: t.filled + p.filled,
+          })),
+    [progress],
+  );
 
   return {
     info,
     phase,
     welcome,
+    /** 보고 있는 시트(세션 안 순번)와 그 시트의 보기(열 규칙·권한·행 담당자). */
+    active,
+    setActive,
+    view,
     flags,
     presence,
     connected,
-    progress: progress ?? welcome?.progress ?? null,
+    /** 모든 시트를 더한 내 필수 진행률. */
+    progress: total,
+    /** 시트마다 내 필수 진행률. */
+    sheetProgress: progress,
     readOnly,
     readOnlyReason,
     history,
@@ -505,7 +591,10 @@ export function useSession() {
     chat,
     lockEvent,
     rowsAdded,
-    sheet: edits.current,
+    /** 지금 시트의 편집 상태. */
+    sheet: edits.current[active] ?? null,
+    /** 시트마다 편집 상태(불러온 순서). */
+    sheets: edits.current,
     join,
     switchDevice,
     reset,

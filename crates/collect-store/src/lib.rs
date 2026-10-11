@@ -88,6 +88,30 @@ pub fn unpack(bytes: &[u8]) -> Result<Vec<CellValue>> {
     unpack_json(bytes)
 }
 
+/// 여러 시트의 셀 값(시트마다 행 우선) → 압축 바이트. `{"sheets": [[…], …]}` 모양이라 옛 한 시트 배열과 헷갈리지 않는다.
+pub fn pack_sheets(values: &[Vec<CellValue>]) -> Vec<u8> {
+    #[derive(Serialize)]
+    struct Sheets<'a> {
+        sheets: &'a [Vec<CellValue>],
+    }
+    pack_json(&Sheets { sheets: values })
+}
+
+/// [`pack_sheets`]의 반대. 여러 시트 전의 스냅샷(한 시트 값 배열)은 시트 하나로 읽는다.
+pub fn unpack_sheets(bytes: &[u8]) -> Result<Vec<Vec<CellValue>>> {
+    #[derive(Deserialize)]
+    struct Sheets {
+        sheets: Vec<Vec<CellValue>>,
+    }
+    let decode = |e: serde_json::Error| StoreError::Decode(e.to_string());
+    let value: serde_json::Value = unpack_json(bytes)?;
+    if value.is_object() {
+        Ok(serde_json::from_value::<Sheets>(value).map_err(decode)?.sheets)
+    } else {
+        Ok(vec![serde_json::from_value(value).map_err(decode)?])
+    }
+}
+
 /// 아무 값 → JSON → zstd.
 pub fn pack_json<T: Serialize + ?Sized>(value: &T) -> Vec<u8> {
     let json = serde_json::to_vec(value).expect("직렬화");
@@ -126,6 +150,7 @@ CREATE TABLE IF NOT EXISTS changes (
     batch TEXT NOT NULL,
     origin TEXT NOT NULL,
     kind TEXT NOT NULL,
+    sheet INTEGER NOT NULL DEFAULT 0,
     row INTEGER NOT NULL,
     col INTEGER NOT NULL,
     old TEXT NOT NULL,
@@ -143,6 +168,18 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, seq INTEGER NOT NULL, data BLOB NOT NULL);
 ";
 
+/// 여러 시트를 함께 취합하기 전에 만든 파일: 변경 기록에 `sheet` 열을 더한다(옛 기록은 모두 첫 시트).
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let has_sheet =
+        conn.query_row("SELECT count(*) FROM pragma_table_info('changes') WHERE name = 'sheet'", [], |r| {
+            r.get::<_, i64>(0)
+        })? > 0;
+    if !has_sheet {
+        conn.execute_batch("ALTER TABLE changes ADD COLUMN sheet INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    Ok(())
+}
+
 fn json<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).expect("직렬화")
 }
@@ -153,8 +190,8 @@ fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
             let tx = conn.transaction()?;
             {
                 let mut stmt = tx.prepare_cached(
-                    "INSERT OR REPLACE INTO changes (seq, at_ms, user, batch, origin, kind, row, col, old, new)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    "INSERT OR REPLACE INTO changes (seq, at_ms, user, batch, origin, kind, row, col, old, new, sheet)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )?;
                 for e in &entries {
                     stmt.execute(params![
@@ -168,6 +205,7 @@ fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
                         e.col,
                         json(&e.old),
                         json(&e.new),
+                        e.sheet,
                     ])?;
                 }
             }
@@ -202,6 +240,7 @@ impl Store {
         }
         let mut conn = Connection::open(&path)?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         let (tx, rx) = mpsc::channel::<Op>();
         let shown = path.display().to_string();
         let join = std::thread::Builder::new().name("collect-store".into()).spawn(move || {
@@ -288,9 +327,10 @@ fn from_json<T: serde::de::DeserializeOwned>(s: &str) -> rusqlite::Result<T> {
 pub fn load(path: impl AsRef<Path>) -> Result<Saved> {
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
+    migrate(&conn)?;
     let mut out = Saved::default();
-    let mut stmt =
-        conn.prepare("SELECT seq, at_ms, user, batch, origin, kind, row, col, old, new FROM changes ORDER BY seq")?;
+    let mut stmt = conn
+        .prepare("SELECT seq, at_ms, user, batch, origin, kind, row, col, old, new, sheet FROM changes ORDER BY seq")?;
     let rows = stmt.query_map([], |r| {
         Ok(ChangeEntry {
             seq: r.get::<_, i64>(0)? as u64,
@@ -299,6 +339,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Saved> {
             batch: r.get(3)?,
             origin: from_json(&format!("\"{}\"", r.get::<_, String>(4)?))?,
             kind: from_json(&format!("\"{}\"", r.get::<_, String>(5)?))?,
+            sheet: r.get(10)?,
             row: r.get(6)?,
             col: r.get(7)?,
             old: from_json(&r.get::<_, String>(8)?)?,
@@ -383,6 +424,7 @@ mod tests {
             batch: format!("b{seq}"),
             origin: BatchOrigin::Paste,
             kind: ChangeKind::Input,
+            sheet: 0,
             row: 2,
             col: 5,
             old: CellValue::Empty,
@@ -406,6 +448,46 @@ mod tests {
         assert!(packed.len() < 20_000, "{} bytes", packed.len());
         assert_eq!(unpack(&packed).unwrap(), values);
         assert!(unpack(b"not zstd").is_err());
+    }
+
+    #[test]
+    fn sheet_snapshots_read_old_and_new_shapes() {
+        let a = vec![CellValue::Number(5.0), CellValue::Empty];
+        let b = vec![CellValue::Text("x".into())];
+        assert_eq!(unpack_sheets(&pack_sheets(&[a.clone(), b.clone()])).unwrap(), [a.clone(), b]);
+        // 여러 시트 전의 스냅샷은 시트 하나.
+        assert_eq!(unpack_sheets(&pack(&a)).unwrap(), [a]);
+        // 숫자 하나뿐인 시트를 감싼 새 모양도 옛 모양(오류 값 `{"err": 5}`)으로 잘못 읽지 않는다.
+        let one = vec![vec![CellValue::Number(5.0)]];
+        assert_eq!(unpack_sheets(&pack_sheets(&one)).unwrap(), one);
+        assert_eq!(unpack_sheets(&pack(&[])).unwrap(), [Vec::<CellValue>::new()]);
+    }
+
+    #[test]
+    fn old_files_get_a_sheet_column() {
+        let path = temp("old.sqlite");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            // 여러 시트 전의 스키마(변경 기록에 sheet 열이 없다).
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE changes (seq INTEGER PRIMARY KEY, at_ms INTEGER NOT NULL, user TEXT NOT NULL,
+                    batch TEXT NOT NULL, origin TEXT NOT NULL, kind TEXT NOT NULL, row INTEGER NOT NULL,
+                    col INTEGER NOT NULL, old TEXT NOT NULL, new TEXT NOT NULL);
+                 INSERT INTO changes VALUES (1, 1000, '이서연', 'b1', 'paste', 'input', 2, 5, 'null', '9800');",
+            )
+            .unwrap();
+        }
+        let saved = load(&path).unwrap();
+        assert_eq!(saved.changes, [entry(1, CellValue::Number(9800.0))]);
+        let store = Store::open(&path).unwrap();
+        let mut e = entry(2, CellValue::Number(1.0));
+        e.sheet = 1;
+        store.append(std::slice::from_ref(&e));
+        store.flush().unwrap();
+        drop(store);
+        assert_eq!(load(&path).unwrap().changes[1], e);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

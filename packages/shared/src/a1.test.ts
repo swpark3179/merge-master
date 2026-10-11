@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { colSpanLabel, formatRange, parseRange, splitCellRefs } from "./a1";
+import { colSpanLabel, formatRange, parseRange, parseSheetRange, sheetPrefix, splitCellRefs } from "./a1";
 
 describe("parseRange / formatRange", () => {
   it("Rust CellRange::parse와 같은 결과", () => {
@@ -36,5 +36,31 @@ describe("splitCellRefs", () => {
       { text: "." },
     ]);
     expect(splitCellRefs("참조 없음")).toEqual([{ text: "참조 없음" }]);
+    // 한국어 조사가 바로 붙어도 참조만 떼어 낸다.
+    expect(splitCellRefs("#F7에 적어 주세요")[0]).toEqual({ ref: "F7", range: { row: 6, col: 5, rows: 1, cols: 1 } });
+  });
+
+  it("시트 이름이 붙은 참조", () => {
+    expect(splitCellRefs("#인력계획!e5 와 #'1분기 예산'!F7:H7")).toEqual([
+      { ref: "인력계획!E5", range: { row: 4, col: 4, rows: 1, cols: 1 }, sheet: "인력계획" },
+      { text: " 와 " },
+      { ref: "'1분기 예산'!F7:H7", range: { row: 6, col: 5, rows: 1, cols: 3 }, sheet: "1분기 예산" },
+    ]);
+    expect(splitCellRefs("#'Bob''s'!A1")[0]).toMatchObject({ sheet: "Bob's", ref: "'Bob''s'!A1" });
+  });
+
+  it("시트 이름이 붙은 범위", () => {
+    expect(parseSheetRange("F7:H7")).toEqual({ range: { row: 6, col: 5, rows: 1, cols: 3 } });
+    expect(parseSheetRange("인력계획!E5")).toEqual({ sheet: "인력계획", range: { row: 4, col: 4, rows: 1, cols: 1 } });
+    expect(parseSheetRange("'1분기 예산'!F7")).toMatchObject({ sheet: "1분기 예산" });
+    expect(parseSheetRange("'Bob''s'!A1")).toMatchObject({ sheet: "Bob's" });
+    expect(parseSheetRange("인력계획!")).toBeNull();
+    expect(parseSheetRange("'열린 따옴표!A1")).toBeNull();
+  });
+
+  it("시트 이름 접두(Rust와 같은 규칙)", () => {
+    expect(sheetPrefix("인력계획")).toBe("인력계획!");
+    expect(sheetPrefix("1분기 예산")).toBe("'1분기 예산'!");
+    expect(sheetPrefix("Bob's")).toBe("'Bob''s'!");
   });
 });

@@ -6,4 +6,4 @@ import type { StyleChange } from "./StyleChange";
 /**
  * 1d 모니터링 그리드가 받는 셀 변경. `reset`이면 시트를 다시 읽는다(설정·서식이 바뀌었거나 다른 시트).
  */
-export type HostEvent = { "type": "cells", by: string, cells: Array<CellUpdate>, } | { "type": "styles", styles: Array<CellStyle>, changes: Array<StyleChange>, } | { "type": "reset" };
+export type HostEvent = { "type": "cells", sheet: number, by: string, cells: Array<CellUpdate>, } | { "type": "styles", sheet: number, styles: Array<CellStyle>, changes: Array<StyleChange>, } | { "type": "reset" };

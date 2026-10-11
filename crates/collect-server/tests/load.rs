@@ -132,7 +132,7 @@ async fn thirty_people_editing_at_once() {
                     host.approve(&name, None, "").await.unwrap();
                 }
                 if let Ok(ServerMsg::Welcome(w)) = msg {
-                    break w
+                    break w.sheets[0]
                         .row_owner
                         .iter()
                         .enumerate()
@@ -184,7 +184,7 @@ async fn thirty_people_editing_at_once() {
                 let now = Instant::now();
                 if now >= next_cursor {
                     let at = CellRef::new(mine[(seq as usize) % mine.len()], 2 + (seq % 8) as u32);
-                    tx.send(text(&ClientMsg::Cursor { at: Some(at) })).await.unwrap();
+                    tx.send(text(&ClientMsg::Cursor { sheet: 0, at: Some(at) })).await.unwrap();
                     next_cursor = now + CURSOR_EVERY;
                 }
                 if now >= next_edit {
@@ -220,7 +220,7 @@ async fn thirty_people_editing_at_once() {
                             }
                         }
                     }
-                    let msg = ClientMsg::SetCells { batch: format!("{k}-{seq}"), cells, origin: None };
+                    let msg = ClientMsg::SetCells { sheet: 0, batch: format!("{k}-{seq}"), cells, origin: None };
                     tx.send(text(&msg)).await.unwrap();
                     next_edit += EDIT_EVERY;
                 }
@@ -243,7 +243,7 @@ async fn thirty_people_editing_at_once() {
         .with(move |s| {
             last.iter()
                 .filter(|((r, c), v)| {
-                    s.model.cell(CellRef::new(*r, *c)).map(|x| x.v.clone()) != Some(CellValue::Number(**v))
+                    s.sheets[0].model.cell(CellRef::new(*r, *c)).map(|x| x.v.clone()) != Some(CellValue::Number(**v))
                 })
                 .count()
         })

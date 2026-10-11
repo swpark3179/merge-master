@@ -2,9 +2,9 @@
 
 export type RecoveryInfo = { 
 /**
- * 원본 통합문서 이름과 시트.
+ * 원본 통합문서 이름과 시트들(불러온 순서).
  */
-workbook: string, sheet: string, 
+workbook: string, sheets: Array<string>, 
 /**
  * 확정한 시각(`YYYYMMDD-HHMMSS`).
  */

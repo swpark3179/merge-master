@@ -30,7 +30,11 @@ const NOT_YET: Step[] = [];
 
 export function App() {
   const [step, setStep] = useState<Step>("import");
-  const [sheet, setSheet] = useState<SheetModel | null>(null);
+  /** 확정한 시트들(세션 안 순번 순서). 비어 있으면 아직 불러오지 않았다. */
+  const [sheets, setSheets] = useState<SheetModel[]>([]);
+  /** 1b·1c·1d·1h에서 함께 보는 시트(세션 안 순번). */
+  const [current, setCurrent] = useState(0);
+  const loaded = sheets.length > 0;
   // 다시 불러와 확정할 때마다 1b 화면 상태(선택·시점)를 새로 시작한다.
   const [commitId, setCommitId] = useState(0);
   const [service, setService] = useState<ServiceInfo | null>(null);
@@ -87,7 +91,8 @@ export function App() {
     try {
       const r = await api.recoveryResume();
       setRecovery(null);
-      setSheet(r.model);
+      setSheets(r.models);
+      setCurrent(0);
       setCommitId((n) => n + 1);
       setService(r.service ?? null);
       void api.participantsGet().then((s) => s && setSnapshot(s));
@@ -109,10 +114,11 @@ export function App() {
     setRecovery(null);
   };
 
-  const onCommitted = useCallback((m: SheetModel) => {
+  const onCommitted = useCallback((m: SheetModel[]) => {
     // 새 취합을 시작했으므로 지난 취합은 더 묻지 않는다(파일은 남는다).
     setRecovery(null);
-    setSheet(m);
+    setSheets(m);
+    setCurrent(0);
     setCommitId((n) => n + 1);
     setStep("config");
     void api.participantsGet().then((s) => s && setSnapshot(s));
@@ -125,7 +131,7 @@ export function App() {
   const onChatSeen = useCallback((id: number) => setChatSeen((s) => Math.max(s, id)), []);
   const unreadChat = (comms?.chat ?? []).filter((m) => !m.host && m.id > chatSeen).length;
 
-  const ready = (s: Step) => !NOT_YET.includes(s) && (s === "import" || sheet !== null);
+  const ready = (s: Step) => !NOT_YET.includes(s) && (s === "import" || loaded);
 
   const index = STEPS.findIndex((s) => s.id === step);
   const cur = STEPS[index]!;
@@ -150,7 +156,13 @@ export function App() {
             <b>Merge Master</b>
           </div>
           <span className="divider" />
-          <span className="file">{sheet ? `${sheet.workbook} · ${sheet.sheet}` : "열린 파일 없음"}</span>
+          <span className="file">
+            {!loaded
+              ? "열린 파일 없음"
+              : sheets.length === 1
+                ? `${sheets[0]!.workbook} · ${sheets[0]!.sheet}`
+                : `${sheets[0]!.workbook} · 시트 ${sheets.length}개`}
+          </span>
           <span className="spacer" />
           {excelRunning !== null && (
             <span className={`excel ${excelRunning ? "ok" : "muted"}`}>
@@ -166,7 +178,7 @@ export function App() {
           <nav className="steps" aria-label="진행 단계">
             <div className="steps-title">진행 단계</div>
             {STEPS.map((s, i) => {
-              const done = i < index || (s.id === "import" && sheet !== null && step !== "import");
+              const done = i < index || (s.id === "import" && loaded && step !== "import");
               return (
                 <button
                   key={s.id}
@@ -203,7 +215,7 @@ export function App() {
                     <>
                       <b>지난 취합을 이어서 할 수 있습니다</b>
                       <span>
-                        {recovery.workbook} · {recovery.sheet} · 변경 {recovery.changes.toLocaleString()}건
+                        {recovery.workbook} · {recovery.sheets.join(", ")} · 변경 {recovery.changes.toLocaleString()}건
                         {recovery.lastChangeMs
                           ? ` · 마지막 변경 ${new Date(recovery.lastChangeMs).toLocaleString("ko-KR")}`
                           : ""}
@@ -231,25 +243,31 @@ export function App() {
               <div className="screen-slot" hidden={step !== "import"}>
                 <ImportScreen
                   active={step === "import"}
-                  committed={sheet !== null}
+                  committed={loaded}
                   onExcelStatus={setExcelRunning}
                   onCommitted={onCommitted}
                   onNext={() => setStep("config")}
                 />
               </div>
-              {sheet && (
+              {loaded && (
                 <div className="screen-slot" hidden={step !== "config"}>
-                  <ConfigScreen key={commitId} model={sheet} active={step === "config"} />
+                  <ConfigScreen
+                    key={commitId}
+                    models={sheets}
+                    sheet={current}
+                    onSheet={setCurrent}
+                    active={step === "config"}
+                  />
                 </div>
               )}
               {step === "service" && (
                 <ServiceScreen
                   active
-                  hasSheet={sheet !== null}
+                  hasSheet={loaded}
                   service={service}
                   onService={setService}
                   snapshot={snapshot}
-                  origin={sheet?.origin ?? { row: 0, col: 0 }}
+                  sheets={sheets}
                   onGoConfig={() => setStep("config")}
                 />
               )}
@@ -261,10 +279,13 @@ export function App() {
                   running={service !== null}
                   chatSeen={chatSeen}
                   onChatSeen={onChatSeen}
+                  sheets={sheets}
+                  sheet={current}
+                  onSheet={setCurrent}
                   onGoHistory={() => setStep("history")}
                 />
               )}
-              {step === "history" && <HistoryScreen active />}
+              {step === "history" && <HistoryScreen active sheets={sheets} sheet={current} />}
               {step === "save" && (
                 <SaveScreen
                   active

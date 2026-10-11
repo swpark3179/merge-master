@@ -22,7 +22,7 @@ fn temp(name: &str) -> std::path::PathBuf {
 
 fn set(st: &mut State, c: &Client, batch: &str, row: u32, col: u32, value: CellValue) {
     let cells = vec![CellEdit { row, col, value, base: 0 }];
-    let msg = ClientMsg::SetCells { batch: batch.into(), cells, origin: Some(BatchOrigin::Paste) };
+    let msg = ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: Some(BatchOrigin::Paste) };
     st.handle(Command::Client { conn: c.conn, msg });
 }
 
@@ -42,49 +42,50 @@ async fn session_comes_back_from_its_file() {
     let mut lee = connect(&mut st, 1);
     join(&mut st, &lee, "이서연", None);
     lee.take();
-    let r = st.access.rows_of(st.access.person("이서연").unwrap())[0];
+    let r = st.rt[0].access.rows_of(st.rt[0].access.person("이서연").unwrap())[0];
 
     set(&mut st, &lee, "b1", r, F, CellValue::Number(9800.0));
     set(&mut st, &lee, "b2", r, H, CellValue::Text("간담회 4회".into()));
     host(&mut st, |s| s.take_snapshot("점심 전"));
     set(&mut st, &lee, "b3", r + 1, F, CellValue::Number(1.0)); // 스냅샷 뒤의 기록(되짚어야 한다)
     host(&mut st, move |s| {
-        s.config.columns[7].required = true;
+        s.sheets[0].config.columns[7].required = true;
         let fill = StylePatch { fill: Some(FillPatch::Color { rgb: 0xFFF3B0 }), ..Default::default() };
-        apply_format(s.model, FormatEdit::Style { range: CellRange::new(r, H, 1, 1), patch: fill }).unwrap();
+        apply_format(&mut s.sheets[0].model, FormatEdit::Style { range: CellRange::new(r, H, 1, 1), patch: fill })
+            .unwrap();
         s.changed();
         s.send_notice("17시까지", true, NoticeTarget::All);
-        s.highlight(CellRange::new(r, H, 1, 1), "확인", HighlightAudience::All);
+        s.highlight(0, CellRange::new(r, H, 1, 1), "확인", HighlightAudience::All);
         s.chat(ChatTo::All, "안녕하세요");
         s.set_meta(META_SERVER, r#"{"port":8091,"slug":"q4","running":true}"#);
-        s.baseline.cells[0].v = CellValue::Text("저장한 기준".into());
+        s.sheets[0].baseline.cells[0].v = CellValue::Text("저장한 기준".into());
         s.set_closed(true);
     });
     set(&mut st, &lee, "late", r + 2, F, CellValue::Number(2.0)); // 마감 뒤: 거절(기록 없음)
     st.store.as_ref().unwrap().flush().unwrap();
-    let before_model = st.model.clone();
-    let before_config = st.config.clone();
+    let before_model = st.sheets[0].model.clone();
+    let before_config = st.sheets[0].config.clone();
     let before_log = st.log.len();
     let before_snaps = st.snapshots.list.len();
     drop(st); // 앱이 꺼짐
 
     let rec = recover(&path).unwrap();
     assert_eq!(rec.workbook_id, r"C:\work\budget.xlsx");
-    assert_eq!(rec.sheet, "예산신청서");
+    assert_eq!(rec.sheets, ["예산신청서"]);
     assert_eq!(rec.server, Some(ServerMeta { port: 8091, slug: "q4".into(), running: true }));
     assert_eq!(rec.changes, before_log);
     let mut st = State::new(rec.init);
-    assert_eq!(values(&st.model), values(&before_model), "되짚은 값이 같다");
-    assert_eq!(st.model.styles, before_model.styles, "서식도 같다");
-    assert_eq!(st.config, before_config);
-    assert_eq!(st.baseline.cells[0].v, CellValue::Text("저장한 기준".into()));
+    assert_eq!(values(&st.sheets[0].model), values(&before_model), "되짚은 값이 같다");
+    assert_eq!(st.sheets[0].model.styles, before_model.styles, "서식도 같다");
+    assert_eq!(st.sheets[0].config, before_config);
+    assert_eq!(st.sheets[0].baseline.cells[0].v, CellValue::Text("저장한 기준".into()));
     assert!(st.closed && st.read_only);
     assert_eq!(st.log.len(), before_log);
     assert_eq!(st.next_seq, before_log as u64 + 1);
     assert_eq!(st.snapshots.list.len(), before_snaps);
     let comms = st.comms_snapshot();
     assert_eq!((comms.notices.len(), comms.highlights.len(), comms.chat.len()), (1, 1, 1));
-    assert_eq!(st.versions[(r * st.model.cols + F) as usize], 1);
+    assert_eq!(st.rt[0].versions[(r * st.sheets[0].model.cols + F) as usize], 1);
 
     // 참여자가 다시 들어오면 공지·강조·채팅을 받고, 보내지 못했던 묶음(b3)을 다시 보내도 한 번만 반영된다.
     host(&mut st, |s| s.set_closed(false));
@@ -104,7 +105,7 @@ async fn session_comes_back_from_its_file() {
     assert_eq!(rec.changes, before_log + 1);
     let st = State::new(rec.init);
     assert!(!st.closed);
-    assert_eq!(st.model.cell(CellRef::new(r + 3, F)).unwrap().v, CellValue::Number(3.0));
+    assert_eq!(st.sheets[0].model.cell(CellRef::new(r + 3, F)).unwrap().v, CellValue::Number(3.0));
 }
 
 #[test]
@@ -124,10 +125,10 @@ async fn recommitting_while_serving_keeps_the_service_in_the_new_file() {
     let mut st = State::new(init);
     host(&mut st, |s| s.set_meta(META_SERVER, r#"{"port":8091,"slug":"q4","running":true}"#));
     // 서비스 중에 시트를 다시 확정 → 새 기록 파일
-    let (model, config) = (st.model.clone(), st.config.clone());
+    let (model, config) = (st.sheets[0].model.clone(), st.sheets[0].config.clone());
     let store = Store::open(&second).unwrap();
     host(&mut st, move |s| {
-        s.replace(model, config);
+        s.replace(vec![(model, config)]);
         s.set_store(store);
     });
     st.store.as_ref().unwrap().flush().unwrap();
@@ -154,7 +155,7 @@ async fn approved_tokens_and_added_rows_come_back() {
     let path = temp("tokens.sqlite");
     let mut init = fixture();
     init.store = Some(Store::open(&path).unwrap());
-    init.config.permissions.add_rows = true;
+    init.sheets[0].1.permissions.add_rows = true;
     let mut st = State::new(init);
     let mut a = connect(&mut st, 1);
     join_unlisted(&mut st, &a, "김민수", None);
@@ -165,16 +166,16 @@ async fn approved_tokens_and_added_rows_come_back() {
         reply: tokio::sync::oneshot::channel().0,
     });
     let token = a.welcome().token;
-    let rows = st.model.rows;
-    st.handle(Command::Client { conn: 1, msg: ClientMsg::AddRows { count: 1 } });
+    let rows = st.sheets[0].model.rows;
+    st.handle(Command::Client { conn: 1, msg: ClientMsg::AddRows { sheet: 0, count: 1 } });
     set(&mut st, &a, "n1", rows, F, CellValue::Number(7.0));
     st.store.as_ref().unwrap().flush().unwrap();
     drop(st);
 
     let mut st = State::new(recover(&path).unwrap().init);
-    assert_eq!(st.model.rows, rows + 1);
-    assert_eq!(st.model.cell(CellRef::new(rows, F)).unwrap().v, CellValue::Number(7.0));
-    assert_eq!(st.access.row_owner(rows), st.access.person("김민수"));
+    assert_eq!(st.sheets[0].model.rows, rows + 1);
+    assert_eq!(st.sheets[0].model.cell(CellRef::new(rows, F)).unwrap().v, CellValue::Number(7.0));
+    assert_eq!(st.rt[0].access.row_owner(rows), st.rt[0].access.person("김민수"));
     let mut back = connect(&mut st, 1);
     join_unlisted(&mut st, &back, "김민수", Some(&token));
     assert_eq!(back.welcome().token, token, "다시 승인받지 않는다");

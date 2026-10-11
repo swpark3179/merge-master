@@ -60,7 +60,17 @@ pub fn config_view(
     config: &CollectConfig,
     viewer: Option<&str>,
 ) -> Result<ConfigView, UnknownPerson> {
-    let access = Access::compile(model, config);
+    config_view_with(model, config, viewer, &[])
+}
+
+/// [`config_view`]와 같지만 명단을 `seed`(여러 시트의 합집합 명단)부터 시작한다([`Access::compile_with`]).
+pub fn config_view_with(
+    model: &SheetModel,
+    config: &CollectConfig,
+    viewer: Option<&str>,
+    seed: &[String],
+) -> Result<ConfigView, UnknownPerson> {
+    let access = Access::compile_with(model, config, seed);
     let (v, person) = match viewer {
         None => (Viewer::Host, None),
         Some(name) => {
