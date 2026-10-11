@@ -1,9 +1,19 @@
-import type { CollectConfig, HostSnapshot, LanAddress, RecalcStatus, ServiceInfo, SheetModel } from "@mm/shared";
+import type {
+  CollectConfig,
+  HostSnapshot,
+  JobSummary,
+  LanAddress,
+  RecalcStatus,
+  ServerStatus,
+  ServiceInfo,
+  SheetModel,
+} from "@mm/shared";
 import { formatDeadline } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 
-import { api, errorText } from "../../api";
+import { errorText, jobEvent } from "../../api";
+import { useApi, useJobId } from "../../job";
 import { useToast } from "../../frame";
 import { IpNamesPanel } from "./IpNamesPanel";
 import { ParticipantsPanel } from "./ParticipantsPanel";
@@ -13,21 +23,33 @@ interface Props {
   hasSheet: boolean;
   service: ServiceInfo | null;
   onService: (s: ServiceInfo | null) => void;
+  /** 이 업무의 주소 경로(정해 둔 값). */
+  slug: string;
+  /** 모든 업무(같은 포트를 쓰는 다른 업무·같은 업무명 확인). */
+  jobs: JobSummary[];
   snapshot: HostSnapshot | null;
   /** 확정한 시트들(현재 위치 주소·승인 범위의 시트). */
   sheets: SheetModel[];
   onGoConfig: () => void;
 }
 
-/** 1c 서비스 시작 · 접속자 관리. */
-export function ServiceScreen({ active, hasSheet, service, onService, snapshot, sheets, onGoConfig }: Props) {
+/**
+ * 1c 서비스 시작 · 접속자 관리. 참여자 서버는 하나(포트는 모든 업무 공통)이고, 이 업무를 주소 경로로 공유하거나 멈춘다
+ * (다른 업무의 공유는 그대로). 참여자는 업무 목록 주소(`http://IP:포트/`)에서 업무를 골라 들어올 수도 있다.
+ */
+export function ServiceScreen(props: Props) {
+  const { active, hasSheet, service, onService, snapshot, sheets, onGoConfig, jobs } = props;
+  const api = useApi();
+  const job = useJobId();
   const [config, setConfig] = useState<CollectConfig | null>(null);
   const [roster, setRoster] = useState<string[]>([]);
   const [lans, setLans] = useState<LanAddress[]>([]);
   const [ip, setIp] = useState<string | null>(null);
-  // 단계를 오가면 이 화면은 새로 그려진다: 실행 중이면 실제 포트·경로를 보인다.
+  // 단계를 오가면 이 화면은 새로 그려진다: 공유 중이면 실제 포트·경로를 보인다.
   const [port, setPort] = useState(() => String(service?.port ?? 8080));
-  const [slug, setSlug] = useState(() => service?.slug ?? "q4");
+  const [slug, setSlug] = useState(() => service?.slug ?? (props.slug || "q4"));
+  /** 참여자 서버(모든 업무 공통). 다른 업무가 공유 중이면 포트를 바꿀 수 없다. */
+  const [server, setServer] = useState<ServerStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [net, setNet] = useState(false);
@@ -47,7 +69,7 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   // 수식 재계산(Excel 계산 사본) 상태
   useEffect(() => {
     void api.recalcStatus().then(setRecalc);
-    const off = listen<RecalcStatus>("recalc-status", (e) => setRecalc(e.payload));
+    const off = listen<RecalcStatus>(jobEvent("recalc-status", job), (e) => setRecalc(e.payload));
     return () => void off.then((f) => f());
   }, []);
 
@@ -66,6 +88,10 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   useEffect(() => {
     if (!active) return;
     void reload();
+    void api.serverStatus().then((st) => {
+      setServer(st);
+      if (!service) setPort(String(st.port));
+    });
     void api.lanAddresses().then((l) => {
       setLans(l);
       setIp((cur) => cur ?? l[0]?.ip ?? "127.0.0.1");
@@ -73,6 +99,13 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   }, [active, reload]);
 
   const url = service ? `http://${ip ?? service.urls[0]?.ip ?? "127.0.0.1"}:${service.port}/${service.slug}` : null;
+  const listUrl = service ? `http://${ip ?? service.urls[0]?.ip ?? "127.0.0.1"}:${service.port}/` : null;
+  /** 다른 업무가 공유 중이다(포트는 그 업무들과 같이 쓴다). */
+  const others = jobs.filter((j) => j.id !== job && j.published);
+  const portLocked = !!service || ((server?.running ?? false) && others.length > 0);
+  /** 같은 업무명으로 공유 중인 다른 업무(참여자 목록에서 헷갈린다). */
+  const sameTitle = config?.title ? others.filter((j) => j.title === config.title) : [];
+  const slugTaken = jobs.some((j) => j.id !== job && j.slug.toLowerCase() === slug.trim().toLowerCase());
 
   const saveMeta = async (patch: Partial<Pick<CollectConfig, "title" | "description" | "requester" | "deadline">>) => {
     if (!config) return;
@@ -119,9 +152,9 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
     setError(null);
     try {
       await saveName();
-      onService(await api.serverStart(Number(port), slug.trim() || "q4"));
+      onService(await api.servicePublish(Number(port), slug.trim() || "q4"));
       setSince(new Date().toTimeString().slice(0, 5));
-      toast("공유를 시작했어요");
+      toast("이 업무의 공유를 시작했어요");
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -132,10 +165,10 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
   const stop = async () => {
     setBusy(true);
     try {
-      await api.serverStop();
+      await api.serviceUnpublish();
       onService(null);
       setSince(null);
-      toast("공유를 멈췄어요");
+      toast(others.length > 0 ? "이 업무의 공유를 멈췄어요(다른 업무는 계속)" : "공유를 멈췄어요");
     } finally {
       setBusy(false);
     }
@@ -156,6 +189,7 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
       config?.description || "",
       config?.deadline ? `마감: ${formatDeadline(config.deadline)}` : "",
       `접속: ${url}`,
+      others.length > 0 ? `(다른 취합 업무 목록: ${listUrl})` : "",
       "같은 사내망에서 위 주소를 여세요. 등록된 PC는 바로 들어오고, 그 밖은 이름을 입력하면 호스트가 승인합니다.",
     ]
       .filter(Boolean)
@@ -176,7 +210,7 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
             <>
               <div className="two">
                 <label className="field">
-                  <b>취합 제목</b>
+                  <b>업무명 (취합 제목)</b>
                   <input
                     aria-label="취합 제목"
                     defaultValue={config.title}
@@ -261,12 +295,17 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
                 )}
               </label>
               <label className="field">
-                <span>포트</span>
+                <span>
+                  포트 <span className="muted">(모든 업무 공통)</span>
+                </span>
                 <input
                   aria-label="포트"
                   value={port}
                   onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
-                  disabled={!!service}
+                  disabled={portLocked}
+                  title={
+                    !service && portLocked ? `다른 업무가 포트 ${server?.port}로 공유 중이라 바꿀 수 없어요` : undefined
+                  }
                 />
               </label>
               <label className="field">
@@ -277,7 +316,13 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
                   onChange={(e) => setSlug(e.target.value.replace(/[^\w-]/g, ""))}
                   disabled={!!service}
                 />
+                {slugTaken && <span className="warn small">다른 업무가 쓰는 주소 경로예요</span>}
               </label>
+            </div>
+          )}
+          {others.length > 0 && (
+            <div className="small muted">
+              같은 포트({server?.port})로 공유 중인 다른 업무: {others.map((j) => j.title || "새 취합").join(", ")}
             </div>
           )}
           <div className="reach">
@@ -312,6 +357,15 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
                 <code className="url">{url}</code>
                 <button onClick={() => void copy(url, "주소를 복사했어요")}>복사</button>
               </div>
+              {listUrl && (
+                <div className="url-row list-url">
+                  <span className="muted small">업무 목록</span>
+                  <code className="url">{listUrl}</code>
+                  <button className="ghost" onClick={() => void copy(listUrl, "업무 목록 주소를 복사했어요")}>
+                    복사
+                  </button>
+                </div>
+              )}
               <div className="row">
                 <button className="ghost grow-btn" onClick={() => void copy(notice(), "안내 문구를 복사했어요")}>
                   안내 문구 복사
@@ -331,7 +385,7 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
               <button
                 className="big-btn"
                 onClick={() => void start()}
-                disabled={busy || !port || !hasSheet || !myName.trim()}
+                disabled={busy || !port || !hasSheet || !myName.trim() || slugTaken}
               >
                 {busy ? "시작하는 중…" : "공유 시작"}
               </button>
@@ -339,6 +393,11 @@ export function ServiceScreen({ active, hasSheet, service, onService, snapshot, 
                 <div className="warn small">접속 조건에 내 이름을 입력하면 공유를 시작할 수 있어요.</div>
               )}
             </>
+          )}
+          {sameTitle.length > 0 && (
+            <div className="warn small">
+              같은 업무명으로 공유 중인 업무가 있어요. 참여자가 업무 목록에서 헷갈리지 않게 업무명을 다르게 해 주세요.
+            </div>
           )}
           <div className="small muted">
             참여 방식: IP 명단의 PC는 그 이름으로 바로 · 그 밖은 이름 입력 후 호스트 승인

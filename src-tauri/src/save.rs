@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use ts_rs::TS;
 
+use crate::jobs::Job;
 use crate::{AppState, CmdResult, run_excel};
 
 /// 'Excel 값 유지'로 고친 칸의 사용자 이름(이력에 남는다).
@@ -39,7 +40,7 @@ pub enum AfterSave {
     Keep,
     /// 참여자 입력을 막는다(취합 마감).
     ReadOnly,
-    /// 서비스를 멈춘다.
+    /// 이 업무의 공개를 멈춘다(다른 업무는 그대로).
     Stop,
 }
 
@@ -88,6 +89,7 @@ pub struct SaveInfo {
     /// 다른 이름으로 저장할 때 기본 경로: `원본명_취합_YYYYMMDD.xlsx`.
     pub default_copy: String,
     pub closed: bool,
+    /// 이 업무가 공개 중이다.
     pub running: bool,
     #[ts(optional)]
     pub last_save: Option<LastSave>,
@@ -150,13 +152,12 @@ struct SheetParts {
     labels: Vec<String>,
 }
 
-fn source(state: &AppState) -> CmdResult<Source> {
-    state.source.lock().unwrap().clone().ok_or_else(|| crate::NO_SHEET.to_string())
+fn source(job: &Job) -> CmdResult<Source> {
+    job.source.lock().unwrap().clone().ok_or_else(|| crate::NO_SHEET.to_string())
 }
 
-async fn snapshot(state: &AppState) -> CmdResult<Snapshot> {
-    state
-        .session()?
+async fn snapshot(job: &Job) -> CmdResult<Snapshot> {
+    job.session()?
         .with(|s| Snapshot {
             sheets: s
                 .sheets
@@ -192,10 +193,11 @@ fn default_copy_path(name: &str, folder: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn save_info(state: State<'_, AppState>) -> CmdResult<SaveInfo> {
-    let src = source(&state)?;
-    let snap = snapshot(&state).await?;
-    let closed = state.session()?.with(|s| s.closed()).await?;
+pub async fn save_info(state: State<'_, AppState>, job: String) -> CmdResult<SaveInfo> {
+    let job = state.job(&job)?;
+    let src = source(&job)?;
+    let snap = snapshot(&job).await?;
+    let closed = job.session()?.with(|s| s.closed()).await?;
     let parts: Vec<SummaryInput<'_>> = snap
         .sheets
         .iter()
@@ -224,15 +226,19 @@ pub async fn save_info(state: State<'_, AppState>) -> CmdResult<SaveInfo> {
         source_path,
         default_copy: default_copy_path(&name, &folder),
         closed,
-        running: state.server.lock().await.is_some(),
-        last_save: state.last_save.lock().unwrap().clone(),
+        running: job.published(),
+        last_save: job.last_save.lock().unwrap().clone(),
     })
 }
 
 /// 지금 Excel에 있는 값과 비교한다(원본이 닫혔으면 다시 연다). 시트마다 Excel 값(행 우선)도 돌려준다.
-async fn check(state: &AppState, opts: &SaveOptions) -> CmdResult<(Snapshot, SaveCheck, Vec<Vec<CellValue>>)> {
-    let src = source(state)?;
-    let snap = snapshot(state).await?;
+async fn check(
+    state: &AppState,
+    job: &Job,
+    opts: &SaveOptions,
+) -> CmdResult<(Snapshot, SaveCheck, Vec<Vec<CellValue>>)> {
+    let src = source(job)?;
+    let snap = snapshot(job).await?;
     if src.sheets.len() != snap.sheets.len() {
         return Err("불러온 시트와 세션의 시트가 맞지 않습니다. 다시 불러와 주세요".into());
     }
@@ -295,22 +301,26 @@ async fn check(state: &AppState, opts: &SaveOptions) -> CmdResult<(Snapshot, Sav
 
 /// 저장 전 확인: 쓸 칸, 그사이 Excel에서 고친 칸(충돌), 표 위치가 밀렸는지, 저장하지 않은 Excel 변경.
 #[tauri::command]
-pub async fn save_check(state: State<'_, AppState>, options: SaveOptions) -> CmdResult<SaveCheck> {
-    Ok(check(&state, &options).await?.1)
+pub async fn save_check(state: State<'_, AppState>, job: String, options: SaveOptions) -> CmdResult<SaveCheck> {
+    let job = state.job(&job)?;
+    Ok(check(&state, &job, &options).await?.1)
 }
 
 /// 저장한다. 충돌 칸은 모두 `keep_excel`(Excel 값 유지)이나 `use_collected`(취합 값으로 덮어쓰기) 중 하나여야 한다.
 /// 어느 시트든 표 위치가 바뀐 것 같으면 `force` 없이는 저장하지 않는다. 모든 시트를 한 번에 쓰고 한 번 저장한다.
 #[tauri::command]
 pub async fn save_run(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
+    job: String,
     options: SaveOptions,
     keep_excel: Vec<SheetCell>,
     use_collected: Vec<SheetCell>,
     force: bool,
 ) -> CmdResult<SaveResult> {
-    let src = source(&state)?;
-    let (snap, checked, excel) = check(&state, &options).await?;
+    let job = state.job(&job)?;
+    let src = source(&job)?;
+    let (snap, checked, excel) = check(&state, &job, &options).await?;
     let decided: HashSet<SheetCell> = keep_excel.iter().chain(&use_collected).copied().collect();
     let many = checked.sheets.len() > 1;
     for (i, sheet) in checked.sheets.iter().enumerate() {
@@ -397,7 +407,7 @@ pub async fn save_run(
     let history_entries = snap.history.len() as u32;
     // 저장 계획을 만든 시트(표 아래에 끼워 넣은 행을 기준 시트에 붙일 때 쓴 값 그대로).
     let planned: Vec<SheetModel> = snap.sheets.into_iter().map(|x| x.current).collect();
-    let session = state.session()?;
+    let session = job.session()?;
     session
         .with(move |s| {
             for (i, ((kept, written), planned)) in kept.into_iter().zip(written).zip(&planned).enumerate() {
@@ -433,11 +443,11 @@ pub async fn save_run(
         })
         .await?;
 
-    let stopped = matches!(options.after, AfterSave::Stop);
-    if stopped && let Some(server) = state.server.lock().await.take() {
-        server.stop().await;
+    let stopped = matches!(options.after, AfterSave::Stop) && job.published();
+    if stopped {
+        crate::service::unpublish(&app, &state, &job, false).await?;
     }
-    *state.last_save.lock().unwrap() = Some(LastSave {
+    *job.last_save.lock().unwrap() = Some(LastSave {
         at_ms: chrono::Utc::now().timestamp_millis(),
         path: report.path.clone(),
         original,
@@ -448,8 +458,8 @@ pub async fn save_run(
 
 /// 취합 마감(참여자 입력을 막음) / 다시 열기.
 #[tauri::command]
-pub async fn collect_close(state: State<'_, AppState>, closed: bool) -> CmdResult<()> {
-    state.session()?.with(move |s| s.set_closed(closed)).await
+pub async fn collect_close(state: State<'_, AppState>, job: String, closed: bool) -> CmdResult<()> {
+    state.session(&job)?.with(move |s| s.set_closed(closed)).await
 }
 
 /// 저장한 파일을 탐색기에서 보여 준다.

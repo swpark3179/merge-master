@@ -11,4 +11,8 @@ readOnly: boolean,
 /**
  * 호스트가 취합을 마감했다(마감 시각과 별개).
  */
-closed: boolean, online: number, };
+closed: boolean, online: number, 
+/**
+ * 호스트 앱의 업무 id. 같은 주소 경로를 새 업무가 다시 쓰면 바뀐다(참여자가 앞 업무의 대기열·토큰을 버린다).
+ */
+job?: string, };

@@ -183,3 +183,31 @@ async fn approved_tokens_and_added_rows_come_back() {
     join_unlisted(&mut st, &other, "김민수", Some("다른 토큰"));
     assert!(matches!(other.take()[..], [ServerMsg::Pending { .. }]));
 }
+
+/// 업무 id(호스트가 남긴 메타)는 되살린 세션에 남고, 다시 확정해 새 파일로 옮겨도 따라간다.
+#[tokio::test]
+async fn job_id_survives_recover_and_new_store() {
+    let path = temp("job.sqlite");
+    let mut init = fixture();
+    init.store = Some(Store::open(&path).unwrap());
+    let mut st = State::new(init);
+    assert_eq!(st.info().job, None, "업무 id 없음(개발 서버·옛 파일)");
+    host(&mut st, |s| s.set_meta(META_JOB, "20261011-093012-123"));
+    assert_eq!(st.info().job.as_deref(), Some("20261011-093012-123"));
+    st.store.as_ref().unwrap().flush().unwrap();
+    drop(st);
+
+    let rec = recover(&path).unwrap();
+    assert_eq!(rec.meta.get(META_JOB).map(String::as_str), Some("20261011-093012-123"));
+    let mut st = State::new(rec.init);
+    assert_eq!(st.info().job.as_deref(), Some("20261011-093012-123"), "되살린 세션도 같은 업무");
+
+    // 다시 확정: 새 기록 파일에도 업무 id가 남는다.
+    let next = temp("job-next.sqlite");
+    let store = Store::open(&next).unwrap();
+    host(&mut st, move |s| s.set_store(store));
+    st.store.as_ref().unwrap().flush().unwrap();
+    drop(st);
+    let peek = collect_store::peek(&next).unwrap();
+    assert_eq!(peek.meta.get(META_JOB).map(String::as_str), Some("20261011-093012-123"));
+}

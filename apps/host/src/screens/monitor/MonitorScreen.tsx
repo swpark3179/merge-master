@@ -35,7 +35,8 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CellWrite } from "../../api";
-import { api, errorText } from "../../api";
+import { errorText, jobEvent } from "../../api";
+import { useApi, useJobId } from "../../job";
 import { useToast } from "../../frame";
 import { SheetTabs } from "../../SheetTabs";
 import { useHostEditor } from "../../useHostEditor";
@@ -201,6 +202,8 @@ function SheetMonitor({
   onGoto: (g: Goto) => void;
   onArrived: () => void;
 }) {
+  const api = useApi();
+  const job = useJobId();
   const [data, setData] = useState<MonitorData | null>(null);
   const [, setRev] = useState(0);
   const [progress, setProgress] = useState<ProgressStats | null>(null);
@@ -243,7 +246,7 @@ function SheetMonitor({
 
   // 셀 변경: 이 시트의 바뀐 칸만 고쳐 그린다. 진행률·활동(모든 시트)은 잠깐 모았다가 새로 읽는다.
   useEffect(() => {
-    const off = listen<HostEvent>("sheet-changes", (e) => {
+    const off = listen<HostEvent>(jobEvent("sheet-changes", job), (e) => {
       const ev = e.payload;
       if (ev.type === "reset") {
         void load();
@@ -872,6 +875,7 @@ function NoticePanel({
   snapshot: HostSnapshot | null;
   onError: (e: string) => void;
 }) {
+  const api = useApi();
   const [kind, setKind] = useState<NoticeTarget["kind"]>("all");
   const [picked, setPicked] = useState<string[]>([]);
   const [important, setImportant] = useState(false);
@@ -972,6 +976,7 @@ function HighlightPanel(props: {
   onReveal: (sheet: number, r: CellRange) => void;
   onError: (e: string) => void;
 }) {
+  const api = useApi();
   const { comms, sheet, selection, owners, where, onReveal, onError } = props;
   const [note, setNote] = useState("");
   const [audience, setAudience] = useState<HighlightAudience>("owners");
@@ -1064,6 +1069,7 @@ function ChatPanel(props: {
   onSeen: (id: number) => void;
   onError: (e: string) => void;
 }) {
+  const api = useApi();
   const { comms, roster, many, colorOf, onRef, onSeen, onError } = props;
   const [to, setTo] = useState("");
   const [text, setText] = useState("");

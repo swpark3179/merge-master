@@ -1,321 +1,284 @@
-import type { CommsSnapshot, HostSnapshot, RecoveryInfo, ServiceInfo, SheetModel } from "@mm/shared";
-import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-
+import type { JobSummary } from "@mm/shared";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import { api, errorText } from "./api";
-import type { FooterOverride } from "./frame";
-import { FrameContext } from "./frame";
-import { ConfigScreen } from "./screens/config/ConfigScreen";
-import { HistoryScreen } from "./screens/history/HistoryScreen";
-import { ImportScreen } from "./screens/import/ImportScreen";
-import { MonitorScreen } from "./screens/monitor/MonitorScreen";
-import { SaveScreen } from "./screens/save/SaveScreen";
-import { ServiceScreen } from "./screens/service/ServiceScreen";
+import { appApi, errorText, jobApi } from "./api";
+import { JobProvider } from "./job";
+import type { Step } from "./JobWorkspace";
+import { JobWorkspace } from "./JobWorkspace";
 
-type Step = "import" | "config" | "service" | "monitor" | "history" | "save";
-
-const STEPS: { id: Step; label: string; desc: string }[] = [
-  { id: "import", label: "불러오기", desc: "참여자와 함께 채울 엑셀 파일을 고르세요." },
-  { id: "config", label: "설정", desc: "참여자가 어느 칸을 채울지 정하세요." },
-  { id: "service", label: "서비스", desc: "주소를 공유하면 참여자가 브라우저로 접속합니다." },
-  { id: "monitor", label: "모니터링", desc: "참여자가 입력하는 내용을 실시간으로 확인하세요." },
-  { id: "history", label: "히스토리", desc: "누가 언제 무엇을 바꿨는지 확인하세요." },
-  { id: "save", label: "저장", desc: "모은 내용을 엑셀 파일로 저장하세요." },
-];
-
-/** 아직 만들지 않은 단계. */
-const NOT_YET: Step[] = [];
-
+/**
+ * 호스트 앱: 여러 취합 업무를 함께 진행한다. 사이드바 위쪽의 업무 목록에서 업무를 고르면 그 업무의 단계 화면
+ * ([`JobWorkspace`], 업무마다 새로 그림)이 보인다. 앱을 켜면 끝내지 않은 업무를 모두 되살린다.
+ */
 export function App() {
-  const [step, setStep] = useState<Step>("import");
-  /** 확정한 시트들(세션 안 순번 순서). 비어 있으면 아직 불러오지 않았다. */
-  const [sheets, setSheets] = useState<SheetModel[]>([]);
-  /** 1b·1c·1d·1h에서 함께 보는 시트(세션 안 순번). */
-  const [current, setCurrent] = useState(0);
-  const loaded = sheets.length > 0;
-  // 다시 불러와 확정할 때마다 1b 화면 상태(선택·시점)를 새로 시작한다.
-  const [commitId, setCommitId] = useState(0);
-  const [service, setService] = useState<ServiceInfo | null>(null);
-  /** 앱을 다시 켰을 때 이어서 할 수 있는 지난 취합. */
-  const [recovery, setRecovery] = useState<RecoveryInfo | null>(null);
-  const [recoveryBusy, setRecoveryBusy] = useState(false);
-  const [recoveryError, setRecoveryError] = useState<string | null>(null);
-
+  const [jobs, setJobs] = useState<JobSummary[]>([]);
+  const [job, setJob] = useState<string | null>(null);
+  /** 앱을 켜며 되살리지 못한 업무·다시 공개하지 못한 까닭. */
+  const [banner, setBanner] = useState<string | null>(null);
+  /** 업무마다 마지막으로 본 단계·채팅 번호. */
+  const steps = useRef(new Map<string, Step>());
+  const [chatSeen, setChatSeen] = useState<Record<string, number>>({});
+  const [excelRunning, setExcelRunning] = useState<boolean | null>(null);
   const [version, setVersion] = useState("");
-  const [footer, setFooter] = useState<FooterOverride | null>(null);
   const [toastText, setToastText] = useState("");
   const toastTimer = useRef(0);
-  const frame = useMemo(
-    () => ({
-      setFooter,
-      toast: (msg: string) => {
-        setToastText(msg);
-        window.clearTimeout(toastTimer.current);
-        toastTimer.current = window.setTimeout(() => setToastText(""), 2200);
-      },
-    }),
-    [],
-  );
+  const [ending, setEnding] = useState<JobSummary | null>(null);
+
+  const toast = useCallback((msg: string) => {
+    setToastText(msg);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToastText(""), 2200);
+  }, []);
 
   useEffect(() => {
-    void api
-      .recoveryCheck()
-      .then(setRecovery)
-      .catch(() => {});
     void getVersion()
       .then(setVersion)
       .catch(() => {});
+    const off = listen<JobSummary[]>("jobs", (e) => setJobs(e.payload));
+    return () => void off.then((f) => f());
   }, []);
-  const [snapshot, setSnapshot] = useState<HostSnapshot | null>(null);
-  const [comms, setComms] = useState<CommsSnapshot | null>(null);
-  /** 마지막으로 본 채팅 번호(사이드바·모니터링의 안 읽은 수). */
-  const [chatSeen, setChatSeen] = useState(0);
-  const [excelRunning, setExcelRunning] = useState<boolean | null>(null);
 
-  // 접속자 표는 서버가 바뀔 때마다 밀어 준다(폴링하지 않음).
+  // 앱을 켤 때 한 번: 끝내지 않은 업무를 되살린다(백엔드가 한 번만 하므로 다시 불러도 같은 결과). 업무가 없으면 빈 업무.
+  const restored = useRef(false);
   useEffect(() => {
-    const off = listen<HostSnapshot>("participants", (e) => setSnapshot(e.payload));
-    const offComms = listen<CommsSnapshot>("comms", (e) => setComms(e.payload));
-    return () => {
-      void off.then((f) => f());
-      void offComms.then((f) => f());
-    };
-  }, []);
+    void appApi
+      .jobsRestore()
+      .then(async (r) => {
+        const list = await appApi.jobsList();
+        setJobs(list);
+        const ok = r.jobs.filter((j) => !j.error);
+        setJob((cur) => cur ?? ok[0]?.id ?? list[list.length - 1]?.id ?? null);
+        if (restored.current) return;
+        restored.current = true;
+        if (ok.length > 0) toast(`지난 업무 ${ok.length}개를 이어서 열었습니다`);
+        const problems = [
+          ...r.jobs.filter((j) => j.error).map((j) => `되살리지 못한 업무(${j.id}): ${j.error}`),
+          r.serviceError ? `취합은 이어서 했지만 공개를 다시 열지 못했습니다: ${r.serviceError}` : "",
+        ].filter(Boolean);
+        if (problems.length > 0) setBanner(problems.join(" · "));
+      })
+      .catch((e) => setBanner(errorText(e)));
+  }, [toast]);
 
-  // 세션은 시트를 확정할 때 생기고 서비스를 멈춰도 남는다(진행률·명단은 계속 보인다).
-  const resume = async () => {
-    setRecoveryBusy(true);
-    setRecoveryError(null);
+  // 보던 업무가 끝났으면(다른 창이 아니라 여기서만 끝내므로 대개 목록이 먼저 바뀜) 남은 업무로.
+  useEffect(() => {
+    if (job && jobs.length > 0 && !jobs.some((j) => j.id === job)) setJob(jobs[jobs.length - 1]!.id);
+  }, [job, jobs]);
+
+  const createJob = useCallback(async () => {
     try {
-      const r = await api.recoveryResume();
-      setRecovery(null);
-      setSheets(r.models);
-      setCurrent(0);
-      setCommitId((n) => n + 1);
-      setService(r.service ?? null);
-      void api.participantsGet().then((s) => s && setSnapshot(s));
-      void api
-        .commsGet()
-        .then(setComms)
-        .catch(() => {});
-      if (r.serviceError) setRecoveryError(`취합은 이어서 했지만 서비스를 다시 열지 못했습니다: ${r.serviceError}`);
-      setStep(r.service ? "monitor" : "service");
+      const created = await appApi.jobCreate();
+      setJobs(await appApi.jobsList());
+      steps.current.set(created.id, "import");
+      setJob(created.id);
     } catch (e) {
-      setRecoveryError(errorText(e));
-    } finally {
-      setRecoveryBusy(false);
+      setBanner(errorText(e));
     }
-  };
-
-  const discard = async () => {
-    await api.recoveryDiscard().catch(() => {});
-    setRecovery(null);
-  };
-
-  const onCommitted = useCallback((m: SheetModel[]) => {
-    // 새 취합을 시작했으므로 지난 취합은 더 묻지 않는다(파일은 남는다).
-    setRecovery(null);
-    setSheets(m);
-    setCurrent(0);
-    setCommitId((n) => n + 1);
-    setStep("config");
-    void api.participantsGet().then((s) => s && setSnapshot(s));
-    void api
-      .commsGet()
-      .then(setComms)
-      .catch(() => {});
   }, []);
 
-  const onChatSeen = useCallback((id: number) => setChatSeen((s) => Math.max(s, id)), []);
-  const unreadChat = (comms?.chat ?? []).filter((m) => !m.host && m.id > chatSeen).length;
+  const endJob = useCallback(
+    async (id: string) => {
+      try {
+        const left = await appApi.jobEnd(id);
+        setJobs(left);
+        steps.current.delete(id);
+        toast("업무를 끝냈습니다");
+        if (left.length === 0) await createJob();
+        else if (id === job) setJob(left[left.length - 1]!.id);
+      } catch (e) {
+        setBanner(errorText(e));
+      }
+    },
+    [createJob, job, toast],
+  );
 
-  const ready = (s: Step) => !NOT_YET.includes(s) && (s === "import" || loaded);
+  const onStep = useCallback((s: Step) => job && steps.current.set(job, s), [job]);
+  const onChatSeen = useCallback(
+    (id: number) => job && setChatSeen((m) => ({ ...m, [job]: Math.max(m[job] ?? 0, id) })),
+    [job],
+  );
 
-  const index = STEPS.findIndex((s) => s.id === step);
-  const cur = STEPS[index]!;
-  const prevStep = STEPS[index - 1];
-  const nextStep = STEPS[index + 1];
-  const defaultHint =
-    step === "config"
-      ? "설정은 공유 중에도 바꿀 수 있어요"
-      : step === "service" && !service
-        ? "공유를 시작해야 참여자가 접속할 수 있어요"
-        : "";
-  const hint = footer?.hint ?? defaultHint;
-  const goNext = footer?.onNext ?? (() => nextStep && setStep(nextStep.id));
-  const nextDisabled = footer?.nextDisabled ?? (nextStep ? !ready(nextStep.id) : true);
+  const sidebar = (
+    <JobList
+      jobs={jobs}
+      current={job}
+      chatSeen={chatSeen}
+      onPick={setJob}
+      onCreate={() => void createJob()}
+      onEnd={setEnding}
+    />
+  );
+  const bannerNode = banner ? (
+    <div className="recovery-card" role="region" aria-label="지난 업무">
+      <span className="error small">{banner}</span>
+      <span className="spacer" />
+      <button className="ghost small" onClick={() => setBanner(null)}>
+        닫기
+      </button>
+    </div>
+  ) : null;
 
   return (
-    <FrameContext.Provider value={frame}>
-      <div className="shell">
-        <header className="titlebar">
-          <div className="brand">
-            <span className="logo" />
-            <b>Merge Master</b>
-          </div>
-          <span className="divider" />
-          <span className="file">
-            {!loaded
-              ? "열린 파일 없음"
-              : sheets.length === 1
-                ? `${sheets[0]!.workbook} · ${sheets[0]!.sheet}`
-                : `${sheets[0]!.workbook} · 시트 ${sheets.length}개`}
-          </span>
-          <span className="spacer" />
-          {excelRunning !== null && (
-            <span className={`excel ${excelRunning ? "ok" : "muted"}`}>
-              {excelRunning ? "● Excel 연결됨 (COM)" : "○ 실행 중인 Excel 없음"}
-            </span>
-          )}
-          <div className={`service-badge${service ? " on" : ""}`} aria-live="polite">
-            {service ? `공유 중 · 접속 ${snapshot?.online ?? 0} / ${snapshot?.roster ?? 0}` : "공유 전"}
-            {snapshot?.closed && <span className="warn"> · 취합 마감됨</span>}
-          </div>
-        </header>
-        <div className="body">
-          <nav className="steps" aria-label="진행 단계">
-            <div className="steps-title">진행 단계</div>
-            {STEPS.map((s, i) => {
-              const done = i < index || (s.id === "import" && loaded && step !== "import");
-              return (
-                <button
-                  key={s.id}
-                  className={`step${s.id === step ? " active" : done ? " done" : ""}`}
-                  aria-label={`${i + 1} ${s.label}`}
-                  aria-current={s.id === step ? "step" : undefined}
-                  disabled={!ready(s.id)}
-                  title={NOT_YET.includes(s.id) ? "다음 단계에서 구현" : undefined}
-                  onClick={() => setStep(s.id)}
-                >
-                  <span className="mark">{done ? "✓" : i + 1}</span>
-                  <span>{s.label}</span>
-                  {s.id === "monitor" && unreadChat > 0 && step !== "monitor" ? (
-                    <span className="badge">{unreadChat}</span>
-                  ) : null}
-                </button>
-              );
-            })}
-            <span className="spacer" />
-            {version && <div className="app-version">v{version}</div>}
-          </nav>
-          <div className="main">
-            <div className="step-head">
-              <div>
-                <div className="step-no">{index + 1} / 6 단계</div>
-                <h1>{cur.label}</h1>
-                <p>{cur.desc}</p>
-              </div>
-            </div>
-            <main className="content">
-              {(recovery || recoveryError) && (
-                <div className="recovery-card" role="region" aria-label="지난 취합">
-                  {recovery && (
-                    <>
-                      <b>지난 취합을 이어서 할 수 있습니다</b>
-                      <span>
-                        {recovery.workbook} · {recovery.sheets.join(", ")} · 변경 {recovery.changes.toLocaleString()}건
-                        {recovery.lastChangeMs
-                          ? ` · 마지막 변경 ${new Date(recovery.lastChangeMs).toLocaleString("ko-KR")}`
-                          : ""}
-                        {recovery.port ? ` · 서비스 포트 ${recovery.port}(다시 엽니다)` : ""}
-                        {recovery.closed ? " · 마감됨" : ""}
-                      </span>
-                      <span className="spacer" />
-                      <button disabled={recoveryBusy} onClick={() => void resume()}>
-                        {recoveryBusy ? "되살리는 중…" : "이어서 하기"}
-                      </button>
-                      <button className="ghost" disabled={recoveryBusy} onClick={() => void discard()}>
-                        버리고 새로 시작
-                      </button>
-                    </>
-                  )}
-                  {recoveryError && <span className="error small">{recoveryError}</span>}
-                  {!recovery && (
-                    <button className="ghost small" onClick={() => setRecoveryError(null)}>
-                      닫기
-                    </button>
-                  )}
-                </div>
-              )}
-              {/* 불러오기·설정 화면은 단계를 옮겨도 상태를 잃지 않도록 숨기기만 한다. */}
-              <div className="screen-slot" hidden={step !== "import"}>
-                <ImportScreen
-                  active={step === "import"}
-                  committed={loaded}
-                  onExcelStatus={setExcelRunning}
-                  onCommitted={onCommitted}
-                  onNext={() => setStep("config")}
-                />
-              </div>
-              {loaded && (
-                <div className="screen-slot" hidden={step !== "config"}>
-                  <ConfigScreen
-                    key={commitId}
-                    models={sheets}
-                    sheet={current}
-                    onSheet={setCurrent}
-                    active={step === "config"}
-                  />
-                </div>
-              )}
-              {step === "service" && (
-                <ServiceScreen
-                  active
-                  hasSheet={loaded}
-                  service={service}
-                  onService={setService}
-                  snapshot={snapshot}
-                  sheets={sheets}
-                  onGoConfig={() => setStep("config")}
-                />
-              )}
-              {step === "monitor" && (
-                <MonitorScreen
-                  active
-                  snapshot={snapshot}
-                  comms={comms}
-                  running={service !== null}
-                  chatSeen={chatSeen}
-                  onChatSeen={onChatSeen}
-                  sheets={sheets}
-                  sheet={current}
-                  onSheet={setCurrent}
-                  onGoHistory={() => setStep("history")}
-                />
-              )}
-              {step === "history" && <HistoryScreen active sheets={sheets} sheet={current} />}
-              {step === "save" && (
-                <SaveScreen
-                  active
-                  snapshot={snapshot}
-                  onStopped={() => setService(null)}
-                  onRestart={() => setStep("import")}
-                />
-              )}
-            </main>
-            <footer className="step-foot">
-              <div>
-                {prevStep && (
-                  <button className="ghost" onClick={() => setStep(prevStep.id)}>
-                    ← {prevStep.label}
-                  </button>
-                )}
-              </div>
-              <div className="next">
-                {hint && <span className="hint">{hint}</span>}
-                {nextStep && (
-                  <button disabled={nextDisabled} onClick={goNext}>
-                    다음: {nextStep.label} →
-                  </button>
-                )}
-              </div>
-            </footer>
-          </div>
+    <>
+      {job ? (
+        <JobProvider key={job} job={job}>
+          <JobWorkspace
+            jobs={jobs}
+            initialStep={steps.current.get(job)}
+            onStep={onStep}
+            chatSeen={chatSeen[job] ?? 0}
+            onChatSeen={onChatSeen}
+            excelRunning={excelRunning}
+            onExcelStatus={setExcelRunning}
+            onNewJob={() => void createJob()}
+            onEndJob={() => {
+              const j = jobs.find((x) => x.id === job);
+              if (j) setEnding(j);
+            }}
+            sidebar={sidebar}
+            banner={bannerNode}
+            toast={toast}
+            version={version}
+          />
+        </JobProvider>
+      ) : (
+        <div className="shell starting">
+          <div className="muted">지난 업무를 확인하는 중…</div>
+          {bannerNode}
         </div>
-        {toastText && <div className="toast-host">{toastText}</div>}
+      )}
+      {toastText && <div className="toast-host">{toastText}</div>}
+      {ending && (
+        <EndJobDialog
+          job={ending}
+          onCancel={() => setEnding(null)}
+          onConfirm={() => {
+            const id = ending.id;
+            setEnding(null);
+            void endJob(id);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function percent(j: JobSummary): number | null {
+  return j.required > 0 ? Math.round((j.filled / j.required) * 100) : null;
+}
+
+/** 사이드바 위쪽: 진행 중인 취합 업무 목록(업무명·파일·공유 상태·승인 대기·진행률). */
+function JobList(props: {
+  jobs: JobSummary[];
+  current: string | null;
+  chatSeen: Record<string, number>;
+  onPick: (id: string) => void;
+  onCreate: () => void;
+  onEnd: (j: JobSummary) => void;
+}) {
+  const { jobs, current, chatSeen } = props;
+  return (
+    <div className="jobs" role="group" aria-label="취합 업무">
+      <div className="steps-title">취합 업무 {jobs.length > 1 ? jobs.length : ""}</div>
+      <ul className="job-list">
+        {jobs.map((j) => {
+          const pct = percent(j);
+          const unread = j.id !== current && j.lastChat > (chatSeen[j.id] ?? 0);
+          const name = j.title || "새 취합";
+          return (
+            <li key={j.id} className={`job-item${j.id === current ? " active" : ""}`} data-job={j.id}>
+              <button
+                className="job-pick"
+                aria-current={j.id === current ? "page" : undefined}
+                aria-label={`업무 ${name}`}
+                title={j.sheets.length > 0 ? `${j.workbook} · ${j.sheets.join(", ")}` : "아직 불러오지 않음"}
+                onClick={() => props.onPick(j.id)}
+              >
+                <span className="job-title">
+                  {name}
+                  {unread && <span className="job-dot" title="안 읽은 채팅" />}
+                </span>
+                <span className="job-file">{j.workbook || "파일 없음"}</span>
+                <span className="job-chips">
+                  {j.published ? (
+                    <span className="job-chip on">
+                      공유 중 {j.online}/{j.roster}
+                    </span>
+                  ) : (
+                    j.loaded && <span className="job-chip">공유 전</span>
+                  )}
+                  {j.pending > 0 && <span className="job-chip warn">승인 대기 {j.pending}</span>}
+                  {pct !== null && <span className="job-chip">{pct}%</span>}
+                  {j.closed && <span className="job-chip">마감됨</span>}
+                </span>
+              </button>
+              <button
+                className="job-end"
+                aria-label={`${name} 업무 끝내기`}
+                title="업무 끝내기"
+                onClick={() => props.onEnd(j)}
+              >
+                ×
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <button className="ghost small new-job" onClick={props.onCreate}>
+        + 새 취합
+      </button>
+    </div>
+  );
+}
+
+/** '업무 끝내기' 확인: 저장하지 않은 변경·공개 중인지 알려 준다. */
+function EndJobDialog({ job, onCancel, onConfirm }: { job: JobSummary; onCancel: () => void; onConfirm: () => void }) {
+  const [unsaved, setUnsaved] = useState<number | null>(null);
+  useEffect(() => {
+    if (!job.loaded) return;
+    void jobApi(job.id)
+      .saveInfo()
+      .then((i) =>
+        setUnsaved(i.lastSave ? i.summary.historyEntries - i.lastSave.historyEntries : i.summary.changedCells),
+      )
+      .catch(() => {});
+  }, [job]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+  const name = job.title || "새 취합";
+  return (
+    <div className="modal-back" onClick={onCancel}>
+      <div
+        className="modal card end-job"
+        role="alertdialog"
+        aria-label="업무 끝내기"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <b>‘{name}’ 업무를 끝낼까요?</b>
+        <ul className="small">
+          {job.published && <li>공유를 멈추고, 접속 중인 참여자 화면에는 ‘업무가 끝났습니다’가 보입니다.</li>}
+          {unsaved !== null && unsaved > 0 && (
+            <li className="warn">
+              저장하지 않은 변경이 {unsaved.toLocaleString()}건 있습니다. 먼저 6 저장에서 엑셀로 저장하세요.
+            </li>
+          )}
+          <li>앱을 다시 켜도 이어서 열지 않습니다(기록 파일은 남습니다).</li>
+        </ul>
+        <div className="row">
+          <span className="spacer" />
+          <button className="ghost" onClick={onCancel}>
+            취소
+          </button>
+          <button className="danger" onClick={onConfirm} autoFocus>
+            업무 끝내기
+          </button>
+        </div>
       </div>
-    </FrameContext.Provider>
+    </div>
   );
 }

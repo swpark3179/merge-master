@@ -2,8 +2,9 @@
 //
 // Tauri 앱을 WebView2 원격 디버깅 포트와 함께 띄우고 Playwright로 붙어서 1a 불러오기 → 1b 취합 설정 → 1c 서비스 →
 // 참여자(Chrome) 접속 → 동시 편집(진행률·Excel 수식 재계산·편집 잠금 해제) → 6 저장·마감(다른 이름으로 저장·원본에 반영·
-// 원본 충돌·마감) → 7단계 세션 복구(앱 강제 종료 → 다시 켜서 '이어서 하기' → 같은 포트 · 참여자 자동 재접속 ·
-// 끊긴 동안의 입력 반영 · 앞 앱이 남긴 Excel 정리)까지 확인한다. 저장 시험은 픽스처를 test-results로 복사한 통합문서로
+// 원본 충돌·마감) → 7단계 세션 복구(앱 강제 종료 → 다시 켜면 끝내지 않은 업무를 저절로 이어서 엶 → 같은 포트 ·
+// 참여자 자동 재접속 · 끊긴 동안의 입력 반영 · 앞 앱이 남긴 Excel 정리) → 9단계 여러 업무(두 번째 업무를 같은 포트에
+// 다른 주소 경로로 공유 · 참여자 업무 목록 · 업무 끝내기)까지 확인한다. 저장 시험은 픽스처를 test-results로 복사한 통합문서로
 // 하므로 픽스처는 바뀌지 않는다. 네이티브 파일 대화상자는 자동화할 수 없어 같은 command(excel_open_file)를 직접 부른다.
 //
 // 실행: pnpm smoke:host                     (Excel이 없을 때: '파일 열기'가 숨은 Excel 인스턴스를 쓴다)
@@ -97,12 +98,25 @@ try {
   const first = await launch();
   app = first.proc;
   const { page } = first;
+  // 앞 실행이 끝내지 않고 남긴 업무는 다시 켜면 저절로 열린다: 모두 끝내고 빈 업무로 시작한다.
+  await page.getByRole("group", { name: "취합 업무" }).waitFor({ timeout: 60_000 });
+  await sleep(1000);
+  const leftJobs = page.locator(".job-item").filter({ hasNotText: "파일 없음" });
+  while ((await leftJobs.count()) > 0) {
+    await leftJobs.first().locator(".job-end").click();
+    await page.getByRole("alertdialog", { name: "업무 끝내기" }).getByRole("button", { name: "업무 끝내기" }).click();
+    await expect(page.getByRole("alertdialog")).toHaveCount(0);
+    await sleep(500);
+  }
+  await page.locator(".job-item").filter({ hasText: "파일 없음" }).first().locator(".job-pick").click();
   await page.getByRole("heading", { name: "불러오기" }).waitFor();
   if (release) check(page.url().includes("tauri.localhost"), `release 빌드: 내장 화면 (${page.url()})`);
 
   const commitButton = page.getByRole("button", { name: "다음: 설정 →" });
   const waitRead = () => expect(commitButton).toBeEnabled({ timeout: 60_000 });
   const invoke = (cmd, args) => page.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a), [cmd, args]);
+  /** 지금 보는 업무의 id(업무에 딸린 command를 직접 부를 때). */
+  const jobId = () => page.locator(".job-item.active").getAttribute("data-job");
   const facts = async () =>
     Object.fromEntries(
       await page
@@ -386,8 +400,10 @@ try {
   await svc.getByRole("button", { name: "공유 시작", exact: true }).click();
   const url = (await svc.locator("code.url").textContent()) ?? "";
   check(url.endsWith(`:${SERVICE_PORT}/q4`), `접속 주소 ${url}`);
-  const info = await (await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/session`)).json();
+  const info = await (await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/session?s=q4`)).json();
   check(info.requester === "박지훈 (기획팀)" && info.title === "하반기 교육 수요 조사", "공개 정보: 제목·요청자");
+  const listed = await (await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/sessions`)).json();
+  check(listed.length === 1 && listed[0].slug === "q4", "업무 목록(/api/sessions)에 이 업무");
   check((await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/sheet`)).status === 404, "시트는 입장 전에는 받을 수 없음");
 
   participant = await chromium.launch({ channel: "chrome" });
@@ -580,7 +596,7 @@ try {
   await expect(hist.getByLabel("셀 타임라인")).toContainText("원본");
   check(true, "변경 기록이 묶음(범위 삭제·되돌림)으로 보이고, 칸을 누르면 셀 타임라인");
   const csvPath = join(shots, "history.csv");
-  const lines = await invoke("history_export_csv", { filter: {}, path: csvPath });
+  const lines = await invoke("history_export_csv", { job: await jobId(), filter: {}, path: csvPath });
   check(lines >= 5 && existsSync(csvPath), `CSV 내보내기 ${lines}건`);
 
   const snaps = hist.getByLabel("스냅샷");
@@ -678,7 +694,7 @@ try {
   check(true, "원본에 반영한 값이 새 기준 → 바뀐 칸 0 · 취합 다시 열기");
   await page.screenshot({ path: join(shots, "host-save.png") });
 
-  // ------------------------------------------------------------ 7단계: 앱 강제 종료 → 다시 켜서 이어서 하기
+  // ------------------------------------------------------------ 7단계: 앱 강제 종료 → 다시 켜면 저절로 이어서
   console.log("[7 세션 복구]");
   await step("4 모니터링").click();
   await pcell(4, 5).click();
@@ -707,19 +723,17 @@ try {
   const second = await launch();
   app = second.proc;
   const page2 = second.page;
-  const banner = page2.getByRole("region", { name: "지난 취합" });
-  await expect(banner).toContainText("smoke-budget.xlsx", { timeout: 15_000 });
-  await expect(banner).toContainText(`서비스 포트 ${SERVICE_PORT}(다시 엽니다)`);
-  check(true, `다시 켜면 ‘지난 취합’: ${(await banner.locator("span").first().textContent())?.trim()}`);
+  const restoredJob = page2.locator(".job-item").filter({ hasText: "smoke-budget.xlsx" });
+  await expect(restoredJob).toBeVisible({ timeout: 60_000 });
+  await expect(restoredJob).toContainText("공유 중", { timeout: 60_000 });
+  check(true, "다시 켜면 끝내지 않은 업무를 저절로 이어서 열고 같은 포트·주소로 다시 공유");
   await page2.screenshot({ path: join(shots, "host-recovery.png") });
-  await banner.getByRole("button", { name: "이어서 하기" }).click();
-  await expect(banner).toHaveCount(0, { timeout: 60_000 });
   const mon2 = page2.locator(".monitor-screen");
   const mcell2 = (r, c) => mon2.locator(`.mmg-cell[data-r="${r}"][data-c="${c}"]`);
   await expect(mon2).toBeVisible();
   await expect(mcell2(4, 5).locator(".mmg-text")).toHaveText("7,700");
   await expect(page2.locator(".service-badge")).toContainText("공유 중");
-  check(true, "이어서 하기 → 진행 화면 · 죽기 직전 값(F5 7,700) · 같은 포트로 서비스 다시 시작");
+  check(true, "이어서 연 업무 → 진행 화면 · 죽기 직전 값(F5 7,700) · 같은 포트로 서비스 다시 시작");
 
   await expect(p4.getByText("● 실시간 동기화")).toBeVisible({ timeout: 30_000 });
   await expect(mcell2(3, 5).locator(".mmg-text")).toHaveText("3,300", { timeout: 10_000 });
@@ -753,10 +767,68 @@ try {
   check(true, "채팅 · 변경 기록 · 스냅샷도 되살아남");
   await page2.screenshot({ path: join(shots, "host-recovered.png") });
 
+  // ------------------------------------------------------------ 9단계: 여러 업무 동시 진행
+  console.log("[9 여러 업무]");
+  const invoke2 = (cmd, args) => page2.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a), [cmd, args]);
+  const endJob = async (hasText) => {
+    await page2.locator(".job-item").filter({ hasText }).locator(".job-end").click();
+    await page2.getByRole("alertdialog", { name: "업무 끝내기" }).getByRole("button", { name: "업무 끝내기" }).click();
+    await expect(page2.getByRole("alertdialog")).toHaveCount(0);
+  };
+  await page2.getByRole("button", { name: "+ 새 취합" }).click();
+  await page2.getByRole("heading", { name: "불러오기" }).waitFor();
+  await invoke2("excel_open_file", { path: variants });
+  await page2.getByRole("button", { name: "↻ 다시 찾기" }).click();
+  await page2.getByRole("button", { name: /variants\.xlsx/ }).click();
+  await page2.getByRole("button", { name: "제목있음", exact: true }).click();
+  await page2.getByRole("checkbox", { name: "다른시트 불러오기" }).uncheck();
+  await expect(page2.getByLabel("데이터 범위")).toHaveValue("A4:G25", { timeout: 30_000 });
+  const commit2 = page2.getByRole("button", { name: "다음: 설정 →" });
+  await expect(commit2).toBeEnabled({ timeout: 60_000 });
+  await commit2.click();
+  await page2.getByRole("button", { name: "다음: 서비스 →" }).click();
+  const svc3 = page2.locator(".service-screen");
+  await svc3.getByLabel("내 이름").fill("박지훈 (기획팀)");
+  await svc3.getByLabel("취합 제목").fill("교육 수요 2차 조사");
+  await svc3.getByRole("button", { name: /네트워크 설정/ }).click();
+  await expect(svc3.getByLabel("포트")).toHaveValue(String(SERVICE_PORT));
+  await expect(svc3.getByLabel("포트")).toBeDisabled();
+  check(true, "두 번째 업무: 포트는 공유 중인 첫 업무와 같이 씀(바꿀 수 없음)");
+  await svc3.getByLabel("주소 경로").fill("hr");
+  await svc3.getByRole("button", { name: "공유 시작", exact: true }).click();
+  const url3 = (await svc3.locator("code.url").first().textContent()) ?? "";
+  check(url3.endsWith(`:${SERVICE_PORT}/hr`), `두 번째 업무 주소 ${url3}`);
+  const both = await (await fetch(`http://127.0.0.1:${SERVICE_PORT}/api/sessions`)).json();
+  check(
+    both.length === 2 && both.some((s) => s.title === "교육 수요 2차 조사"),
+    `참여자 업무 목록: ${both.map((s) => s.title).join(", ")}`,
+  );
+  const p5 = await participant.newPage();
+  await p5.goto(`http://127.0.0.1:${SERVICE_PORT}/`);
+  await expect(p5.getByRole("list", { name: "취합 업무 목록" }).getByRole("link")).toHaveCount(2);
+  await p5.getByRole("link", { name: /교육 수요 2차 조사/ }).click();
+  await expect(p5.getByRole("heading", { name: "교육 수요 2차 조사" })).toBeVisible();
+  check(true, "참여자: 같은 주소(/)의 업무 목록에서 두 번째 업무를 골라 들어감");
+  await page2.screenshot({ path: join(shots, "host-jobs.png") });
+
+  await restoredJob.locator(".job-pick").click();
+  await expect(page2.locator(".service-badge")).toContainText("다른 업무 1개 공유 중");
+  await step2("4 모니터링").click();
+  await expect(mcell2(4, 5).locator(".mmg-text")).toHaveText("7,700");
+  check(true, "첫 업무로 돌아가도 진행 화면·값 그대로");
+  await endJob("교육 수요 2차 조사");
+  await expect(p5.getByText("호스트가 이 업무를 끝냈습니다")).toBeVisible({ timeout: 10_000 });
+  await expect(p4.getByText("● 실시간 동기화")).toBeVisible();
+  check(true, "두 번째 업무 끝내기 → 그 업무 참여자만 '끝났습니다', 첫 업무 참여자는 계속");
+
   await step2("3 서비스").click();
   await svc2.getByRole("button", { name: "공유 중지" }).click();
   await expect(p4.getByText("서비스가 중지되었습니다")).toBeVisible({ timeout: 10_000 });
   check(true, "서비스 중지 → 참여자에게 안내");
+  // 시험 업무도 끝내 둔다(다시 켜도 되살리지 않는다).
+  await endJob("smoke-budget.xlsx");
+  await expect(page2.locator(".job-item")).toHaveCount(1);
+  check(true, "업무 끝내기 → 목록에서 빠지고 빈 업무만 남음");
   await second.browser.close();
 } finally {
   await participant?.close();

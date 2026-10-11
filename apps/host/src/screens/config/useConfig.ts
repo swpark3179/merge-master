@@ -6,7 +6,8 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CellWrite } from "../../api";
-import { api, errorText } from "../../api";
+import { errorText, jobEvent } from "../../api";
+import { useApi, useJobId } from "../../job";
 
 /** 칸 값을 바꾼 새 시트(원래 시트는 그대로 둔다). */
 function withValues(m: SheetModel, cells: { row: number; col: number; value?: CellWrite["value"] }[]): SheetModel {
@@ -21,6 +22,8 @@ function withValues(m: SheetModel, cells: { row: number; col: number; value?: Ce
 
 /** 1b 상태(시트 하나): 설정 보기(Rust가 계산), 시트(서식 편집으로 바뀜), 선택, 참여자 시점. `sheet`는 세션 안 시트 순번. */
 export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
+  const api = useApi();
+  const job = useJobId();
   const [model, setModel] = useState(initial);
   const [view, setView] = useState<ConfigView | null>(null);
   const [viewer, setViewerState] = useState<string | null>(null);
@@ -53,7 +56,7 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
   }, [sheet]);
 
   useEffect(() => {
-    const off = listen("config-changed", refresh);
+    const off = listen(jobEvent("config-changed", job), refresh);
     return () => void off.then((f) => f());
   }, [refresh]);
 
@@ -62,7 +65,7 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
   const rows = useRef(initial.rows);
   rows.current = model.rows;
   useEffect(() => {
-    const off = listen<HostEvent>("sheet-changes", (e) => {
+    const off = listen<HostEvent>(jobEvent("sheet-changes", job), (e) => {
       const ev = e.payload;
       if (ev.type !== "reset" && ev.sheet !== sheet) return; // 다른 시트의 변경
       if (ev.type === "reset") {

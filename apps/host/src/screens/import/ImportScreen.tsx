@@ -1,11 +1,12 @@
 import type { GridSelection } from "@mm/grid";
 import { SheetGrid } from "@mm/grid";
-import type { ImportItems, ReadStage, SheetModel } from "@mm/shared";
+import type { ImportItems, JobSummary, ReadStage, SheetModel } from "@mm/shared";
 import { colLetters, colSpanLabel, formatRange, parseRange } from "@mm/shared";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useEffect, useState } from "react";
 
 import { useStepFooter } from "../../frame";
+import { useJobId } from "../../job";
 import { SheetTabs } from "../../SheetTabs";
 import { PreviewModal } from "./PreviewModal";
 import type { ImportState } from "./useImport";
@@ -39,14 +40,23 @@ interface Props {
   active: boolean;
   /** 이미 확정한 시트가 있다(바꾼 게 없으면 '다음'은 확정 없이 넘어간다). */
   committed: boolean;
+  /** 모든 업무(같은 통합문서·시트를 취합 중인 다른 업무를 알린다). */
+  jobs: JobSummary[];
   onExcelStatus: (running: boolean) => void;
   onCommitted: (m: SheetModel[]) => void;
   onNext: () => void;
 }
 
 /** 1a 엑셀 불러오기. */
-export function ImportScreen({ active, committed, onExcelStatus, onCommitted, onNext }: Props) {
+export function ImportScreen({ active, committed, jobs, onExcelStatus, onCommitted, onNext }: Props) {
   const s = useImport(onExcelStatus, onCommitted);
+  const job = useJobId();
+  // 같은 시트를 다른 업무가 취합 중이면 알린다(막지는 않는다 — 원본에 반영할 때 서로 덮어쓸 수 있다).
+  const bookId = s.book?.id.toLowerCase();
+  const overlap = jobs.filter(
+    (j) =>
+      j.id !== job && bookId && j.workbookId.toLowerCase() === bookId && j.sheets.some((x) => s.selected.includes(x)),
+  );
   const [didInit, setDidInit] = useState(false);
   useEffect(() => {
     if (didInit) return;
@@ -68,6 +78,12 @@ export function ImportScreen({ active, committed, onExcelStatus, onCommitted, on
         <div className="import-grid">
           <div className="col">
             <FileCard s={s} />
+            {overlap.length > 0 && (
+              <div className="warn small" role="note">
+                같은 시트를 다른 업무({overlap.map((j) => `‘${j.title || "새 취합"}’`).join(", ")})에서도 취합 중이에요.
+                두 업무 모두 원본에 반영하면 서로의 값을 덮어쓸 수 있으니, 한쪽은 다른 이름으로 저장하세요.
+              </div>
+            )}
             <SheetCard s={s} />
             <RangeCard s={s} />
             <ItemsCard s={s} />

@@ -25,6 +25,7 @@ import { canEdit, clearRange, copyRange, pasteRange } from "./gridOps";
 import { RowForm } from "./RowForm";
 import type { PanelTab } from "./SidePanel";
 import { clampSideWidth, SIDE_WIDTH, SidePanel } from "./SidePanel";
+import { storageSlug } from "./slug";
 import type { Notice, SessionState } from "./useSession";
 
 const FILLS: { label: string; rgb: number | null }[] = [
@@ -55,8 +56,7 @@ function rectOf(sel: GridSelection): CellRange {
 
 /** 사이드바를 열어 둘지(주소 경로마다 기억). 처음에는 넓은 화면이면 연다. */
 function sideKey(): string {
-  const slug = location.pathname.split("/").filter(Boolean)[0] ?? "root";
-  return `mm.${slug}.side`;
+  return `mm.${storageSlug()}.side`;
 }
 
 function loadSide(): boolean {
@@ -720,7 +720,13 @@ export function Workspace({ s }: { s: SessionState }) {
     <div className="page">
       <header className="top">
         <div>
-          <div className="eyebrow">{w.session.requester ? `${w.session.requester} 님의 취합 요청` : "취합 요청"}</div>
+          <div className="eyebrow">
+            <a className="back-link" href="/" title="호스트가 공개한 다른 취합 업무">
+              업무 목록
+            </a>
+            {" · "}
+            {w.session.requester ? `${w.session.requester} 님의 취합 요청` : "취합 요청"}
+          </div>
           <h1>{w.session.title}</h1>
         </div>
         <span className="spacer" />

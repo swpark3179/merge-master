@@ -14,15 +14,18 @@ import { a1, personColor, sheetPrefix } from "@mm/shared";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { api, errorText } from "../../api";
+import { errorText } from "../../api";
+import { useApi } from "../../job";
 
 interface Props {
   active: boolean;
   snapshot: HostSnapshot | null;
   /** 서비스를 멈췄을 때(저장 뒤 '서비스 종료') 바깥 상태도 맞춘다. */
   onStopped: () => void;
-  /** '새 취합 시작': 1 불러오기로. */
+  /** '새 취합 시작': 새 업무를 만들어 그 업무의 1 불러오기로(이 업무는 그대로). */
   onRestart: () => void;
+  /** '업무 끝내기'(확인 대화상자). */
+  onEndJob: () => void;
 }
 
 /** 바뀐 칸 표시 색(연한 노랑). */
@@ -59,7 +62,8 @@ function checkAddr(check: SaveCheck | null, sheet: number, at: CellRef): string 
 }
 
 /** 6 저장·마감: 취합 요약 → 원본과 비교 → 엑셀로 저장 → (선택) 마감. */
-export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
+export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }: Props) {
+  const api = useApi();
   const [info, setInfo] = useState<SaveInfo | null>(null);
   const [target, setTarget] = useState<"original" | "copy">("copy");
   const [path, setPath] = useState("");
@@ -200,7 +204,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
           {(result.closed || result.stopped) && (
             <span className="small">
               {result.closed ? "취합을 마감했습니다(참여자 읽기 전용). " : ""}
-              {result.stopped ? "서비스를 멈췄습니다. " : ""}
+              {result.stopped ? "이 업무의 공유를 멈췄습니다. " : ""}
             </span>
           )}
           <div className="row done-actions">
@@ -209,6 +213,9 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
             </button>
             <button className="ghost" onClick={() => setResult(null)}>
               저장 화면으로 돌아가기
+            </button>
+            <button className="ghost" onClick={onEndJob}>
+              업무 끝내기
             </button>
             <button onClick={onRestart}>새 취합 시작</button>
           </div>
@@ -471,7 +478,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
                 [
                   ["keep", "서비스 계속 (참여자가 계속 입력)"],
                   ["readOnly", "읽기 전용으로 전환 (취합 마감)"],
-                  ["stop", "서비스 종료"],
+                  ["stop", "이 업무 공유 중지 (다른 업무는 계속)"],
                 ] as const
               ).map(([v, label]) => (
                 <label key={v} className="check">
@@ -517,6 +524,9 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart }: Props) {
               저장 없이 취합 마감
             </button>
           )}
+          <button className="ghost" disabled={busy !== null} onClick={onEndJob} title="이 업무를 목록에서 뺍니다">
+            업무 끝내기
+          </button>
         </div>
 
         {s && people.length > 0 && (

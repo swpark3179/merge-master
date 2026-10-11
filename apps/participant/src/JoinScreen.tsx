@@ -18,6 +18,23 @@ export function JoinScreen({ s }: { s: SessionState }) {
   const { info, phase } = s;
   const busy = phase.kind === "joining";
 
+  if (phase.kind === "ended") {
+    return (
+      <div className="join-wrap">
+        <div className="join-card" role="status">
+          <div className="muted">{info?.requester ? `${info.requester} 님의` : "호스트의"} 엑셀 취합 요청</div>
+          <h1>{info?.title || "엑셀 취합"}</h1>
+          <div className="desc">호스트가 이 업무를 끝냈습니다. 더 입력할 수 없습니다.</div>
+          <a className="back-link" href="/">
+            ← 다른 취합 업무 보기
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  // 공개 중지(곧 다시 열릴 수 있음)는 아래 '서비스가 중지되었습니다'로 따로 알린다.
+  const missing = s.missing && phase.kind !== "closed";
   return (
     <div className="join-wrap">
       <form
@@ -54,10 +71,22 @@ export function JoinScreen({ s }: { s: SessionState }) {
           {busy ? "참여하는 중…" : "참여하기"}
         </button>
         <div className="note">입력 내용과 변경 이력은 호스트 PC에 저장됩니다.</div>
+        <a className="back-link" href="/">
+          ← 다른 취합 업무 보기
+        </a>
       </form>
 
       <div className="join-side">
-        {!s.connected && phase.kind !== "kicked" && (
+        {missing && (
+          <div className="state-card" role="status">
+            <b>이 업무는 지금 공개되어 있지 않습니다</b>
+            <div className="muted">주소가 맞는지 확인해 주세요. 호스트가 이 업무를 공개하면 자동으로 연결합니다.</div>
+            <a className="back-link" href="/">
+              공개 중인 업무 목록 보기
+            </a>
+          </div>
+        )}
+        {!missing && !s.connected && phase.kind !== "kicked" && phase.kind !== "closed" && (
           <div className="state-card">
             <b>연결 중</b>
             <div className="muted">호스트 PC에 연결하는 중입니다… 같은 사내망인지 확인해 주세요.</div>
@@ -110,6 +139,9 @@ export function JoinScreen({ s }: { s: SessionState }) {
           <div className="state-card" role="status">
             <b>서비스가 중지되었습니다</b>
             <div className="muted">호스트가 다시 열면 자동으로 연결합니다.</div>
+            <a className="back-link" href="/">
+              다른 취합 업무 보기
+            </a>
           </div>
         )}
       </div>

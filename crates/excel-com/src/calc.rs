@@ -6,6 +6,9 @@
 //!
 //! 좌표는 모두 [`SheetModel`](collect_core::SheetModel) 기준(불러온 범위 왼쪽 위 = 0,0)이고, 원본 시트 위치(`origin`)는
 //! 여기서 더한다.
+//!
+//! 호스트가 여러 업무를 함께 진행하면 업무마다 사본이 하나씩 있다(키 = 업무 id, `*_for` 메서드). 키 없는 옛 메서드는
+//! 키 `""` 사본 하나를 다룬다.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -96,6 +99,9 @@ pub struct CalcInfo {
     pub formulas: usize,
 }
 
+/// 키 없는 옛 메서드가 쓰는 사본의 키.
+const DEFAULT_KEY: &str = "";
+
 impl Session {
     /// 통합문서의 현재 상태를 복사해 숨은 Excel에서 연다(한 시트). [`Session::open_calc_multi`] 참고.
     pub fn open_calc(
@@ -108,10 +114,15 @@ impl Session {
         self.open_calc_multi(workbook_id, vec![CalcTarget { sheet: sheet.to_string(), origin, formulas }])
     }
 
-    /// 통합문서의 현재 상태를 복사해 숨은 Excel에서 연다. 이미 열린 사본은 닫는다. 사본은 통합문서 전체라 시트를
-    /// 넘는 수식도 계산된다. `targets`는 세션 안 시트 순번 순서.
+    /// 통합문서의 현재 상태를 복사해 숨은 Excel에서 연다. 이미 열린 사본은 닫는다. [`Session::open_calc_for`] 참고.
     pub fn open_calc_multi(&mut self, workbook_id: &str, targets: Vec<CalcTarget>) -> Result<CalcInfo> {
-        self.close_calc();
+        self.open_calc_for(DEFAULT_KEY, workbook_id, targets)
+    }
+
+    /// 업무(`key`)의 계산 사본을 연다: 통합문서의 현재 상태를 복사해 숨은 Excel에서 연다. 그 업무의 앞 사본만 닫는다
+    /// (다른 업무의 사본은 그대로). 사본은 통합문서 전체라 시트를 넘는 수식도 계산된다. `targets`는 세션 안 시트 순번 순서.
+    pub fn open_calc_for(&mut self, key: &str, workbook_id: &str, targets: Vec<CalcTarget>) -> Result<CalcInfo> {
+        self.close_calc_for(key);
         let source = self.workbook(workbook_id)?;
         let name = source.get_string("Name")?;
         let ext = std::path::Path::new(&name)
@@ -171,7 +182,7 @@ impl Session {
             Ok(copy) => {
                 let formulas = copy.sheets.iter().map(|s| s.formulas.len()).sum();
                 let info = CalcInfo { path: copy.path.clone(), formulas };
-                self.calc = Some(copy);
+                self.calc.insert(key.to_string(), copy);
                 Ok(info)
             }
             Err(e) => {
@@ -190,7 +201,16 @@ impl Session {
     /// 입력(시트 순번, 모델 좌표)을 사본에 쓰고 한 번 다시 계산해 모든 시트의 수식 칸 결과를 돌려준다(바뀐 것만 고르는 일은
     /// 세션이 한다).
     pub fn calc_apply_multi(&mut self, writes: &[(u32, CellRef, CellValue)]) -> Result<Vec<(u32, CellRef, CellValue)>> {
-        let copy = self.calc.as_ref().ok_or_else(|| ExcelError::Type("계산 사본이 열려 있지 않습니다".into()))?;
+        self.calc_apply_for(DEFAULT_KEY, writes)
+    }
+
+    /// 업무(`key`)의 사본에 입력을 쓰고 다시 계산해 그 사본 모든 시트의 수식 칸 결과를 돌려준다.
+    pub fn calc_apply_for(
+        &mut self,
+        key: &str,
+        writes: &[(u32, CellRef, CellValue)],
+    ) -> Result<Vec<(u32, CellRef, CellValue)>> {
+        let copy = self.calc.get(key).ok_or_else(|| ExcelError::Type("계산 사본이 열려 있지 않습니다".into()))?;
         for (sheet, at, v) in writes {
             let Some(s) = copy.sheets.get(*sheet as usize) else { continue };
             let cell = s.sheet.obj_call("Range", vec![Var::str(&s.address(*at))])?;
@@ -217,12 +237,29 @@ impl Session {
 
     /// 열려 있는 계산 사본 파일. 다시 확정해 사본이 바뀌었는지 확인할 때 쓴다.
     pub fn calc_path(&self) -> Option<&std::path::Path> {
-        self.calc.as_ref().map(|c| c.path.as_path())
+        self.calc_path_for(DEFAULT_KEY)
     }
 
-    /// 계산 사본을 저장하지 않고 닫고 그 Excel을 끝낸 뒤 임시 파일을 지운다.
+    /// 업무(`key`)의 계산 사본 파일.
+    pub fn calc_path_for(&self, key: &str) -> Option<&std::path::Path> {
+        self.calc.get(key).map(|c| c.path.as_path())
+    }
+
+    /// 계산 사본을 모두 저장하지 않고 닫는다([`Session::close_all_calc`]).
     pub fn close_calc(&mut self) {
-        if let Some(copy) = self.calc.take() {
+        self.close_all_calc();
+    }
+
+    /// 업무(`key`)의 계산 사본을 저장하지 않고 닫고 그 Excel을 끝낸 뒤 임시 파일을 지운다.
+    pub fn close_calc_for(&mut self, key: &str) {
+        if let Some(copy) = self.calc.remove(key) {
+            copy.close();
+        }
+    }
+
+    /// 모든 업무의 계산 사본을 닫는다(앱을 끝낼 때).
+    pub fn close_all_calc(&mut self) {
+        for (_, copy) in self.calc.drain() {
             copy.close();
         }
     }

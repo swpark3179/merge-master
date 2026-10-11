@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use collect_core::config::{CollectConfig, ColumnRole, InputFormat};
 use collect_core::{Cell, CellRange, CellRef, CellStyle, CellValue, SheetModel};
 use collect_server::protocol::{CellEdit, ClientMsg, PROTOCOL_VERSION, ServerMsg};
-use collect_server::{ServerConfig, SessionHandle, SessionInit, start};
+use collect_server::{Hub, ServerConfig, SessionHandle, SessionInit, start};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -109,9 +109,11 @@ async fn thirty_people_editing_at_once() {
     let people = names();
     let (model, config) = sheet(&people);
     let session = SessionHandle::spawn(SessionInit::new(model, config));
-    let cfg = ServerConfig { bind: IpAddr::V4(Ipv4Addr::LOCALHOST), port: 0, slug: "load".into(), dev_admin: false };
-    let server = start(cfg, session.clone()).await.unwrap();
-    let url = format!("ws://{}/ws", server.local_addr);
+    let cfg = ServerConfig { bind: IpAddr::V4(Ipv4Addr::LOCALHOST), port: 0, dev_admin: false };
+    let hub = Hub::new();
+    hub.publish("load", session.clone()).unwrap();
+    let server = start(cfg, hub).await.unwrap();
+    let url = format!("ws://{}/ws?s=load", server.local_addr);
     let stats = Arc::new(Mutex::new(Stats::default()));
     let started = Instant::now();
 

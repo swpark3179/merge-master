@@ -2,6 +2,8 @@
 //! 수식 칸 결과를 세션에 돌려준다. 세션이 바뀐 칸만 참여자에게 보낸다.
 //!
 //! Excel을 쓸 수 없으면(설치 안 됨, 사본 열기 실패, 도중에 Excel이 닫힘) 수식은 저장할 때 계산하고 취합은 계속한다.
+//!
+//! 업무마다 사본 하나(Excel의 사본 키 = 업무 id), 상태 이벤트는 `recalc-status:{업무 id}`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,7 +19,8 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 use ts_rs::TS;
 
-use crate::{AppState, run_excel};
+use crate::jobs::event;
+use crate::{AppState, CmdResult, run_excel};
 
 /// 입력을 모으는 시간. 붙여넣기·연속 입력을 한 번에 계산한다.
 const DEBOUNCE: Duration = Duration::from_millis(300);
@@ -39,25 +42,45 @@ pub enum Status {
     },
 }
 
+/// 업무 하나의 재계산.
 #[derive(Default)]
 pub(crate) struct Recalc {
     status: Arc<std::sync::Mutex<Status>>,
-    /// 확정할 때마다 늘어난다. 앞선 확정의 작업은 자기 세대가 아니면 손을 뗀다.
+    /// 확정할 때마다(그리고 업무를 끝낼 때) 늘어난다. 앞선 확정의 작업은 자기 세대가 아니면 손을 뗀다.
     generation: Arc<AtomicU64>,
 }
 
-fn set(app: &AppHandle, slot: &std::sync::Mutex<Status>, status: Status) {
+fn set(app: &AppHandle, job: &str, slot: &std::sync::Mutex<Status>, status: Status) {
     *slot.lock().unwrap() = status.clone();
-    let _ = app.emit("recalc-status", status);
+    let _ = app.emit(&event("recalc-status", job), status);
 }
 
 impl Recalc {
+    pub(crate) fn status(&self) -> Status {
+        self.status.lock().unwrap().clone()
+    }
+
+    /// 업무를 끝낼 때: 진행 중인 작업이 손을 떼게 하고 계산 사본을 닫는다(세션의 재계산 연결은 호출한 쪽이 끊는다).
+    pub(crate) fn stop(&self, excel: &Arc<ExcelThread>, job: &str) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        let (excel, key) = (excel.clone(), job.to_string());
+        tauri::async_runtime::spawn(async move {
+            let _ = run_excel(&excel, move |s| {
+                s.close_calc_for(&key);
+                Ok(())
+            })
+            .await;
+        });
+    }
+
     /// 계산 사본을 연다(모든 시트, `models`·`sheets`는 세션 안 시트 순번 순서). 수식이 다른 시트를 볼 수 있어 수식이 없는
     /// 시트도 사본에 둔다.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn start(
         &self,
         app: &AppHandle,
         excel: Arc<ExcelThread>,
+        job: &str,
         session: SessionHandle,
         models: &[SheetModel],
         workbook_id: &str,
@@ -80,31 +103,48 @@ impl Recalc {
             })
             .collect();
         let (app, status, current) = (app.clone(), self.status.clone(), self.generation.clone());
+        let key = job.to_string();
         if targets.iter().all(|t| t.formulas.is_empty()) {
-            set(&app, &status, Status::None);
+            set(&app, &key, &status, Status::None);
             tauri::async_runtime::spawn(async move {
-                let _ = run_excel(&excel, |s| Ok(s.close_calc())).await;
+                let _ = run_excel(&excel, move |s| {
+                    s.close_calc_for(&key);
+                    Ok(())
+                })
+                .await;
             });
             return;
         }
-        set(&app, &status, Status::Opening);
+        set(&app, &key, &status, Status::Opening);
         let id = workbook_id.to_string();
         tauri::async_runtime::spawn(async move {
             // 원본을 찾아(닫혔으면 다시 열어) 계산 사본을 만든다. 앱을 다시 켜 이어서 할 때도 같은 길.
+            let k = key.clone();
             let opened = run_excel(&excel, move |s| {
                 s.locate(&id)?;
-                s.open_calc_multi(&id, targets)
+                s.open_calc_for(&k, &id, targets)
             })
             .await;
             if current.load(Ordering::SeqCst) != generation {
-                return; // 그사이 다시 확정했다
+                // 그사이 다시 확정했거나 업무를 끝냈다. 끝냈으면 방금 연 사본을 닫는다(다시 확정했으면 새 사본이 대신한다).
+                if let Ok(info) = opened {
+                    let k = key.clone();
+                    let _ = run_excel(&excel, move |s| {
+                        if s.calc_path_for(&k) == Some(info.path.as_path()) {
+                            s.close_calc_for(&k);
+                        }
+                        Ok(())
+                    })
+                    .await;
+                }
+                return;
             }
             let info = match opened {
                 Ok(info) => info,
                 Err(e) => {
                     tracing::warn!("계산 사본을 열 수 없습니다: {e}");
                     let message = format!("수식은 저장할 때 계산합니다 ({e})");
-                    return set(&app, &status, Status::Unavailable { message });
+                    return set(&app, &key, &status, Status::Unavailable { message });
                 }
             };
             let (tx, rx) = mpsc::unbounded_channel();
@@ -120,8 +160,8 @@ impl Recalc {
                 })
                 .await
                 .unwrap_or_default();
-            set(&app, &status, Status::Ready { formulas: info.formulas as u32 });
-            let job = Worker { app, excel, session, status, current, generation, path: info.path };
+            set(&app, &key, &status, Status::Ready { formulas: info.formulas as u32 });
+            let job = Worker { app, excel, key, session, status, current, generation, path: info.path };
             job.run(rx, earlier).await;
         });
     }
@@ -130,6 +170,8 @@ impl Recalc {
 struct Worker {
     app: AppHandle,
     excel: Arc<ExcelThread>,
+    /// 업무 id(Excel 계산 사본의 키).
+    key: String,
     session: SessionHandle,
     status: Arc<std::sync::Mutex<Status>>,
     current: Arc<AtomicU64>,
@@ -168,13 +210,13 @@ impl Worker {
                 queue.extend(req.writes);
             }
             let writes = last_per_cell(std::mem::take(&mut queue));
-            let path = self.path.clone();
+            let (path, key) = (self.path.clone(), self.key.clone());
             let result = run_excel(&self.excel, move |s| {
                 // 다시 확정해 다른 사본이 열렸으면 손대지 않는다.
-                if s.calc_path() != Some(path.as_path()) {
+                if s.calc_path_for(&key) != Some(path.as_path()) {
                     return Ok(None);
                 }
-                s.calc_apply_multi(&writes).map(Some)
+                s.calc_apply_for(&key, &writes).map(Some)
             })
             .await;
             if !self.alive() {
@@ -187,7 +229,7 @@ impl Worker {
                     tracing::warn!("수식 재계산 실패: {e}");
                     self.session.set_recalc(None);
                     let message = format!("수식은 저장할 때 계산합니다 ({e})");
-                    set(&self.app, &self.status, Status::Unavailable { message });
+                    set(&self.app, &self.key, &self.status, Status::Unavailable { message });
                     break;
                 }
             }
@@ -196,8 +238,8 @@ impl Worker {
 }
 
 #[tauri::command]
-pub(crate) fn recalc_status(state: State<'_, AppState>) -> Status {
-    state.recalc.status.lock().unwrap().clone()
+pub(crate) fn recalc_status(state: State<'_, AppState>, job: String) -> CmdResult<Status> {
+    Ok(state.job(&job)?.recalc.status())
 }
 
 #[cfg(test)]

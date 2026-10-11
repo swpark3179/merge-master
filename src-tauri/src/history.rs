@@ -19,11 +19,12 @@ const DIFF_LIMIT: usize = 500;
 #[tauri::command]
 pub async fn history_query(
     state: State<'_, AppState>,
+    job: String,
     filter: HistoryFilter,
     offset: u32,
     limit: u32,
 ) -> CmdResult<HistoryPage> {
-    state.session()?.with(move |s| history::query(s.history(), &filter, offset as usize, limit as usize)).await
+    state.session(&job)?.with(move |s| history::query(s.history(), &filter, offset as usize, limit as usize)).await
 }
 
 #[derive(Serialize, TS)]
@@ -43,9 +44,9 @@ pub struct Timeline {
 }
 
 #[tauri::command]
-pub async fn history_timeline(state: State<'_, AppState>, sheet: u32, at: CellRef) -> CmdResult<Timeline> {
+pub async fn history_timeline(state: State<'_, AppState>, job: String, sheet: u32, at: CellRef) -> CmdResult<Timeline> {
     state
-        .session()?
+        .session(&job)?
         .with(move |s| {
             let slot = s.sheets.get(sheet as usize).ok_or("없는 시트입니다")?;
             let cols = slot.model.cols.max(1);
@@ -71,9 +72,9 @@ pub struct RevertResult {
     pub stale: Vec<SheetCell>,
 }
 
-async fn revert(state: &AppState, pick: Pick, force: bool) -> CmdResult<RevertResult> {
+async fn revert(state: &AppState, job: &str, pick: Pick, force: bool) -> CmdResult<RevertResult> {
     state
-        .session()?
+        .session(job)?
         .with(move |s| {
             let entries: Vec<&ChangeEntry> = match &pick {
                 Pick::Seqs(seqs) => s.history().iter().filter(|e| seqs.contains(&e.seq)).collect(),
@@ -113,21 +114,37 @@ enum Pick {
 
 /// 칸 하나(또는 몇 개)의 기록을 되돌린다.
 #[tauri::command]
-pub async fn history_revert(state: State<'_, AppState>, seqs: Vec<u64>, force: bool) -> CmdResult<RevertResult> {
-    revert(&state, Pick::Seqs(seqs.into_iter().collect()), force).await
+pub async fn history_revert(
+    state: State<'_, AppState>,
+    job: String,
+    seqs: Vec<u64>,
+    force: bool,
+) -> CmdResult<RevertResult> {
+    revert(&state, &job, Pick::Seqs(seqs.into_iter().collect()), force).await
 }
 
 /// 묶음 전체를 되돌린다(범위 지우기·붙여넣기 '묶음 복원').
 #[tauri::command]
-pub async fn history_revert_batch(state: State<'_, AppState>, batch: String, force: bool) -> CmdResult<RevertResult> {
-    revert(&state, Pick::Batch(batch), force).await
+pub async fn history_revert_batch(
+    state: State<'_, AppState>,
+    job: String,
+    batch: String,
+    force: bool,
+) -> CmdResult<RevertResult> {
+    revert(&state, &job, Pick::Batch(batch), force).await
 }
 
 /// 셀 타임라인의 '이 값으로'.
 #[tauri::command]
-pub async fn history_set_value(state: State<'_, AppState>, sheet: u32, at: CellRef, value: CellValue) -> CmdResult<()> {
+pub async fn history_set_value(
+    state: State<'_, AppState>,
+    job: String,
+    sheet: u32,
+    at: CellRef,
+    value: CellValue,
+) -> CmdResult<()> {
     state
-        .session()?
+        .session(&job)?
         .with(move |s| {
             let user = s.host_name().to_string();
             s.host_set(&user, BatchOrigin::Revert, sheet as usize, vec![(at, value)]);
@@ -137,10 +154,15 @@ pub async fn history_set_value(state: State<'_, AppState>, sheet: u32, at: CellR
 
 /// CSV로 내보낸다(필터에 걸린 기록 전부). 쓴 줄 수를 돌려준다. 시트가 둘 이상이면 '시트' 열이 있다.
 #[tauri::command]
-pub async fn history_export_csv(state: State<'_, AppState>, filter: HistoryFilter, path: PathBuf) -> CmdResult<u32> {
+pub async fn history_export_csv(
+    state: State<'_, AppState>,
+    job: String,
+    filter: HistoryFilter,
+    path: PathBuf,
+) -> CmdResult<u32> {
     let offset = chrono::Local::now().offset().local_minus_utc() / 60;
     let (csv, n) = state
-        .session()?
+        .session(&job)?
         .with(move |s| {
             let entries: Vec<ChangeEntry> = s.history().iter().filter(|e| filter.matches(e)).cloned().collect();
             let sheets: Vec<SheetLabels> = s.sheets.iter().map(|x| SheetLabels::of(&x.model)).collect();
@@ -177,9 +199,9 @@ fn diff_all(values: &[Vec<CellValue>], s: &Shared<'_>) -> Vec<SheetCell> {
 }
 
 #[tauri::command]
-pub async fn snapshot_list(state: State<'_, AppState>) -> CmdResult<Vec<SnapshotView>> {
+pub async fn snapshot_list(state: State<'_, AppState>, job: String) -> CmdResult<Vec<SnapshotView>> {
     state
-        .session()?
+        .session(&job)?
         .with(|s| {
             let mut out: Vec<SnapshotView> = s
                 .snapshots()
@@ -197,8 +219,8 @@ pub async fn snapshot_list(state: State<'_, AppState>) -> CmdResult<Vec<Snapshot
 }
 
 #[tauri::command]
-pub async fn snapshot_take(state: State<'_, AppState>, label: String) -> CmdResult<()> {
-    state.session()?.with(move |s| s.take_snapshot(&label)).await
+pub async fn snapshot_take(state: State<'_, AppState>, job: String, label: String) -> CmdResult<()> {
+    state.session(&job)?.with(move |s| s.take_snapshot(&label)).await
 }
 
 #[derive(Serialize, TS)]
@@ -234,9 +256,9 @@ pub struct DiffSheet {
 }
 
 #[tauri::command]
-pub async fn snapshot_diff(state: State<'_, AppState>, id: u32) -> CmdResult<SnapshotDiff> {
+pub async fn snapshot_diff(state: State<'_, AppState>, job: String, id: u32) -> CmdResult<SnapshotDiff> {
     state
-        .session()?
+        .session(&job)?
         .with(move |s| {
             let values = s.snapshot_values(id).ok_or("스냅샷을 찾을 수 없습니다")?;
             let diff = diff_all(&values, s);
@@ -268,9 +290,9 @@ pub async fn snapshot_diff(state: State<'_, AppState>, id: u32) -> CmdResult<Sna
 
 /// 스냅샷 시점으로 복원한다(복원 직전 상태는 자동으로 스냅샷에 남는다). 바꾼 칸 수.
 #[tauri::command]
-pub async fn snapshot_restore(state: State<'_, AppState>, id: u32) -> CmdResult<u32> {
+pub async fn snapshot_restore(state: State<'_, AppState>, job: String, id: u32) -> CmdResult<u32> {
     state
-        .session()?
+        .session(&job)?
         .with(move |s| {
             let user = s.host_name().to_string();
             s.restore(id, &user).map(|n| n as u32)

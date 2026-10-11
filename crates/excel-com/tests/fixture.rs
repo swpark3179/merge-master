@@ -186,3 +186,46 @@ fn calc_copy_recalculates_without_touching_original() {
     assert_eq!(original, CellValue::Empty, "원본은 건드리지 않는다");
     assert!(!still_there, "닫으면 임시 파일을 지운다");
 }
+
+/// 업무 둘이 같은 통합문서로 각자 계산 사본을 쓴다: 서로의 입력이 섞이지 않고, 한 업무의 사본을 닫아도 다른 사본은 남는다.
+#[test]
+#[ignore = "Excel 필요"]
+fn calc_copies_per_job_are_independent() {
+    use excel_com::CalcTarget;
+
+    let excel = ExcelThread::spawn().unwrap();
+    let info = open(&excel, "budget.xlsx");
+    let id = info.id.clone();
+    let target = || CalcTarget {
+        sheet: "예산신청서".into(),
+        origin: CellRef::new(0, 0),
+        formulas: (2..1002).map(|r| CellRef::new(r, 6)).collect(),
+    };
+    let result = excel
+        .run(move |s| -> excel_com::Result<_> {
+            let a = s.open_calc_for("a", &id, vec![target()])?;
+            let b = s.open_calc_for("b", &id, vec![target()])?;
+            let listed = s.list_workbooks()?;
+            let in_a = s.calc_apply_for("a", &[(0, CellRef::new(2, 5), CellValue::Number(9800.0))])?;
+            let in_b = s.calc_apply_for("b", &[])?;
+            // 남은 Excel 정리는 이 앱이 연 사본(두 업무 모두)을 닫지 않는다.
+            let orphans = s.adopt_orphans_many(&[])?;
+            s.close_calc_for("a");
+            let b_left = s.calc_path_for("b").map(|p| p.to_path_buf());
+            let a_left = s.calc_path_for("a").is_some();
+            s.close_all_calc();
+            Ok((a.path, b.path, listed, in_a, in_b, orphans, a_left, b_left))
+        })
+        .unwrap();
+    excel.run(|s| s.close_background()).unwrap();
+    let (a_path, b_path, listed, in_a, in_b, orphans, a_left, b_left) = result.unwrap();
+
+    assert_ne!(a_path, b_path);
+    assert!(listed.workbooks.iter().all(|b| !b.name.starts_with("calc-")), "사본은 둘 다 목록에 없다");
+    assert!(matches!(in_a[0].2, CellValue::Number(_)), "a에는 입력이 반영");
+    assert_eq!(in_b[0].2, CellValue::Empty, "b에는 a의 입력이 없다");
+    assert_eq!(orphans.closed_calc, 0);
+    assert!(!a_left);
+    assert_eq!(b_left.as_deref(), Some(b_path.as_path()), "a를 닫아도 b는 남는다");
+    assert!(!a_path.exists() && !b_path.exists(), "닫으면 임시 파일을 지운다");
+}

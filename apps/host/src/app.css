@@ -411,7 +411,7 @@ input[type="radio"] {
 }
 
 .toast-host {
-  position: absolute;
+  position: fixed;
   left: 50%;
   bottom: 76px;
   z-index: 50;
@@ -2497,4 +2497,149 @@ button.save-btn {
   font-weight: 700;
   line-height: 16px;
   text-align: center;
+}
+
+/* ---------------------------------------------------------------- 사이드바 업무 목록 */
+.jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.job-item {
+  position: relative;
+  display: flex;
+}
+
+.job-pick {
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px 22px 6px 8px;
+  border: 1.5px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  text-align: left;
+}
+
+.job-item.active .job-pick {
+  border-color: var(--ink);
+  background: var(--paper);
+}
+
+.job-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.job-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger, #d64545);
+}
+
+.job-file {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.job-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.job-chip {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.job-chip.on {
+  border-color: var(--ok, #2f9e6b);
+  color: var(--ok, #2f9e6b);
+}
+
+.job-chip.warn {
+  border-color: var(--warn, #a86a00);
+  color: var(--warn, #a86a00);
+}
+
+.job-end {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.job-end:hover {
+  color: var(--danger, #d64545);
+}
+
+.new-job {
+  align-self: flex-start;
+}
+
+.end-job {
+  width: 420px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.end-job ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.5;
+}
+
+.shell.starting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.list-url .muted {
+  flex: none;
 }

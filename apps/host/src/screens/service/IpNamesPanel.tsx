@@ -2,7 +2,8 @@ import type { HostSnapshot, IpNamesView } from "@mm/shared";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 
-import { api, errorText } from "../../api";
+import { errorText } from "../../api";
+import { useApi } from "../../job";
 import { useToast } from "../../frame";
 
 interface Props {
@@ -19,6 +20,7 @@ const JSON_FILTER = [{ name: "JSON", extensions: ["json"] }];
  * 입력한 뒤 호스트가 승인한다. 이 PC(호스트)의 IP가 명단에 있으면 그 이름이 호스트 이름이다. JSON 파일로 내보내고 불러온다.
  */
 export function IpNamesPanel({ snapshot, rev, onError }: Props) {
+  const api = useApi();
   const [view, setView] = useState<IpNamesView | null>(null);
   const [ip, setIp] = useState("");
   const [name, setName] = useState("");
@@ -89,9 +91,12 @@ export function IpNamesPanel({ snapshot, rev, onError }: Props) {
     <section className="ipnames" aria-label="IP 명단">
       <div className="card-head">
         <b className="big">IP 명단</b>
+        <span className="tag" title="이 PC의 모든 취합 업무가 같은 명단을 씁니다">
+          모든 업무 공통
+        </span>
         <span className="muted small">
-          명단의 IP에서 열면 이름을 묻지 않고 그 이름으로 바로 들어옵니다 · 명단 밖 IP는 이름을 입력하고 승인을
-          기다립니다
+          명단의 IP에서 열면 어느 업무든 이름을 묻지 않고 그 이름으로 바로 들어옵니다 · 명단 밖 IP는 이름을 입력하고
+          승인을 기다립니다
         </span>
         <span className="spacer" />
         <button className="ghost small" onClick={() => void importFile()}>

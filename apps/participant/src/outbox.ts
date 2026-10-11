@@ -1,4 +1,5 @@
 import type { Batch } from "./edits";
+import { storageSlug } from "./slug";
 
 /**
  * 보내지 못한 입력(오프라인 대기열)을 IndexedDB에 둔다. 연결이 끊긴 채 창을 닫거나 새로 고쳐도 남아,
@@ -26,8 +27,7 @@ function open(): Promise<IDBDatabase | null> {
 
 /** 주소 경로(`/q4`)와 이름마다 따로 둔다. */
 export function outboxKey(name: string): string {
-  const slug = location.pathname.split("/").filter(Boolean)[0] ?? "root";
-  return `${slug}:${name}`;
+  return `${storageSlug()}:${name}`;
 }
 
 /**

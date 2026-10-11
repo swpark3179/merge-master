@@ -1,13 +1,20 @@
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
 
+/** 그 페이지가 보는 업무의 개발용 관리 API 주소(`/__dev/approve?s=q4`). 업무가 여럿인 서버에서도 그 업무로 간다. */
+export function devUrl(page: Page, path: string): string {
+  const url = new URL(page.url());
+  const slug = url.pathname.split("/").filter(Boolean)[0] ?? "";
+  return `${url.origin}/__dev/${path}?s=${encodeURIComponent(slug)}`;
+}
+
 /**
  * 개발 서버의 참여자는 모두 127.0.0.1(호스트의 IP 명단 밖)에서 접속한다: 이름을 넣고 '참여하기'를 누르면 승인 대기가
  * 되고, 호스트 대신 관리 API(`/__dev/approve`)로 승인한다. `range`를 주면 그 범위를 배정하고 승인한다.
  */
 export async function approve(page: Page, name: string, range?: string) {
   await expect(page.getByText("호스트 승인을 기다리는 중")).toBeVisible();
-  const url = new URL("/__dev/approve", page.url()).href;
+  const url = devUrl(page, "approve");
   expect((await page.request.post(url, { data: range ? { name, range } : { name } })).ok()).toBe(true);
 }
 
