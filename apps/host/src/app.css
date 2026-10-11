@@ -916,16 +916,6 @@ details.more > .more-body {
 }
 
 /* 1c 서비스 */
-.service {
-  width: 520px;
-}
-
-.urls {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
 .url-row {
   display: flex;
   align-items: center;
@@ -940,13 +930,6 @@ details.more > .more-body {
     13px ui-monospace,
     Menlo,
     monospace;
-}
-
-.note {
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: var(--warn-soft);
-  color: var(--warn-ink);
 }
 
 /* 단계 화면 자리: 불러오기 화면은 숨겨 두고 상태를 유지한다. */
@@ -1490,15 +1473,6 @@ button.role {
   background: #fff;
 }
 
-.chip-swatch.locked {
-  background-image: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.35) 0 1px, transparent 1px 3px);
-}
-
-.chip-swatch.missing {
-  background: var(--role-req);
-  border-color: var(--warn-line);
-}
-
 .chip-swatch.exception {
   border: 1.5px dashed var(--ink-2);
 }
@@ -1678,7 +1652,7 @@ button.role {
   border-radius: 6px;
 }
 
-.exception-row .note {
+.exception-row .exception-note {
   flex: 1;
   min-width: 0;
   height: 26px;

@@ -60,22 +60,6 @@ body {
   flex: 1;
 }
 
-.status {
-  font-size: 13px;
-}
-
-.status-open {
-  color: var(--ok);
-}
-
-.status-connecting {
-  color: var(--muted);
-}
-
-.status-closed {
-  color: var(--warn);
-}
-
 .pill {
   padding: 1px 10px;
   border: 1.5px solid var(--ink);
@@ -100,25 +84,6 @@ button {
   cursor: pointer;
 }
 
-.name {
-  width: 110px;
-}
-
-.chat-form {
-  display: flex;
-  gap: 6px;
-}
-
-.chat-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  padding: 6px 16px;
-  background: #eef4fc;
-  border-bottom: 1px solid var(--line);
-  font-size: 13px;
-}
-
 .grid-host {
   flex: 1;
   min-height: 0;
@@ -127,11 +92,6 @@ button {
 
 .grid-host .mmg-scroller {
   flex: 1;
-}
-
-.empty {
-  margin: auto;
-  color: var(--muted);
 }
 
 .bench {
@@ -147,9 +107,6 @@ button {
 @media (max-width: 640px) {
   .top {
     padding: 8px 12px;
-  }
-  .chat-form input {
-    width: 140px;
   }
 }
 
@@ -280,6 +237,7 @@ button.link {
   display: block;
   height: 100%;
   background: var(--ink);
+  transition: width 0.3s ease-out;
 }
 
 .bar.indeterminate > span {
@@ -293,6 +251,15 @@ button.link {
   }
   to {
     transform: translateX(300%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar > span {
+    transition: none;
+  }
+  .bar.indeterminate > span {
+    animation: none;
   }
 }
 
