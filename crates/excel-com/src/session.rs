@@ -61,8 +61,10 @@ pub struct Session {
     background_books: Vec<String>,
     /// 앞 앱이 남긴 숨은 Excel을 받아들였으면 그 프로세스(끝낼 때 확실히 끝낸다).
     adopted_pid: Option<u32>,
-    /// 수식 재계산용 사본([`Session::open_calc`]).
-    pub(crate) calc: Option<CalcCopy>,
+    /// 되살린 업무의 원본이 앞 앱의 다른 숨은 Excel에도 열려 있었으면 그 인스턴스들(끝낼 때 함께 끝낸다).
+    adopted_more: Vec<(Dispatch, Option<u32>)>,
+    /// 수식 재계산용 사본(업무 id별, [`Session::open_calc_for`]).
+    pub(crate) calc: HashMap<String, CalcCopy>,
 }
 
 impl Session {
@@ -133,7 +135,7 @@ impl Session {
 
     /// 계산 사본은 ROT에 파일로 보이지만 목록에는 넣지 않는다.
     fn is_calc_copy(&self, id: &str) -> bool {
-        self.calc.as_ref().is_some_and(|c| c.path.to_string_lossy().eq_ignore_ascii_case(id))
+        self.calc.values().any(|c| c.path.to_string_lossy().eq_ignore_ascii_case(id))
     }
 
     /// 살아 있는 백그라운드 인스턴스. 사용자가 작업 관리자로 끄는 등 연결이 끊겼으면 버린다.
@@ -169,20 +171,27 @@ impl Session {
             .map_err(|_| ExcelError::SheetNotFound(sheet.to_string()))
     }
 
+    /// 앞서 실행된 앱(강제 종료 등)이 남긴 숨은 Excel을 정리한다. [`Session::adopt_orphans_many`] 참고.
+    pub fn adopt_orphans(&mut self, source: Option<&str>) -> Result<OrphanReport> {
+        let sources: Vec<String> = source.into_iter().map(str::to_string).collect();
+        self.adopt_orphans_many(&sources)
+    }
+
     /// 앞서 실행된 앱(강제 종료 등)이 남긴 숨은 Excel을 정리한다.
     ///
-    /// - 계산 사본(임시 폴더 `merge-master\calc-*`)이 열려 있으면 닫고, 그 Excel에 다른 문서가 없으면 끝낸다.
-    /// - `source`(원본 통합문서)가 보이지 않는 Excel에 열려 있으면 이 앱이 띄운 숨은 인스턴스로 받아들인다
+    /// - 계산 사본(임시 폴더 `merge-master\calc-*`)이 열려 있으면 닫고, 그 Excel에 다른 문서가 없으면 끝낸다
+    ///   (이 앱이 지금 연 사본 — 다른 업무의 것 포함 — 은 그대로).
+    /// - `sources`(되살린 업무들의 원본 통합문서)가 보이지 않는 Excel에 열려 있으면 이 앱이 띄운 숨은 인스턴스로 받아들인다
     ///   (앱을 끝낼 때 함께 닫힌다).
-    pub fn adopt_orphans(&mut self, source: Option<&str>) -> Result<OrphanReport> {
+    pub fn adopt_orphans_many(&mut self, sources: &[String]) -> Result<OrphanReport> {
         let mut report = OrphanReport::default();
         let calc_dir = std::env::temp_dir().join("merge-master").to_string_lossy().to_lowercase();
-        let own_calc = self.calc.as_ref().map(|c| c.path.to_string_lossy().to_lowercase());
+        let own_calc: Vec<String> = self.calc.values().map(|c| c.path.to_string_lossy().to_lowercase()).collect();
         for book in rot_workbooks()? {
             let Ok(id) = book.get_string("FullName") else { continue };
             let lower = id.to_lowercase();
             let is_calc = lower.starts_with(&calc_dir) && lower.contains("calc-");
-            if is_calc && own_calc.as_deref() != Some(lower.as_str()) {
+            if is_calc && !own_calc.contains(&lower) {
                 let app = book.obj("Application").ok();
                 let pid = app.as_ref().and_then(excel_pid);
                 let _ = book.call("Close", vec![Var::bool(false)]);
@@ -201,13 +210,20 @@ impl Session {
                 report.closed_calc += 1;
                 continue;
             }
-            if source.is_some_and(|s| s.eq_ignore_ascii_case(&id))
+            if sources.iter().any(|s| s.eq_ignore_ascii_case(&id))
                 && !self.background_books.contains(&id)
                 && let Ok(app) = book.obj("Application")
                 && app.get("Visible").ok().and_then(|v| v.as_bool()) == Some(false)
             {
-                self.adopted_pid = excel_pid(&app);
-                self.background_app = Some(app);
+                let pid = excel_pid(&app);
+                if self.background_app.is_none() {
+                    self.adopted_pid = pid;
+                    self.background_app = Some(app);
+                } else if pid.is_none() || (pid != self.adopted_pid && self.adopted_more.iter().all(|(_, p)| *p != pid))
+                {
+                    // 원본 여러 개가 서로 다른 숨은 Excel에 열려 있다(앞 앱이 두 번 죽음 등).
+                    self.adopted_more.push((app, pid));
+                }
                 self.background_books.push(id.clone());
                 self.workbooks.insert(id, book);
                 report.adopted = true;
@@ -233,32 +249,41 @@ impl Session {
                 let _ = book.call("Close", vec![Var::bool(false)]);
             }
         }
+        for (app, pid) in self.adopted_more.drain(..) {
+            quit_adopted(app, pid);
+        }
         let adopted = self.adopted_pid.take();
         if let Some(app) = self.background_app.take() {
-            // 받아들인 인스턴스에 남은 문서(앞 앱이 함께 열어 둔 파일 등)는 저장된 상태면 닫아도 잃는 것이 없다.
-            // 저장하지 않은 변경이 있으면 다른 프로그램의 숨은 Excel일 수 있어 그대로 둔다.
             if adopted.is_some() {
-                let mut left = Vec::new();
-                let _ = collect_books(&app, &mut left, true);
-                let unsaved =
-                    left.iter().filter(|(b, _)| b.get("Saved").ok().and_then(|v| v.as_bool()) == Some(false)).count();
-                if unsaved > 0 {
-                    tracing::warn!(unsaved, "받아들인 Excel에 저장하지 않은 문서가 있어 끝내지 않습니다");
-                    return;
-                }
+                quit_adopted(app, adopted);
+            } else {
+                let _ = app.call("Quit", vec![]);
             }
-            let _ = app.call("Quit", vec![]);
         }
-        // 받아들인(앞 앱이 띄운) 인스턴스는 죽은 앱의 참조 때문에 Quit만으로 끝나지 않는다.
-        if let Some(pid) = adopted {
-            ensure_exit(pid, 3000);
-        }
+    }
+}
+
+/// 받아들인(앞 앱이 띄운) 숨은 Excel을 끝낸다. 남은 문서(앞 앱이 함께 열어 둔 파일 등)는 저장된 상태면 닫아도 잃는 것이
+/// 없다. 저장하지 않은 변경이 있으면 다른 프로그램의 숨은 Excel일 수 있어 그대로 둔다.
+fn quit_adopted(app: Dispatch, pid: Option<u32>) {
+    let mut left = Vec::new();
+    let _ = collect_books(&app, &mut left, true);
+    let unsaved = left.iter().filter(|(b, _)| b.get("Saved").ok().and_then(|v| v.as_bool()) == Some(false)).count();
+    if unsaved > 0 {
+        tracing::warn!(unsaved, "받아들인 Excel에 저장하지 않은 문서가 있어 끝내지 않습니다");
+        return;
+    }
+    let _ = app.call("Quit", vec![]);
+    drop((left, app));
+    // 죽은 앱의 참조 때문에 Quit만으로 끝나지 않는다.
+    if let Some(pid) = pid {
+        ensure_exit(pid, 3000);
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        self.close_calc();
+        self.close_all_calc();
         self.close_background();
     }
 }
