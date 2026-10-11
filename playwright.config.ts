@@ -5,6 +5,8 @@ const PORT = 8099;
 export const HIDDEN_PORT = 8098;
 /** 시트 두 개(예산신청서 + 인력계획)를 함께 취합하는 세 번째 서버. */
 export const SHEETS_PORT = 8097;
+/** 업무 두 개(q4 예산 + hr 인력)를 한 포트로 서비스하는 네 번째 서버. */
+export const JOBS_PORT = 8096;
 
 const server = (port: number, extra: string) => ({
   command: `cargo run -q --release -p collect-server --bin collect-dev-server -- --fixture fixtures/budget.sheet.json --port ${port} --bind 127.0.0.1 --required F --dev-admin ${extra}`,
@@ -31,5 +33,9 @@ export default defineConfig({
     server(PORT, ""),
     server(HIDDEN_PORT, "--others-hidden"),
     server(SHEETS_PORT, "--fixture fixtures/staff.sheet.json --required 2:E"),
+    server(
+      JOBS_PORT,
+      '--session hr --fixture fixtures/staff.sheet.json --title "2026 인력 계획 취합" --requester 김팀장',
+    ),
   ],
 });

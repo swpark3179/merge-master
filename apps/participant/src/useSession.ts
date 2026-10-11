@@ -24,6 +24,7 @@ import type { Batch, CellChange } from "./edits";
 import { EditState } from "./edits";
 import type { StoredBatch } from "./outbox";
 import { loadOutbox, outboxKey, saveOutbox, splitBySheet } from "./outbox";
+import { storageSlug } from "./slug";
 
 /** 서버 `protocol::PROTOCOL_VERSION`과 같아야 한다. */
 const PROTOCOL = 5;
@@ -40,7 +41,9 @@ export type Phase =
   | { kind: "in" }
   | { kind: "kicked"; reason: KickReason }
   /** 호스트가 서비스를 중지함(다시 열리면 자동으로 붙는다). */
-  | { kind: "closed" };
+  | { kind: "closed" }
+  /** 호스트가 이 업무를 끝냈다(다시 붙지 않는다). */
+  | { kind: "ended" };
 
 export interface Notice {
   id: number;
@@ -60,13 +63,14 @@ export interface LockEvent {
   reason?: string;
 }
 
-/** 주소 경로(`/q4`)마다 이름·토큰·보던 시트를 따로 기억한다. */
-function storageKey(what: "name" | "token" | "sheet") {
-  const slug = location.pathname.split("/").filter(Boolean)[0] ?? "root";
-  return `mm.${slug}.${what}`;
+type Stored = "name" | "token" | "sheet" | "job";
+
+/** 주소 경로(`/q4`)마다 이름·토큰·보던 시트·업무 id를 따로 기억한다. */
+function storageKey(what: Stored) {
+  return `mm.${storageSlug()}.${what}`;
 }
 
-function load(what: "name" | "token" | "sheet"): string | null {
+function load(what: Stored): string | null {
   try {
     return localStorage.getItem(storageKey(what));
   } catch {
@@ -74,7 +78,7 @@ function load(what: "name" | "token" | "sheet"): string | null {
   }
 }
 
-function save(what: "name" | "token" | "sheet", value: string | null) {
+function save(what: Stored, value: string | null) {
   try {
     if (value === null) localStorage.removeItem(storageKey(what));
     else localStorage.setItem(storageKey(what), value);
@@ -92,8 +96,19 @@ declare global {
   }
 }
 
-export function useSession() {
+/**
+ * 같은 주소 경로를 다른 업무가 다시 쓰고 있는가(호스트가 앞 업무를 끝내고 새 업무에 같은 경로를 줌). 그러면 앞 업무에서
+ * 보내지 못한 입력·토큰을 새 업무에 보내면 안 된다.
+ */
+export function isOtherJob(stored: string | null, job: string | null | undefined): boolean {
+  return !!stored && !!job && stored !== job;
+}
+
+/** `slug`: 이 화면의 업무 주소 경로(`/q4` → `q4`). */
+export function useSession(slug: string) {
   const [info, setInfo] = useState<SessionInfo | null>(null);
+  /** 이 주소의 업무가 지금 공개되어 있지 않다(없는 주소·공개 중지·끝남). */
+  const [missing, setMissing] = useState(false);
   const [phase, setPhase] = useState<Phase>(() => {
     const name = load("name");
     return name && load("token") ? { kind: "joining", name } : { kind: "name" };
@@ -209,6 +224,15 @@ export function useSession() {
     (msg: ServerMsg) => {
       switch (msg.type) {
         case "welcome": {
+          // 같은 주소를 새 업무가 쓰고 있으면 앞 업무의 대기열·편집 상태는 버린다.
+          const otherJob = isOtherJob(load("job"), msg.session.job);
+          if (msg.session.job) save("job", msg.session.job);
+          if (otherJob) {
+            saved.current.clear();
+            edits.current = [];
+            welcomeName.current = null;
+            saving.current = saving.current.then(() => saveOutbox(outboxKey(msg.name), []));
+          }
           save("name", msg.name);
           save("token", msg.token);
           wantJoin.current = msg.name; // 끊겼다 다시 붙으면 토큰으로 바로 입장
@@ -349,7 +373,18 @@ export function useSession() {
           setHistory({ sheet: msg.sheet, row: msg.row, entries: msg.entries });
           break;
         case "closing":
-          setPhase((p) => (p.kind === "in" || p.kind === "pending" ? { kind: "closed" } : p));
+          if (msg.ended) {
+            // 업무가 끝났다: 다시 붙지 않고, 남은 대기열·토큰도 쓸 일이 없다.
+            stopRetry.current = true;
+            wantJoin.current = null;
+            save("token", null);
+            const name = load("name");
+            if (name) saving.current = saving.current.then(() => saveOutbox(outboxKey(name), []));
+            setMissing(true);
+            setPhase({ kind: "ended" });
+          } else {
+            setPhase((p) => (p.kind === "in" || p.kind === "pending" ? { kind: "closed" } : p));
+          }
           break;
         case "notice":
           setAnnouncements((list) => [...list.filter((n) => n.id !== msg.id), msg]);
@@ -396,7 +431,7 @@ export function useSession() {
     const connect = () => {
       if (offline.current) return;
       const scheme = location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${scheme}://${location.host}/ws`);
+      const socket = new WebSocket(`${scheme}://${location.host}/ws?s=${encodeURIComponent(slug)}`);
       ws.current = socket;
       socket.onopen = () => {
         attempt = 0;
@@ -425,7 +460,7 @@ export function useSession() {
       window.clearInterval(ping);
       ws.current?.close();
     };
-  }, [onMessage, send, sendJoin]);
+  }, [onMessage, send, sendJoin, slug]);
 
   useEffect(() => {
     window.__mmTest = {
@@ -440,18 +475,31 @@ export function useSession() {
     };
   }, []);
 
-  // 접속 화면에 보일 공개 정보(접속자 수는 가끔 새로 읽는다).
+  // 접속 화면에 보일 공개 정보(접속자 수는 가끔 새로 읽는다). 404면 이 주소의 업무가 공개되어 있지 않다.
   useEffect(() => {
-    if (phase.kind === "in") return;
+    if (phase.kind === "in" || phase.kind === "ended") return;
     const get = () =>
-      fetch("/api/session")
-        .then((r) => r.json() as Promise<SessionInfo>)
-        .then(setInfo)
+      fetch(`/api/session?s=${encodeURIComponent(slug)}`)
+        .then(async (r) => {
+          if (r.status === 404) {
+            setMissing(true);
+            return;
+          }
+          if (!r.ok) return;
+          setInfo((await r.json()) as SessionInfo);
+          setMissing(false);
+        })
         .catch(() => {});
     get();
     const id = window.setInterval(get, 10_000);
     return () => window.clearInterval(id);
-  }, [phase.kind]);
+  }, [phase.kind, slug]);
+
+  // 브라우저 탭에 업무명을 보인다(업무 여럿을 탭으로 열어 둘 때 가려 보기).
+  const title = info?.title;
+  useEffect(() => {
+    document.title = title ? `${title} · 엑셀 취합` : "엑셀 취합";
+  }, [title]);
 
   const join = useCallback(
     (name: string) => {
@@ -569,6 +617,8 @@ export function useSession() {
 
   return {
     info,
+    /** 이 주소의 업무가 지금 공개되어 있지 않다. */
+    missing: missing && phase.kind !== "in",
     phase,
     welcome,
     /** 보고 있는 시트(세션 안 순번)와 그 시트의 보기(열 규칙·권한·행 담당자). */
