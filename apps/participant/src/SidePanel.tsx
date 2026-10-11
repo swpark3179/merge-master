@@ -1,5 +1,5 @@
 import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
-import { a1, splitCellRefs } from "@mm/shared";
+import { a1, sheetPrefix, splitCellRefs } from "@mm/shared";
 import type { KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
@@ -54,17 +54,25 @@ interface Props {
   waiting: boolean;
   onWait: () => void;
   unreadChat: number;
-  /** 모델 좌표 범위로 간다. `highlight`가 있으면 확인으로 표시한다. */
-  onReveal: (range: CellRange, highlight?: number) => void;
+  /** 그 시트(없으면 지금 시트)의 모델 좌표 범위로 간다. `highlight`가 있으면 확인으로 표시한다. */
+  onReveal: (range: CellRange, highlight?: number, sheet?: number) => void;
+  /** 채팅의 셀 참조(시트 주소, 시트 이름이 있으면 그 시트). */
+  onRef: (range: CellRange, sheet?: string) => void;
   onChatSeen: (id: number) => void;
 }
 
 /** 1f 오른쪽 사이드바: 셀 내용(고른 칸의 위치·내용 보기·고치기), 알림(강조된 셀·공지), 채팅(전체·취합을 연 사람에게), 셀 이력. */
 export function SidePanel(props: Props) {
-  const { s, tab, onTab, onClose, at, labels, canEdit, onReveal, onChatSeen } = props;
+  const { s, tab, onTab, onClose, at, labels, canEdit, onReveal, onRef, onChatSeen } = props;
   const w = s.welcome!;
   const origin = s.sheet!.model.origin;
   const addr = (r: CellRef) => a1(origin.row + r.row, origin.col + r.col);
+  /** 다른 시트의 주소(시트가 여럿이면 시트 이름을 붙인다). */
+  const sheetAddr = (sheet: number, r: CellRef) => {
+    const m = s.sheets[sheet]?.model;
+    if (!m) return "";
+    return `${s.sheets.length > 1 ? sheetPrefix(m.sheet) : ""}${a1(m.origin.row + r.row, m.origin.col + r.col)}`;
+  };
   const unreadAlerts = s.highlights.filter((h) => !h.acked).length + s.announcements.filter((n) => !n.read).length;
   const panel = useRef<HTMLElement>(null);
   const { width, onWidth } = props;
@@ -153,13 +161,13 @@ export function SidePanel(props: Props) {
           onWait={props.onWait}
         />
       )}
-      {tab === "alerts" && <Alerts s={s} addr={addr} onReveal={onReveal} />}
+      {tab === "alerts" && <Alerts s={s} addr={sheetAddr} onReveal={onReveal} />}
       {tab === "chat" && (
         <Chat
           s={s}
           me={w.name}
           host={s.presence.find((x) => x.host)?.name || w.session.requester || "요청자"}
-          onRef={(r) => onReveal({ row: r.row - origin.row, col: r.col - origin.col, rows: r.rows, cols: r.cols })}
+          onRef={onRef}
           onSeen={onChatSeen}
         />
       )}
@@ -168,7 +176,15 @@ export function SidePanel(props: Props) {
   );
 }
 
-function Alerts({ s, addr, onReveal }: { s: SessionState; addr: (r: CellRef) => string; onReveal: Props["onReveal"] }) {
+function Alerts({
+  s,
+  addr,
+  onReveal,
+}: {
+  s: SessionState;
+  addr: (sheet: number, r: CellRef) => string;
+  onReveal: Props["onReveal"];
+}) {
   const highlights = [...s.highlights].reverse();
   const notices = [...s.announcements].reverse();
   return (
@@ -177,11 +193,11 @@ function Alerts({ s, addr, onReveal }: { s: SessionState; addr: (r: CellRef) => 
       {highlights.map((h) => (
         <div key={`h${h.id}`} className={`alert-item highlight${h.acked ? " done" : ""}`}>
           <div className="small">
-            <span className="mono">{addr(h.range)}</span> · {h.from} · {time(h.atMs)}
+            <span className="mono">{addr(h.sheet, h.range)}</span> · {h.from} · {time(h.atMs)}
             {h.acked && <span className="muted"> · 확인함</span>}
           </div>
           {h.note && <div>{h.note}</div>}
-          <button className="link" onClick={() => onReveal(h.range, h.id)}>
+          <button className="link" onClick={() => onReveal(h.range, h.id, h.sheet)}>
             셀로 이동 →
           </button>
         </div>
@@ -217,7 +233,7 @@ function Chat({
   me: string;
   /** 취합을 연 사람의 이름(1c '내 이름'). */
   host: string;
-  onRef: (r: CellRange) => void;
+  onRef: (r: CellRange, sheet?: string) => void;
   onSeen: (id: number) => void;
 }) {
   const [toHost, setToHost] = useState(false);
@@ -251,7 +267,7 @@ function Chat({
             <div>
               {splitCellRefs(m.text).map((p, i) =>
                 "ref" in p ? (
-                  <button key={i} className="cell-ref" onClick={() => onRef(p.range)}>
+                  <button key={i} className="cell-ref" onClick={() => onRef(p.range, p.sheet)}>
                     #{p.ref}
                   </button>
                 ) : (
@@ -304,11 +320,12 @@ function CellHistory({
   const row = at?.row;
   useEffect(() => {
     if (row !== undefined) rowHistory(row);
-  }, [row, sheet.myChanges, rowHistory]);
+  }, [row, sheet.myChanges, rowHistory, s.active]);
   if (!at) {
     return <div className="side-body muted small">칸을 고르면(오른쪽 클릭 → 셀 이력) 그 칸의 변경이 보입니다.</div>;
   }
-  const entries = s.history?.row === at.row ? s.history.entries.filter((e) => e.col === at.col) : [];
+  const entries =
+    s.history?.sheet === s.active && s.history.row === at.row ? s.history.entries.filter((e) => e.col === at.col) : [];
   const current = sheet.value(at.row, at.col);
   const lastSeq = entries[entries.length - 1]?.seq;
   return (

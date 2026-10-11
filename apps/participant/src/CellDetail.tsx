@@ -73,7 +73,14 @@ export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, wai
   const { lockEvent } = s;
   useEffect(() => {
     const l = locked.current;
-    if (lockEvent?.kind !== "denied" || !l || l.row !== lockEvent.at.row || l.col !== lockEvent.at.col) return;
+    if (
+      lockEvent?.kind !== "denied" ||
+      !l ||
+      lockEvent.sheet !== s.active ||
+      l.row !== lockEvent.at.row ||
+      l.col !== lockEvent.at.col
+    )
+      return;
     locked.current = null;
     setDirty(false);
     setError(lockEvent.by ? `${lockEvent.by} 님이 입력 중입니다` : (lockEvent.reason ?? "입력할 수 없습니다"));

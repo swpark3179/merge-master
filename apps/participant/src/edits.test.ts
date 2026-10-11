@@ -1,9 +1,9 @@
-import type { CellStyle, SheetModel, Welcome } from "@mm/shared";
+import type { CellStyle, SheetModel, SheetView } from "@mm/shared";
 import { describe, expect, it } from "vitest";
 
 import { EditState, sameValue } from "./edits";
 
-function welcome(over: Partial<Welcome> = {}): Welcome {
+function welcome(over: Partial<SheetView> = {}): SheetView {
   const model: SheetModel = {
     workbook: "a.xlsx",
     sheet: "s",
@@ -23,19 +23,6 @@ function welcome(over: Partial<Welcome> = {}): Welcome {
     hiddenCols: [],
   };
   return {
-    protocol: 2,
-    name: "김민지",
-    token: "t",
-    color: 2,
-    session: {
-      title: "",
-      description: "",
-      requester: "",
-      lockAfterDeadline: true,
-      readOnly: false,
-      closed: false,
-      online: 1,
-    },
     model,
     flags: "",
     versions: [],
@@ -43,19 +30,14 @@ function welcome(over: Partial<Welcome> = {}): Welcome {
     columns: [],
     labels: [],
     permissions: { format: "none", othersRows: "readOnly", filterSort: true, addRows: false, lockAfterDeadline: true },
-    roster: ["김민지"],
     rowOwner: [-1, 2, 2],
     progress: { name: "김민지", rows: 2, required: 0, filled: 0 },
-    presence: [],
-    notices: [],
-    highlights: [],
-    chat: [],
     ...over,
   };
 }
 
 /** 표 아래에 행이 붙은 새 시트(같은 통합문서·시트, 행만 늘어남). */
-function grown(w: Welcome, extra: number): Welcome {
+function grown(w: SheetView, extra: number): SheetView {
   const m = w.model;
   const model: SheetModel = {
     ...m,
@@ -153,9 +135,18 @@ describe("EditState", () => {
     expect(s.outbox).toEqual([b]);
     expect(b.cells[0]!.base).toBe(0); // 처음 본 버전으로 보내 충돌을 알 수 있게 한다
     // 새로 고침해 저장해 둔 대기열로 다시 시작해도 같다.
-    const again = new EditState(welcome(), "c", s.outbox);
+    const again = new EditState(welcome(), "c", 0, s.outbox);
     expect(again.value(1, 1)).toBe(5);
     expect(again.pending.get(3)).toBe(b.batch);
+  });
+
+  it("묶음은 시트 번호와 함께 보내고, 되돌리기는 시트마다", () => {
+    const a = new EditState(welcome(), "c", 0);
+    const b = new EditState(welcome(), "c", 1);
+    const sent = b.edit([{ row: 1, col: 0, value: 1 }])!;
+    expect(sent.sheet).toBe(1);
+    expect(a.canUndo()).toBe(false);
+    expect(b.undo()?.sheet).toBe(1);
   });
 
   it("잠금과 서식", () => {

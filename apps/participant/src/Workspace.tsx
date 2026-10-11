@@ -11,6 +11,7 @@ import {
   parseDeadline,
   personColor,
   remaining,
+  sheetPrefix,
 } from "@mm/shared";
 import type { ClipboardEvent, CSSProperties, KeyboardEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -104,15 +105,18 @@ function clock(ms: number): string {
 export function Workspace({ s }: { s: SessionState }) {
   const w = s.welcome!;
   const sheet = s.sheet!;
+  const sv = s.view!;
   const model = sheet.model;
-  const { columns, labels } = w;
+  const { columns, labels } = sv;
   const flags = s.flags;
+  const active = s.active;
   const [mode, setMode] = useState<"grid" | "form">("grid");
   const [selection, setSelection] = useState<GridSelection | null>(null);
   const [filter, setFilter] = useState<RowFilter>(NO_FILTER);
   const [editor, setEditor] = useState<ActiveEdit | null>(null);
   const [formRow, setFormRow] = useState<number | null>(null);
-  const [waitFree, setWaitFree] = useState<Set<number>>(() => new Set());
+  /** '끝나면 알려 주기'를 건 칸(`시트:칸 인덱스`). */
+  const [waitFree, setWaitFree] = useState<Set<string>>(() => new Set());
   const [bench, setBench] = useState<BenchResult | null>(null);
   /** 오른쪽 사이드바(셀 내용·알림·채팅·셀 이력)와 그 탭. */
   const [sideOpen, setSideOpenState] = useState(loadSide);
@@ -153,7 +157,7 @@ export function Workspace({ s }: { s: SessionState }) {
   const idx = (r: number, c: number) => r * model.cols + c;
   const addr = (at: CellRef) => a1(model.origin.row + at.row, model.origin.col + at.col);
 
-  const myRows = useMemo(() => myRowsOf(model, flags, w.rowOwner, w.color), [model, flags, w.rowOwner, w.color]);
+  const myRows = useMemo(() => myRowsOf(model, flags, sv.rowOwner, w.color), [model, flags, sv.rowOwner, w.color]);
   const myRowCount = useMemo(() => myRows.reduce((n, x) => n + x, 0), [myRows]);
   // 필터는 걸 때 한 번 계산한다(입력하는 동안 행이 사라지지 않게).
   const hidden = useMemo(() => filteredOut(model, flags, myRows, filter), [model, flags, myRows, filter]);
@@ -176,8 +180,8 @@ export function Workspace({ s }: { s: SessionState }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, sheet.rev]);
   const filterCols = useMemo(
-    () => (w.permissions.filterSort ? columns.map((c, i) => (c.filter ? i : -1)).filter((i) => i >= 0) : []),
-    [columns, w.permissions.filterSort],
+    () => (sv.permissions.filterSort ? columns.map((c, i) => (c.filter ? i : -1)).filter((i) => i >= 0) : []),
+    [columns, sv.permissions.filterSort],
   );
   const options = useMemo(() => new Map(filterCols.map((c) => [c, filterOptions(model, c)])), [filterCols, model]);
 
@@ -275,11 +279,18 @@ export function Workspace({ s }: { s: SessionState }) {
       const { row, col } = sel.anchor;
       for (const h of s.highlights) {
         const r = h.range;
-        if (!h.acked && row >= r.row && row < r.row + r.rows && col >= r.col && col < r.col + r.cols)
+        if (
+          !h.acked &&
+          h.sheet === active &&
+          row >= r.row &&
+          row < r.row + r.rows &&
+          col >= r.col &&
+          col < r.col + r.cols
+        )
           s.ackHighlight(h.id);
       }
     },
-    [leave, s],
+    [leave, s, active],
   );
 
   // 활성 칸이 입력 가능하면 투명 편집기에, 아니면 그리드에 포커스(그리드 안에서 움직일 때만).
@@ -299,13 +310,14 @@ export function Workspace({ s }: { s: SessionState }) {
 
   // 잠금 결과·풀림(이 효과는 알림이 올 때만 돈다: 그때의 편집기·대기 목록을 본다)
   const { lockEvent } = s;
-  const lockState = useRef({ waitFree, model });
-  lockState.current = { waitFree, model };
+  const lockState = useRef({ waitFree, active });
+  lockState.current = { waitFree, active };
   useEffect(() => {
-    const { waitFree, model } = lockState.current;
+    const { waitFree, active } = lockState.current;
     if (!lockEvent) return;
     const e = editorRef.current;
-    const same = e !== null && e.at.row === lockEvent.at.row && e.at.col === lockEvent.at.col;
+    const same =
+      e !== null && lockEvent.sheet === active && e.at.row === lockEvent.at.row && e.at.col === lockEvent.at.col;
     if (lockEvent.kind === "granted" && same && !e.locked) {
       const next = { ...e, locked: true };
       editorRef.current = next;
@@ -318,18 +330,19 @@ export function Workspace({ s }: { s: SessionState }) {
         close();
         notify("호스트가 편집 잠금을 해제했습니다. 입력하던 값은 저장되지 않았습니다", "warn");
       }
-      const i = lockEvent.at.row * model.cols + lockEvent.at.col;
-      if (waitFree.has(i)) {
-        notify(
-          `${a1(model.origin.row + lockEvent.at.row, model.origin.col + lockEvent.at.col)} 칸을 이제 입력할 수 있습니다`,
-        );
+      const m = s.sheets[lockEvent.sheet]?.model;
+      const key = m ? `${lockEvent.sheet}:${lockEvent.at.row * m.cols + lockEvent.at.col}` : "";
+      if (m && waitFree.has(key)) {
+        const where = a1(m.origin.row + lockEvent.at.row, m.origin.col + lockEvent.at.col);
+        notify(`${s.sheets.length > 1 ? sheetPrefix(m.sheet) : ""}${where} 칸을 이제 입력할 수 있습니다`);
         setWaitFree((set) => {
           const next = new Set(set);
-          next.delete(i);
+          next.delete(key);
           return next;
         });
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lockEvent, close, notify]);
 
   // 마감되면 편집을 닫는다.
@@ -445,7 +458,7 @@ export function Workspace({ s }: { s: SessionState }) {
 
   // ------------------------------------------------------------ 서식
 
-  const policy = w.permissions.format;
+  const policy = sv.permissions.format;
   const applyFormat = (patch: StylePatch) => {
     if (!selection) return;
     const rect = rectOf(selection);
@@ -465,11 +478,11 @@ export function Workspace({ s }: { s: SessionState }) {
   const peers = useMemo(() => {
     const map = new Map<string, { name: string; color: string }>();
     for (const p of s.presence) {
-      if (p.host || p.name === w.name || !p.cursor) continue;
+      if (p.host || p.name === w.name || !p.cursor || p.cursor.sheet !== active) continue;
       map.set(`${p.cursor.row}:${p.cursor.col}`, { name: p.name, color: personColor(p.color) });
     }
     return map;
-  }, [s.presence, w.name]);
+  }, [s.presence, w.name, active]);
 
   const colorOf = (name: string) => personColor(Math.max(0, w.roster.indexOf(name)));
 
@@ -477,23 +490,70 @@ export function Workspace({ s }: { s: SessionState }) {
   const highlighted = useMemo(() => {
     const map = new Map<string, { note: string; head: boolean }>();
     for (const h of s.highlights) {
+      if (h.sheet !== active) continue;
       for (let r = h.range.row; r < h.range.row + h.range.rows; r++)
         for (let c = h.range.col; c < h.range.col + h.range.cols; c++)
           map.set(`${r}:${c}`, { note: h.note, head: r === h.range.row && c === h.range.col });
     }
     return map;
-  }, [s.highlights]);
+  }, [s.highlights, active]);
 
-  /** 그 칸(모델 좌표)으로 간다. 필터에 걸려 숨었으면 필터를 지운다. */
-  const revealRange = (range: CellRange, highlight?: number) => {
+  // ------------------------------------------------------------ 시트
+
+  /** 시트마다 보던 칸·필터(시트를 오가도 이어서 본다). */
+  const memory = useRef(new Map<number, { selection: GridSelection | null; filter: RowFilter }>());
+  /** 다른 시트의 칸으로 가는 중: 시트를 바꾼 뒤 그 칸을 보인다. */
+  const [pendingReveal, setPendingReveal] = useState<{ sheet: number; range: CellRange } | null>(null);
+
+  const switchSheet = (to: number) => {
+    if (to === active || !s.sheets[to]) return;
+    if (editorRef.current) leave(); // 확정·취소는 지금 시트로 간다
+    memory.current.set(active, { selection, filter });
+    const back = memory.current.get(to);
+    setSelection(back?.selection ?? null);
+    setFilter(back?.filter ?? NO_FILTER);
+    setFormRow(null);
+    s.setActive(to);
+    s.cursor(back?.selection?.anchor ?? null);
+  };
+
+  /** 그 칸(그 시트의 모델 좌표)으로 간다. 다른 시트면 시트를 바꾸고, 필터에 걸려 숨었으면 필터를 지운다. */
+  const revealRange = (range: CellRange, highlight?: number, target: number = active) => {
     if (highlight !== undefined) s.ackHighlight(highlight);
     if (mode !== "grid") setMode("grid");
+    if (target !== active) {
+      if (!s.sheets[target]) return;
+      switchSheet(target);
+      setPendingReveal({ sheet: target, range });
+      return;
+    }
     if (hidden.has(range.row)) setFilter(NO_FILTER);
     if (model.hiddenRows.includes(range.row)) {
       notify("그 칸은 이 화면에서 볼 수 없습니다(남의 행)", "warn");
       return;
     }
     requestAnimationFrame(() => grid.current?.reveal({ row: range.row, col: range.col }));
+  };
+
+  // 시트를 바꾼 뒤(새 시트를 그린 뒤) 가려던 칸을 보인다.
+  useEffect(() => {
+    if (!pendingReveal || pendingReveal.sheet !== active) return;
+    const range = pendingReveal.range;
+    setPendingReveal(null);
+    revealRange(range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingReveal, active]);
+
+  /** 채팅의 `#시트!F7`: 시트 이름이 있으면 그 시트(없는 이름이면 알림), 없으면 지금 시트. */
+  const revealRef = (range: CellRange, sheetName?: string) => {
+    const target = sheetName === undefined ? active : s.sheets.findIndex((x) => x.model.sheet === sheetName);
+    if (target < 0) return notify(`'${sheetName}' 시트가 없습니다`, "warn");
+    const m = s.sheets[target]!.model;
+    revealRange(
+      { row: range.row - m.origin.row, col: range.col - m.origin.col, rows: range.rows, cols: range.cols },
+      undefined,
+      target,
+    );
   };
 
   const decorate = (r: number, c: number): CellDecoration | undefined => {
@@ -549,7 +609,7 @@ export function Workspace({ s }: { s: SessionState }) {
   };
 
   const rowMarker = (r: number) => {
-    const p = w.rowOwner[r] ?? -1;
+    const p = sv.rowOwner[r] ?? -1;
     return p >= 0 ? personColor(p) : undefined;
   };
 
@@ -585,7 +645,7 @@ export function Workspace({ s }: { s: SessionState }) {
   useEffect(() => {
     if (!rowsAdded || rowsAdded.seq === rowsAddedSeen.current) return;
     rowsAddedSeen.current = rowsAdded.seq;
-    if (rowsAdded.by !== w.name) return;
+    if (rowsAdded.by !== w.name || rowsAdded.sheet !== active) return;
     const row = rowsAdded.range.row;
     const where = model.origin.row + row + 1;
     notify(
@@ -609,13 +669,15 @@ export function Workspace({ s }: { s: SessionState }) {
     (sideOpen && mode === "grid" && panel === "alerts" ? 0 : unreadAlerts) +
     (sideOpen && mode === "grid" && panel === "chat" ? 0 : unreadChat);
   const others = s.presence.filter((p) => p.name !== w.name);
-  const p = s.progress ?? w.progress;
+  const p = s.progress ?? { name: w.name, rows: 0, required: 0, filled: 0 };
   const pct = p.required > 0 ? Math.round((p.filled / p.required) * 100) : 100;
   const left = remaining(w.session.deadline, new Date(now));
   const overdue = left === "마감 지남";
   const dueAt = parseDeadline(w.session.deadline)?.getTime();
   const urgent = !overdue && dueAt !== undefined && dueAt - now < 3_600_000;
-  const waiting = sheet.outbox.reduce((n, b) => n + b.cells.length, 0);
+  const waiting = s.sheets.reduce((n, x) => n + x.outbox.reduce((k, b) => k + b.cells.length, 0), 0);
+  const myChanges = s.sheets.reduce((n, x) => n + x.myChanges, 0);
+  const lastSaved = Math.max(0, ...s.sheets.map((x) => x.lastSaved ?? 0)) || null;
   const shownRows = model.rows - model.headerRows - view.hiddenRows.filter((r) => r >= model.headerRows).length;
 
   const editorNode = overlayOn && at && (
@@ -767,7 +829,7 @@ export function Workspace({ s }: { s: SessionState }) {
           {policy === "none" ? "서식은 호스트가 관리합니다" : policy === "fillOnly" ? "배경색만 바꿀 수 있습니다" : ""}
         </span>
         <span className="spacer" />
-        {w.permissions.addRows && (
+        {sv.permissions.addRows && (
           <button
             className="ghost small"
             disabled={s.readOnly}
@@ -881,6 +943,7 @@ export function Workspace({ s }: { s: SessionState }) {
               onPaste={onPaste}
             >
               <SheetGrid
+                key={active}
                 handle={grid}
                 model={view}
                 decorate={decorate}
@@ -907,10 +970,11 @@ export function Workspace({ s }: { s: SessionState }) {
                 flags={flags}
                 canEdit={(r, c) => canEdit(ctx, r, c)}
                 locker={locker}
-                waiting={at !== null && waitFree.has(idx(at.row, at.col))}
-                onWait={() => at && setWaitFree((set) => new Set(set).add(idx(at.row, at.col)))}
+                waiting={at !== null && waitFree.has(`${active}:${idx(at.row, at.col)}`)}
+                onWait={() => at && setWaitFree((set) => new Set(set).add(`${active}:${idx(at.row, at.col)}`))}
                 unreadChat={unreadChat}
                 onReveal={revealRange}
+                onRef={revealRef}
                 onChatSeen={onChatSeen}
               />
             )}
@@ -919,6 +983,8 @@ export function Workspace({ s }: { s: SessionState }) {
       ) : (
         <RowForm s={s} myRows={myRows} row={formRow} onRow={setFormRow} onShowInGrid={showInGrid} />
       )}
+
+      {s.sheets.length > 1 && <SheetTabs s={s} onSelect={switchSheet} />}
 
       <footer className="status">
         {!s.connected ? (
@@ -932,8 +998,7 @@ export function Workspace({ s }: { s: SessionState }) {
           <span className="ok">● 실시간 동기화</span>
         )}
         <span>
-          {w.name} 님 · 내 변경 {sheet.myChanges.toLocaleString()}건
-          {sheet.lastSaved ? ` · 마지막 저장 ${clock(sheet.lastSaved)}` : ""}
+          {w.name} 님 · 내 변경 {myChanges.toLocaleString()}건{lastSaved ? ` · 마지막 저장 ${clock(lastSaved)}` : ""}
         </span>
         <span className="spacer" />
         {editor ? (
@@ -951,7 +1016,12 @@ export function Workspace({ s }: { s: SessionState }) {
         aria-live="polite"
       >
         {s.notices.map((n) => (
-          <Toast key={n.id} notice={n} onDone={s.dismiss} onAction={(a) => revealRange(a.range, a.highlight)} />
+          <Toast
+            key={n.id}
+            notice={n}
+            onDone={s.dismiss}
+            onAction={(a) => revealRange(a.range, a.highlight, a.sheet ?? active)}
+          />
         ))}
       </div>
       {bench && (
@@ -959,6 +1029,34 @@ export function Workspace({ s }: { s: SessionState }) {
           {JSON.stringify(bench)}
         </pre>
       )}
+    </div>
+  );
+}
+
+/** 엑셀처럼 그리드 아래의 시트 탭: 시트 이름, 내가 아직 채우지 않은 필수 칸 수, 확인하지 않은 강조. */
+function SheetTabs({ s, onSelect }: { s: SessionState; onSelect: (sheet: number) => void }) {
+  return (
+    <div className="sheet-tabs" role="tablist" aria-label="시트">
+      {s.sheets.map((x, i) => {
+        const p = s.sheetProgress[i];
+        const left = p ? p.required - p.filled : 0;
+        const alert = s.highlights.some((h) => h.sheet === i && !h.acked);
+        return (
+          <button
+            key={x.model.sheet}
+            role="tab"
+            aria-selected={i === s.active}
+            title={[x.model.sheet, left > 0 && `내 필수 미입력 ${left}칸`, alert && "확인하지 않은 강조 있음"]
+              .filter(Boolean)
+              .join(" · ")}
+            onClick={() => onSelect(i)}
+          >
+            {alert && <span className="dot" aria-hidden />}
+            <span className="name">{x.model.sheet}</span>
+            {left > 0 && <span className="left">{left.toLocaleString()}</span>}
+          </button>
+        );
+      })}
     </div>
   );
 }

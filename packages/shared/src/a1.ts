@@ -37,18 +37,28 @@ export function colSpanLabel(firstCol: number, count: number): string {
   return `${colLetters(firstCol)}–${colLetters(firstCol + count - 1)}열`;
 }
 
-export type TextPart = { text: string } | { ref: string; range: CellRange };
+/** Excel 주소 앞에 붙이는 시트 이름: `인력계획!`, 글자·숫자·`_` 밖의 문자가 있거나 숫자로 시작하면 `'1분기 예산'!`.
+ * Rust `a1::sheet_prefix`와 같은 규칙. */
+export function sheetPrefix(name: string): string {
+  const plain = name !== "" && !/^[0-9]/.test(name) && /^[\p{L}\p{N}_.]+$/u.test(name);
+  return plain ? `${name}!` : `'${name.replace(/'/g, "''")}'!`;
+}
 
-/** 채팅 글의 `#F7`, `#F7:H7` 셀 참조를 나눈다(시트 주소). 누르면 그 칸으로 간다. */
+/** `ref`는 보이는 그대로(시트 이름 포함), `range`는 시트 주소, `sheet`는 적었으면 그 시트 이름. */
+export type TextPart = { text: string } | { ref: string; range: CellRange; sheet?: string };
+
+/** 채팅 글의 `#F7`, `#F7:H7`, `#인력계획!F7`, `#'1분기 예산'!F7` 셀 참조를 나눈다(시트 주소). 누르면 그 칸으로 간다. */
 export function splitCellRefs(text: string): TextPart[] {
   const out: TextPart[] = [];
-  const re = /#([A-Za-z]{1,3}\d{1,7}(?::[A-Za-z]{1,3}\d{1,7})?)/g;
+  const re = /#(?:'((?:[^']|'')+)'!|([\p{L}\p{N}_.]+)!)?([A-Za-z]{1,3}\d{1,7}(?::[A-Za-z]{1,3}\d{1,7})?)/gu;
   let last = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
-    const range = parseRange(m[1]!);
+    const range = parseRange(m[3]!);
     if (!range) continue;
+    const sheet = m[1] !== undefined ? m[1].replace(/''/g, "'") : m[2];
     if (m.index > last) out.push({ text: text.slice(last, m.index) });
-    out.push({ ref: m[1]!.toUpperCase(), range });
+    const addr = m[3]!.toUpperCase();
+    out.push(sheet !== undefined ? { ref: `${sheetPrefix(sheet)}${addr}`, range, sheet } : { ref: addr, range });
     last = m.index + m[0].length;
   }
   if (last < text.length) out.push({ text: text.slice(last) });

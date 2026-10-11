@@ -110,7 +110,11 @@ test("편집 중인 칸은 다른 사람에게 잠기고, 확정하거나 호스
   await a.keyboard.type("임시");
   await expect(cell(b, 18, H).locator(".lock-tag")).toBeVisible();
   const snap = await (await request.get("/__dev/snapshot")).json();
-  expect(snap.participants.find((p: { name: string }) => p.name === "정하늘").editing).toEqual({ row: 18, col: H });
+  expect(snap.participants.find((p: { name: string }) => p.name === "정하늘").editing).toEqual({
+    sheet: 0,
+    row: 18,
+    col: H,
+  });
   expect((await request.post("/__dev/unlock", { data: { name: "정하늘" } })).ok()).toBe(true);
   await expect(a.locator(".toast", { hasText: "호스트가 편집 잠금을 해제했습니다" })).toBeVisible();
   await expect(cell(b, 18, H).locator(".lock-tag")).toHaveCount(0);
