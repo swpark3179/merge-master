@@ -51,16 +51,6 @@
   color: var(--ink-2);
 }
 
-.mon-progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mon-progress .bar {
-  width: 160px;
-}
-
 .filter-bar {
   display: flex;
   flex-wrap: wrap;

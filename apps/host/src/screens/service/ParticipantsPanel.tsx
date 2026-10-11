@@ -260,9 +260,6 @@ export function ParticipantsPanel({
                     >
                       편집 잠금 해제
                     </button>
-                    <button role="menuitem" disabled title="6단계(소통)에서 열립니다">
-                      이 사람에게 메시지
-                    </button>
                     <button
                       role="menuitem"
                       className="danger-text"

@@ -168,7 +168,7 @@ export function ExceptionsPanel({ s }: { s: ConfigState }) {
           <span className="mono small">{sheetRange(s, e.range)}</span>
           <span className="small">{KIND_LABEL[e.kind]}</span>
           <input
-            className="note"
+            className="exception-note"
             aria-label="예외 메모"
             defaultValue={e.note}
             placeholder="메모"

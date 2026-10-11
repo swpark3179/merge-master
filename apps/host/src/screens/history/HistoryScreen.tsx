@@ -217,6 +217,15 @@ export function HistoryScreen({ active, sheets, sheet }: Props) {
     return () => window.clearTimeout(id);
   }, [status]);
 
+  // 비교 창은 다른 모달처럼 Esc로 닫는다.
+  const diffOpen = diff !== null;
+  useEffect(() => {
+    if (!diffOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setDiff(null);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [diffOpen]);
+
   const run = async (f: () => Promise<unknown>) => {
     setError(null);
     try {
