@@ -10,7 +10,7 @@
   font:
     13px system-ui,
     sans-serif;
-  color: #222;
+  color: var(--ink);
   overscroll-behavior: contain;
 }
 
@@ -39,6 +39,22 @@
   z-index: 2;
 }
 
+/* 틀 고정 경계: 고정된 띠와 스크롤되는 영역 사이에 선을 긋는다. */
+.mmg-top {
+  box-shadow: 0 1px 0 var(--grid-edge);
+}
+
+.mmg-left {
+  box-shadow: 1px 0 0 var(--grid-edge);
+}
+
+.mmg-corner {
+  box-shadow:
+    1px 0 0 var(--grid-edge),
+    0 1px 0 var(--grid-edge),
+    1px 1px 0 var(--grid-edge);
+}
+
 /* 칸 안 줄바꿈(Alt+Enter)은 줄을 나눠 보인다(pre). 'wrap' 서식이면 칸 너비에서도 줄을 바꾼다(pre-wrap). */
 .mmg-cell {
   position: absolute;
@@ -57,7 +73,7 @@
 }
 
 .mmg-selected {
-  outline: 2px solid #2a78d6;
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
   z-index: 1;
 }
@@ -69,11 +85,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #eeede9;
-  color: #666;
+  background: var(--grid-head-bg);
+  color: var(--grid-head-ink);
   font-size: 12px;
-  border-right: 1px solid #cfcdc6;
-  border-bottom: 1px solid #cfcdc6;
+  border-right: 1px solid var(--grid-head-line);
+  border-bottom: 1px solid var(--grid-head-line);
   user-select: none;
 }
 
@@ -89,11 +105,11 @@
 
 /* 숨긴 행·열 바로 다음 머리글: Excel처럼 굵은 경계로 숨김이 있음을 알린다. */
 .mmg-colhead.mmg-after-hidden {
-  box-shadow: inset 2px 0 0 #8c8a83;
+  box-shadow: inset 2px 0 0 var(--grid-edge);
 }
 
 .mmg-rowhead.mmg-after-hidden {
-  box-shadow: inset 0 2px 0 #8c8a83;
+  box-shadow: inset 0 2px 0 var(--grid-edge);
 }
 
 /* 범위 선택: 선택 안 칸은 옅은 파랑, 활성 칸은 테두리(.mmg-selected). 드래그 중 글자 선택은 막는다. */
@@ -102,7 +118,7 @@
 }
 
 .mmg-cell.mmg-insel {
-  box-shadow: inset 0 0 0 999px rgba(42, 120, 214, 0.12);
+  box-shadow: inset 0 0 0 999px var(--accent-sel);
 }
 
 .mmg-colhead,
@@ -112,8 +128,8 @@
 
 .mmg-colhead.mmg-head-sel,
 .mmg-rowhead.mmg-head-sel {
-  background: #dbe8f8;
-  color: #1d5aa6;
+  background: var(--accent-tint);
+  color: var(--accent-ink);
 }
 
 /* 행 담당자 색 점 */
@@ -126,15 +142,15 @@
 }
 
 /* ------------------------------------------------------------------ 공용 셀 장식
- * 호스트 1b·참여자 화면이 같은 표시를 쓴다: deco-locked(입력 금지 빗금), deco-missing(필수 미입력),
- * deco-exception(셀 예외), deco-others(남의 행·남의 칸). */
+ * 호스트 화면·참여자 화면이 같은 표시를 쓴다: deco-locked(입력 금지 빗금), deco-missing(필수 미입력),
+ * deco-exception(셀 예외), deco-others(남의 행·남의 칸). 상태마다 색 말고도 모양·글자 단서를 하나씩 둔다. */
 .mmg-cell.deco-locked {
   /* 1px 대각선은 1배율에서 칸 위치에 따라 흐려 보여 1.5px로 둔다. */
-  background-image: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.11) 0 1.5px, transparent 1.5px 6px);
+  background-image: repeating-linear-gradient(135deg, var(--hatch) 0 1.5px, transparent 1.5px 6px);
 }
 
 .mmg-cell.deco-missing {
-  background-color: #fdecec !important;
+  background-color: var(--missing-bg) !important;
 }
 
 .mmg-cell.deco-missing::after {
@@ -142,18 +158,25 @@
   position: absolute;
   top: 0;
   right: 0;
-  border-top: 7px solid #d64545;
-  border-left: 7px solid transparent;
+  border-top: 9px solid var(--missing-mark);
+  border-left: 9px solid transparent;
+}
+
+/* 빈 필수 칸의 자리표시(글자로 남기지 않아 칸 값·복사에는 들어가지 않는다) */
+.mmg-cell.deco-missing .mmg-text:empty::before {
+  content: "필수";
+  color: var(--missing-ink);
+  font-size: 12px;
 }
 
 .mmg-cell.deco-exception {
-  outline: 1.5px dashed #222;
+  outline: 1.5px dashed var(--ink);
   outline-offset: -3px;
 }
 
 .mmg-cell.deco-others {
-  background-color: #fbfaf8 !important;
-  color: #9a978f !important;
+  background-color: var(--others-bg) !important;
+  color: var(--others-ink) !important;
 }
 
 /* 다른 사람 커서: 색 테두리 + 셀 위 이름표(색은 style로 준다) */
@@ -169,10 +192,28 @@
   padding: 0 5px;
   border-radius: 3px 3px 3px 0;
   color: #fff;
-  font-size: 11px;
-  line-height: 15px;
+  font-size: 12px;
+  line-height: 16px;
   white-space: nowrap;
   pointer-events: none;
+}
+
+/* 편집 잠금 이름표: 이름 앞 자물쇠(글자색을 따른다) */
+.peer-tag.lock-tag {
+  --lock-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2' fill='black'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E");
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.peer-tag.lock-tag::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  flex: none;
+  background: currentColor;
+  -webkit-mask: var(--lock-icon) center / contain no-repeat;
+  mask: var(--lock-icon) center / contain no-repeat;
 }
 
 /* 활성 칸 위 편집기 자리(편집기 모양은 쓰는 쪽이 정한다). 틀은 마우스를 밑의 칸으로 넘기고,
@@ -183,10 +224,10 @@
   pointer-events: none;
 }
 
-/* 호스트가 강조한 칸(노란 표시). 말풍선은 쓰는 쪽이 장식으로 붙인다. */
+/* 호스트가 강조한 칸: 노란 바탕 + 진한 테두리(테두리로 노란 채우기와 구분). 말풍선은 쓰는 쪽이 장식으로 붙인다. */
 .mmg-cell.deco-highlight {
-  background-color: #fff3b0 !important;
-  box-shadow: inset 0 0 0 2px #e0b400;
+  background-color: var(--hl-bg) !important;
+  box-shadow: inset 0 0 0 2px var(--hl-line);
 }
 
 /* 머리글 경계 손잡이(크기 바꾸기). 이웃 머리글 위로 조금 넘쳐 잡기 쉽게 한다. */
@@ -214,7 +255,7 @@
 
 .mmg-resize-col:hover,
 .mmg-resize-row:hover {
-  background: rgba(42, 120, 214, 0.35);
+  background: var(--accent-line);
 }
 
 /* 끄는 동안의 안내선·크기 표시 */
@@ -222,7 +263,7 @@
   position: absolute;
   z-index: 7;
   pointer-events: none;
-  background: #2a78d6;
+  background: var(--accent);
 }
 
 .mmg-guide-col {
@@ -238,7 +279,7 @@
   z-index: 7;
   padding: 2px 6px;
   border-radius: 4px;
-  background: #222;
+  background: var(--ink);
   color: #fff;
   font-size: 11px;
   white-space: nowrap;

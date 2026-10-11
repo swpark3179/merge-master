@@ -1,42 +1,17 @@
 :root {
-  --ink: #1d2129;
-  --ink-2: #4a515c;
-  --muted: #6b7280;
-  --line: #e2e5ea;
-  --line-soft: #eceef1;
-  --field: #d6d9e0;
-  --paper: #f7f8fa;
-  --chrome: #fafbfc;
-  --head: #f1f2f5;
-  --chip: #f1f2f5;
-  --hover: #f4f5f7;
-  --accent: #5b5bd6;
-  --accent-hover: #4b4bc4;
-  --accent-ink: #3f3fb0;
-  --accent-soft: #f7f7fe;
-  --accent-tint: #e9e9f8;
-  --accent-line: #d9d9f5;
-  --accent-ring: #e6e6fa;
-  --ok: #1f8a5b;
-  --ok-ink: #17704a;
-  --ok-soft: #e7f5ee;
-  --warn: #a15c00;
-  --warn-ink: #6b4100;
-  --warn-soft: #fdf1dc;
-  --warn-line: #f0d9ae;
-  --danger: #b42318;
-  --danger-soft: #fdf1ef;
+  /* 공용 토큰은 @mm/shared/tokens.css. 여기에는 호스트에만 있는 값을 둔다. */
   /* 역할 색: 입력 · 필수 · 잠금 */
-  --role-input: #f7f7fe;
-  --role-input-ink: #3f3fb0;
-  --role-input-chip: #e6e6fa;
+  --role-input: var(--accent-soft);
+  --role-input-ink: var(--accent-ink);
   --role-req: #fff8ec;
   --role-req-ink: #7a4900;
   --role-req-chip: #fbecd2;
   --role-lock: #f5f6f8;
-  --role-lock-ink: #4a515c;
-  --role-lock-chip: #e6e8ec;
-  color-scheme: light;
+  --role-lock-ink: var(--ink-2);
+  /* 필수 미입력은 역할 '필수'와 같은 호박색으로(1b에서는 필수 열이 처음에 모두 비어 있다). */
+  --missing-bg: var(--warn-soft);
+  --missing-mark: var(--warn);
+  --missing-ink: var(--role-req-ink);
 }
 
 * {
@@ -70,7 +45,7 @@ textarea {
   color: inherit;
 }
 
-/* 기본 버튼 = 주 버튼(보라). ghost = 흰 바탕 테두리. */
+/* 기본 버튼 = 주 버튼(강조색). ghost = 흰 바탕 테두리. */
 button {
   height: 34px;
   padding: 0 16px;
@@ -149,6 +124,12 @@ input[type="radio"] {
   height: auto;
   accent-color: var(--accent);
   box-shadow: none;
+}
+
+/* 키보드 포커스: 텍스트 입력칸은 위의 테두리·링을 쓰고, 나머지는 바깥 테두리를 긋는다. */
+:where(button, a[href], summary, input[type="checkbox"], input[type="radio"]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
 }
 
 .spacer {
@@ -318,7 +299,7 @@ input[type="radio"] {
 }
 
 .step.done .mark {
-  border-color: #b9b9ee;
+  border-color: var(--accent-line);
   color: var(--accent);
 }
 
@@ -838,21 +819,21 @@ details.more > .more-body {
 }
 
 .mmg-scroller::-webkit-scrollbar-track {
-  background: #f4f3f0;
+  background: var(--head);
 }
 
 .mmg-scroller::-webkit-scrollbar-thumb {
-  border: 3px solid #f4f3f0;
+  border: 3px solid var(--head);
   border-radius: 6px;
-  background: #c4c2bb;
+  background: var(--grid-head-line);
 }
 
 .mmg-scroller::-webkit-scrollbar-thumb:hover {
-  background: #a3a19a;
+  background: var(--field);
 }
 
 .mmg-scroller::-webkit-scrollbar-corner {
-  background: #f4f3f0;
+  background: var(--head);
 }
 
 /* 스크롤은 그리드(.mmg-scroller, overflow: auto)가 한다. 여기서 overflow를 숨기면 가로·세로 스크롤바가 사라진다. */
@@ -1441,8 +1422,8 @@ button.role {
 }
 
 .tag-filter {
-  background: #e3f0fb;
-  color: #1f5f99;
+  background: var(--accent-tint);
+  color: var(--accent-ink);
 }
 
 .tag-key {
@@ -1722,25 +1703,6 @@ button.link:hover:not(:disabled) {
   background: var(--paper);
   color: var(--ink-2);
   line-height: 1.4;
-}
-
-/* 호스트 화면의 그리드 표시를 역할 색에 맞춘다(참여자 웹과 공용 grid.css 위에 덮어씀). */
-/* 잠금: 원본 채우기 색은 살리고 옅은 회색을 덮는다. */
-.shell .mmg-cell.deco-locked {
-  background-image: linear-gradient(rgba(74, 81, 92, 0.07), rgba(74, 81, 92, 0.07));
-}
-
-.shell .mmg-cell.deco-missing {
-  background-color: var(--role-req) !important;
-}
-
-.shell .mmg-cell.deco-missing::after {
-  border-top-color: #d99a1e;
-}
-
-.shell .mmg-cell.deco-highlight {
-  background-color: #fdecc8 !important;
-  box-shadow: inset 0 0 0 2px #d99a1e;
 }
 
 /* ---------------------------------------------------------------- 1c 서비스 · 접속자 */
@@ -2240,6 +2202,14 @@ button.big-btn {
   cursor: default;
 }
 
+/* 투명한 라디오·색 고르기는 감싼 카드에 포커스를 보인다. */
+.opt:has(input:focus-visible),
+.choice:has(input:focus-visible),
+.color-pick:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .opt .ring {
   width: 14px;
   height: 14px;
@@ -2433,7 +2403,7 @@ button.save-btn {
   padding: 0 8px;
   overflow-x: auto;
   border-top: 1px solid var(--line);
-  background: #f4f3f0;
+  background: var(--head);
 }
 
 .sheet-tabs button {
@@ -2465,8 +2435,8 @@ button.save-btn {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 9px;
-  background: #fde2e2;
-  color: #b42318;
+  background: var(--danger-tint);
+  color: var(--danger);
   font-size: 11px;
   font-weight: 700;
   line-height: 16px;
@@ -2535,7 +2505,7 @@ button.save-btn {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--danger, #d64545);
+  background: var(--danger);
 }
 
 .job-file {
@@ -2561,13 +2531,13 @@ button.save-btn {
 }
 
 .job-chip.on {
-  border-color: var(--ok, #2f9e6b);
-  color: var(--ok, #2f9e6b);
+  border-color: var(--ok);
+  color: var(--ok);
 }
 
 .job-chip.warn {
-  border-color: var(--warn, #a86a00);
-  color: var(--warn, #a86a00);
+  border-color: var(--warn);
+  color: var(--warn);
 }
 
 .job-end {
@@ -2585,7 +2555,7 @@ button.save-btn {
 }
 
 .job-end:hover {
-  color: var(--danger, #d64545);
+  color: var(--danger);
 }
 
 .new-job {

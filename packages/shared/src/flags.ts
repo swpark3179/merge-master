@@ -24,17 +24,20 @@ export function decodeFlags(b64: string): Uint8Array {
   return out;
 }
 
-/** 담당자 색(명단 순서대로). 와이어프레임의 이름표 색과 같다. */
+/**
+ * 담당자 색(명단 순서대로). 와이어프레임의 이름표 색 계열을 흰 글자 이름표가 읽히게(4.5:1 이상) 진하게 했다
+ * (tokens.test.ts가 지킨다).
+ */
 export const PERSON_COLORS = [
-  "#2f9e6b",
-  "#e07b28",
+  "#1f7a50",
+  "#b35a12",
   "#8a5cd6",
   "#c2417a",
-  "#2a78d6",
-  "#a86a00",
-  "#1f8a8a",
+  "#2266c4",
+  "#9a6000",
+  "#1a7d7d",
   "#7a5c3a",
-  "#d64545",
+  "#c23030",
   "#5a6b7d",
 ] as const;
 

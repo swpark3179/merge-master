@@ -444,8 +444,8 @@ function SheetMonitor({
         className: cls.join(" "),
         style: { boxShadow: `inset 0 0 0 2px ${color}` },
         adornment: (
-          <span className="peer-tag" style={{ background: color }}>
-            {editor} · 잠금
+          <span className="peer-tag lock-tag" style={{ background: color }}>
+            {editor}
           </span>
         ),
       };

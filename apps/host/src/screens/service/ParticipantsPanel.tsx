@@ -1,6 +1,6 @@
 import type { HostSnapshot, ParticipantRow, SheetCell, SheetModel } from "@mm/shared";
 import { a1, personColor, sheetPrefix } from "@mm/shared";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { errorText } from "../../api";
 import { useApi } from "../../job";
@@ -54,6 +54,19 @@ export function ParticipantsPanel({
   const [remember, setRemember] = useState(false);
   const [menu, setMenu] = useState<string | null>(null);
   const [newName, setNewName] = useState("");
+  // ⋯ 메뉴는 Esc나 메뉴 밖을 누르면 닫는다(마우스가 벗어날 때만 닫히면 키보드로는 닫을 수 없다).
+  const menuOpen = menu !== null;
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
+    const onDown = (e: MouseEvent) => !(e.target as Element).closest(".pmenu") && setMenu(null);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onDown);
+    };
+  }, [menuOpen]);
   const rows: ParticipantRow[] =
     snapshot?.participants ??
     roster.map((name, i) => ({
