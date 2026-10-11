@@ -29,6 +29,7 @@ import type {
   CellRef,
   SaveCheck,
   SaveInfo,
+  SheetCell,
   SaveOptions,
   SaveResult,
   HostSnapshot,
@@ -48,6 +49,13 @@ export interface CellWrite {
   value: CellValue;
 }
 
+/** 확정할 시트 하나(미리보기로 읽은 것)와 다시 읽지 않아도 되는 조정. Rust `lib.rs`의 `CommitSheet`. */
+export interface CommitSheet {
+  sheet: string;
+  headerRows: number;
+  frozenCols: number;
+}
+
 /** Tauri command 래퍼. 이름·인수는 src-tauri/src/lib.rs와 맞춘다(Rust snake_case ↔ JS camelCase). */
 export const api = {
   listWorkbooks: () => invoke<ExcelStatus>("excel_list_workbooks"),
@@ -65,17 +73,21 @@ export const api = {
 
   cancelRead: () => invoke<void>("excel_cancel_read"),
 
-  commitImport: (headerRows: number, frozenCols: number) =>
-    invoke<SheetModel>("import_commit", { headerRows, frozenCols }),
+  /** 미리보기로 읽은 시트들을 확정한다(통합문서 순서). 시트 순번 = 이 순서. */
+  commitImport: (workbookId: string, sheets: CommitSheet[]) =>
+    invoke<SheetModel[]>("import_commit", { workbookId, sheets }),
 
-  configView: (viewer: string | null) => invoke<ConfigView>("config_view_get", { viewer }),
+  configView: (sheet: number, viewer: string | null) => invoke<ConfigView>("config_view_get", { sheet, viewer }),
 
-  configApply: (edit: ConfigEdit, viewer: string | null) => invoke<ConfigView>("config_apply", { edit, viewer }),
+  /** 제목·안내·마감, 직접 넣은 명단은 모든 시트가 같이 쓴다(어느 시트에서 고쳐도 된다). */
+  configApply: (sheet: number, edit: ConfigEdit, viewer: string | null) =>
+    invoke<ConfigView>("config_apply", { sheet, edit, viewer }),
 
-  sheetFormat: (edit: FormatEdit, viewer: string | null) => invoke<FormatResult>("sheet_format", { edit, viewer }),
+  sheetFormat: (sheet: number, edit: FormatEdit, viewer: string | null) =>
+    invoke<FormatResult>("sheet_format", { sheet, edit, viewer }),
 
   /** 호스트가 칸 내용을 바꾼다(1b·모니터링). 수식 칸·같은 값은 건너뛴다. 바뀐 칸은 `sheet-changes`로 온다. */
-  sheetSetCells: (cells: CellWrite[]) => invoke<void>("sheet_set_cells", { cells }),
+  sheetSetCells: (sheet: number, cells: CellWrite[]) => invoke<void>("sheet_set_cells", { sheet, cells }),
 
   lanAddresses: () => invoke<LanAddress[]>("lan_addresses"),
 
@@ -95,9 +107,9 @@ export const api = {
 
   participantsGet: () => invoke<HostSnapshot | null>("participants_get"),
 
-  /** `range`는 시트 주소(예: H500:H620). 주면 그 범위를 배정하고 승인한다. */
-  participantApprove: (name: string, range: string | null, note: string) =>
-    invoke<void>("participant_approve", { name, range, note }),
+  /** `range`는 `sheet` 시트의 주소(예: H500:H620). 주면 그 범위를 배정하고 승인한다. */
+  participantApprove: (name: string, sheet: number, range: string | null, note: string) =>
+    invoke<void>("participant_approve", { name, sheet, range, note }),
 
   participantReject: (name: string) => invoke<void>("participant_reject", { name }),
 
@@ -128,8 +140,8 @@ export const api = {
   /** 저장 전 확인: 쓸 칸, 그사이 Excel에서 고친 칸, 표 위치 변화. */
   saveCheck: (options: SaveOptions) => invoke<SaveCheck>("save_check", { options }),
 
-  /** 충돌 칸은 모두 `keepExcel`(Excel 값 유지) 또는 `useCollected`(취합 값) 중 하나여야 한다. */
-  saveRun: (options: SaveOptions, keepExcel: CellRef[], useCollected: CellRef[], force: boolean) =>
+  /** 충돌 칸(시트·칸)은 모두 `keepExcel`(Excel 값 유지) 또는 `useCollected`(취합 값) 중 하나여야 한다. */
+  saveRun: (options: SaveOptions, keepExcel: SheetCell[], useCollected: SheetCell[], force: boolean) =>
     invoke<SaveResult>("save_run", { options, keepExcel, useCollected, force }),
 
   /** 취합 마감(참여자 읽기 전용) / 다시 열기. */
@@ -138,21 +150,22 @@ export const api = {
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
 
   // ---------------------------------------------------------- 4 진행 모니터링 · 1i 소통
-  /** 지금 시트 + 호스트 시점 설정 보기. */
-  monitorGet: () => invoke<MonitorData>("monitor_get"),
+  /** 그 시트의 지금 값 + 호스트 시점 설정 보기. */
+  monitorGet: (sheet: number) => invoke<MonitorData>("monitor_get", { sheet }),
 
-  monitorProgress: () => invoke<ProgressStats>("monitor_progress"),
+  monitorProgress: (sheet: number) => invoke<ProgressStats>("monitor_progress", { sheet }),
 
-  monitorActivity: (limit?: number) => invoke<Activity>("monitor_activity", { limit }),
+  /** 활동 피드는 모든 시트, '최근 삭제된 셀'은 `sheet` 시트. */
+  monitorActivity: (sheet: number, limit?: number) => invoke<Activity>("monitor_activity", { sheet, limit }),
 
   commsGet: () => invoke<CommsSnapshot>("comms_get"),
 
   noticeSend: (text: string, important: boolean, target: NoticeTarget) =>
     invoke<void>("notice_send", { text, important, target }),
 
-  /** `range`는 모델 좌표. */
-  highlightAdd: (range: CellRange, note: string, audience: HighlightAudience) =>
-    invoke<void>("highlight_add", { range, note, audience }),
+  /** `range`는 그 시트의 모델 좌표. */
+  highlightAdd: (sheet: number, range: CellRange, note: string, audience: HighlightAudience) =>
+    invoke<void>("highlight_add", { sheet, range, note, audience }),
 
   highlightClear: (id: number) => invoke<void>("highlight_clear", { id }),
 
@@ -162,14 +175,15 @@ export const api = {
   historyQuery: (filter: HistoryFilter, offset: number, limit: number) =>
     invoke<HistoryPage>("history_query", { filter, offset, limit }),
 
-  historyTimeline: (at: CellRef) => invoke<Timeline>("history_timeline", { at }),
+  historyTimeline: (sheet: number, at: CellRef) => invoke<Timeline>("history_timeline", { sheet, at }),
 
   /** `stale`이 있으면 `force` 없이는 되돌리지 않는다(결과의 `changed` = 0). */
   historyRevert: (seqs: number[], force: boolean) => invoke<RevertResult>("history_revert", { seqs, force }),
 
   historyRevertBatch: (batch: string, force: boolean) => invoke<RevertResult>("history_revert_batch", { batch, force }),
 
-  historySetValue: (at: CellRef, value: CellValue) => invoke<void>("history_set_value", { at, value }),
+  historySetValue: (sheet: number, at: CellRef, value: CellValue) =>
+    invoke<void>("history_set_value", { sheet, at, value }),
 
   historyExportCsv: (filter: HistoryFilter, path: string) => invoke<number>("history_export_csv", { filter, path }),
 

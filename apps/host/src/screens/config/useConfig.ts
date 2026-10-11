@@ -19,8 +19,8 @@ function withValues(m: SheetModel, cells: { row: number; col: number; value?: Ce
   return { ...m, cells: out };
 }
 
-/** 1b 상태: 설정 보기(Rust가 계산), 시트(서식 편집으로 바뀜), 선택, 참여자 시점. */
-export function useConfig(initial: SheetModel, active: boolean) {
+/** 1b 상태(시트 하나): 설정 보기(Rust가 계산), 시트(서식 편집으로 바뀜), 선택, 참여자 시점. `sheet`는 세션 안 시트 순번. */
+export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
   const [model, setModel] = useState(initial);
   const [view, setView] = useState<ConfigView | null>(null);
   const [viewer, setViewerState] = useState<string | null>(null);
@@ -31,18 +31,26 @@ export function useConfig(initial: SheetModel, active: boolean) {
   // 처음 열 때, 다시 보일 때(1c에서 명단·안내를 바꿨을 수 있다), 승인으로 설정이 바뀌었을 때 새로 읽는다.
   const refresh = useCallback(() => {
     api
-      .configView(viewer)
-      .catch(() => api.configView(null))
+      .configView(sheet, viewer)
+      .catch(() => api.configView(sheet, null))
       .then((v) => {
         setView(v);
         if ((v.viewer ?? null) !== viewer) setViewerState(null);
       })
       .catch((e) => setError(errorText(e)));
-  }, [viewer]);
+  }, [sheet, viewer]);
 
   useEffect(() => {
     if (active) refresh();
   }, [active, refresh]);
+
+  // 시트 탭을 오가면 이 화면을 새로 만든다: 확정한 뒤 바뀐 값·서식(참여자 입력·행 추가)이 있으니 세션에서 다시 읽는다.
+  useEffect(() => {
+    void api
+      .monitorGet(sheet)
+      .then((d) => setModel(d.model))
+      .catch(() => {});
+  }, [sheet]);
 
   useEffect(() => {
     const off = listen("config-changed", refresh);
@@ -56,9 +64,10 @@ export function useConfig(initial: SheetModel, active: boolean) {
   useEffect(() => {
     const off = listen<HostEvent>("sheet-changes", (e) => {
       const ev = e.payload;
+      if (ev.type !== "reset" && ev.sheet !== sheet) return; // 다른 시트의 변경
       if (ev.type === "reset") {
         void api
-          .monitorGet()
+          .monitorGet(sheet)
           .then((d) => {
             if (d.model.rows === rows.current) return;
             setModel(d.model);
@@ -78,7 +87,7 @@ export function useConfig(initial: SheetModel, active: boolean) {
         });
     });
     return () => void off.then((f) => f());
-  }, [refresh]);
+  }, [refresh, sheet]);
 
   const run = useCallback(async <T>(f: () => Promise<T>): Promise<T | null> => {
     setBusy(true);
@@ -95,24 +104,24 @@ export function useConfig(initial: SheetModel, active: boolean) {
 
   const apply = useCallback(
     async (edit: ConfigEdit) => {
-      const v = await run(() => api.configApply(edit, viewer));
+      const v = await run(() => api.configApply(sheet, edit, viewer));
       if (v) {
         setView(v);
         if (viewer && v.viewer !== viewer) setViewerState(null); // 미리보던 사람이 명단에서 빠짐
       }
     },
-    [run, viewer],
+    [run, sheet, viewer],
   );
 
   const format = useCallback(
     async (edit: FormatEdit) => {
-      const r = await run(() => api.sheetFormat(edit, viewer));
+      const r = await run(() => api.sheetFormat(sheet, edit, viewer));
       if (r) {
         setModel(r.model);
         setView(r.view);
       }
     },
-    [run, viewer],
+    [run, sheet, viewer],
   );
 
   /** 호스트가 칸 내용을 바꾼다: 바로 그리고, 세션에 보낸 뒤 설정 보기(범례·명단·열 이름)를 새로 읽는다. */
@@ -121,24 +130,24 @@ export function useConfig(initial: SheetModel, active: boolean) {
       setModel((m) => withValues(m, cells));
       setError(null);
       try {
-        await api.sheetSetCells(cells);
+        await api.sheetSetCells(sheet, cells);
         refresh();
       } catch (e) {
         setError(errorText(e));
       }
     },
-    [refresh],
+    [refresh, sheet],
   );
 
   const setViewer = useCallback(
     async (name: string | null) => {
-      const v = await run(() => api.configView(name));
+      const v = await run(() => api.configView(sheet, name));
       if (v) {
         setView(v);
         setViewerState(name);
       }
     },
-    [run],
+    [run, sheet],
   );
 
   const layout = useMemo(() => buildLayout(model), [model]);
@@ -146,6 +155,7 @@ export function useConfig(initial: SheetModel, active: boolean) {
   const range: CellRange | null = selection ? selectionRange(layout, selection) : null;
 
   return {
+    sheet,
     model,
     view,
     flags,

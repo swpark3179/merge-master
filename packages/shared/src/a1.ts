@@ -44,6 +44,28 @@ export function sheetPrefix(name: string): string {
   return plain ? `${name}!` : `'${name.replace(/'/g, "''")}'!`;
 }
 
+/** `인력계획!F7`, `'1분기 예산'!F7:H7`, `F7` → 시트 이름(적었으면)과 시트 주소 범위. 해석할 수 없으면 `null`.
+ * Rust `a1::split_sheet` + `CellRange::parse`와 같은 규칙. */
+export function parseSheetRange(text: string): { sheet?: string; range: CellRange } | null {
+  const t = text.trim();
+  let name: string | undefined;
+  let addr = t;
+  const quoted = /^'((?:[^']|'')+)'!(.*)$/s.exec(t);
+  if (quoted) {
+    name = quoted[1]!.replace(/''/g, "'");
+    addr = quoted[2]!;
+  } else if (!t.startsWith("'")) {
+    const i = t.lastIndexOf("!");
+    if (i > 0) {
+      name = t.slice(0, i);
+      addr = t.slice(i + 1);
+    }
+  }
+  const range = parseRange(addr);
+  if (!range) return null;
+  return name === undefined ? { range } : { sheet: name, range };
+}
+
 /** `ref`는 보이는 그대로(시트 이름 포함), `range`는 시트 주소, `sheet`는 적었으면 그 시트 이름. */
 export type TextPart = { text: string } | { ref: string; range: CellRange; sheet?: string };
 

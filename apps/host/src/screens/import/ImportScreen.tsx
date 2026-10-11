@@ -6,6 +6,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { useEffect, useState } from "react";
 
 import { useStepFooter } from "../../frame";
+import { SheetTabs } from "../../SheetTabs";
 import { PreviewModal } from "./PreviewModal";
 import type { ImportState } from "./useImport";
 import { EXCEL_EXTENSIONS, useImport } from "./useImport";
@@ -39,7 +40,7 @@ interface Props {
   /** 이미 확정한 시트가 있다(바꾼 게 없으면 '다음'은 확정 없이 넘어간다). */
   committed: boolean;
   onExcelStatus: (running: boolean) => void;
-  onCommitted: (m: SheetModel) => void;
+  onCommitted: (m: SheetModel[]) => void;
   onNext: () => void;
 }
 
@@ -57,7 +58,7 @@ export function ImportScreen({ active, committed, onExcelStatus, onCommitted, on
   const reuse = committed && (!s.book || !s.changedSinceCommit);
   useStepFooter(active, {
     onNext: reuse ? onNext : () => void s.commit(),
-    nextDisabled: !reuse && (!s.book || !s.result || s.stale || s.busy !== null),
+    nextDisabled: !reuse && (!s.book || s.selected.length === 0 || !s.result || s.stale || s.busy !== null),
     hint: s.book || committed ? undefined : "파일을 고르면 다음 단계로 넘어갈 수 있어요",
   });
 
@@ -182,32 +183,51 @@ function FileCard({ s }: { s: ImportState }) {
   );
 }
 
+/** 함께 채울 시트(여러 개 고를 수 있다): 체크하면 불러오고, 이름을 누르면 그 시트를 미리 보며 범위를 고친다. */
 function SheetCard({ s }: { s: ImportState }) {
   const lists = (s.inspection?.validations ?? []).filter((v) => v.rule.kind === "list");
+  const many = s.selected.length > 1;
   return (
     <section className="sheet-pick" aria-label="시트">
-      <b>함께 채울 시트</b>
+      <div className="card-head">
+        <b>함께 채울 시트</b>
+        <span className="muted small">
+          {many ? `${s.selected.length}개 시트를 함께 취합합니다` : "여러 개 고를 수 있어요"}
+        </span>
+      </div>
       <div className="list">
         {s.book!.sheets.map((name) => {
+          const picked = s.selected.includes(name);
           const on = name === s.sheet;
+          const ins = s.per[name]?.inspection;
           return (
-            <button
-              key={name}
-              className={`list-item sheet${on ? " on" : ""}`}
-              aria-pressed={on}
-              onClick={() => s.setSheet(name)}
-              disabled={s.busy === "inspect"}
-            >
-              <span className={`ring${on ? " on" : ""}`} />
-              <span className="grow">{name}</span>
+            <div key={name} className={`list-item sheet${on ? " on" : ""}${picked ? " picked" : ""}`}>
+              <input
+                type="checkbox"
+                aria-label={`${name} 불러오기`}
+                checked={picked}
+                disabled={s.busy === "commit" || (picked && s.selected.length <= 1)}
+                onChange={() => s.toggle(name)}
+              />
+              <button
+                className="sheet-name grow"
+                aria-pressed={on}
+                onClick={() => s.setSheet(name)}
+                disabled={s.busy === "inspect" || s.busy === "commit"}
+                title={picked ? "이 시트를 미리 보고 범위를 고칩니다" : "이 시트도 함께 불러옵니다"}
+              >
+                {name}
+              </button>
               <span className="muted">
-                {on && s.inspection
-                  ? `${formatRange(s.inspection.table)}`
+                {ins
+                  ? formatRange(ins.table)
                   : on && s.busy === "inspect"
                     ? "감지 중…"
-                    : ""}
+                    : picked
+                      ? "확정할 때 읽음"
+                      : ""}
               </span>
-            </button>
+            </div>
           );
         })}
       </div>
@@ -335,6 +355,17 @@ function columnsLabel(cols: number[]): string {
   return ` (${letters}${cols.length > 3 ? " 외" : ""}열)`;
 }
 
+/** 고른 시트가 여럿이면 미리보기 아래의 시트 탭(미리 보는 시트를 바꾼다). */
+function PreviewTabs({ s }: { s: ImportState }) {
+  return (
+    <SheetTabs
+      names={s.selected}
+      active={Math.max(0, s.selected.indexOf(s.sheet ?? ""))}
+      onSelect={(i) => s.setSheet(s.selected[i]!)}
+    />
+  );
+}
+
 function PreviewCard({ s }: { s: ImportState }) {
   const [selection, setSelection] = useState<GridSelection | null>(null);
   const [big, setBig] = useState(false);
@@ -371,17 +402,22 @@ function PreviewCard({ s }: { s: ImportState }) {
           frozenMax={range ? Math.min(range.cols, MAX_FROZEN_COLS) : 0}
           onHeaderRows={(headerRows) => s.update({ headerRows })}
           onFrozenCols={(frozenCols) => s.update({ frozenCols })}
+          tabs={<PreviewTabs s={s} />}
           onClose={() => setBig(false)}
         />
       )}
       {m && facts ? (
         <div className="preview-body">
-          <SheetGrid
-            model={m}
-            selection={selection}
-            onSelectionChange={setSelection}
-            className={`preview-grid${s.stale ? " stale" : ""}`}
-          />
+          <div className="preview-main">
+            <SheetGrid
+              key={s.sheet ?? ""}
+              model={m}
+              selection={selection}
+              onSelectionChange={setSelection}
+              className={`preview-grid${s.stale ? " stale" : ""}`}
+            />
+            <PreviewTabs s={s} />
+          </div>
           <div className="facts-col">
             <b>감지 결과</b>
             <dl className="facts">
@@ -460,12 +496,14 @@ function ImportStatus({ s }: { s: ImportState }) {
   const rows = p ? Math.round(p.total / cols) : 0;
   const doneRows = p ? Math.round(p.done / cols) : 0;
   const pct = p && p.total > 0 ? Math.round((p.done / p.total) * 100) : 0;
-  if (s.busy !== "read" && !s.error) return null;
+  const reading = s.busy === "read" || (s.busy === "commit" && s.step !== null);
+  if (!reading && !s.error) return null;
   return (
     <div className="import-status" aria-live="polite">
-      {s.busy === "read" ? (
+      {reading ? (
         <div className="progress">
-          읽는 중 · {p ? STAGE_LABEL[p.stage] : "준비"}{" "}
+          {s.step ? `‘${s.step.sheet}’ 시트 읽는 중 (${s.step.n}/${s.step.of})` : "읽는 중"} ·{" "}
+          {p ? STAGE_LABEL[p.stage] : "준비"}{" "}
           {p && (p.stage === "styles" || p.stage === "merges")
             ? `${doneRows.toLocaleString()} / ${rows.toLocaleString()}행`
             : ""}
@@ -477,7 +515,7 @@ function ImportStatus({ s }: { s: ImportState }) {
         <span className="error">{s.error}</span>
       )}
       <span className="spacer" />
-      {s.busy === "read" && (
+      {reading && (
         <button className="ghost small" onClick={s.cancel}>
           취소
         </button>

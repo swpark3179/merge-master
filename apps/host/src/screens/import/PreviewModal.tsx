@@ -80,13 +80,16 @@ export function PreviewModal(p: Props) {
             닫기
           </button>
         </div>
-        {p.tabs}
-        <SheetGrid
-          model={m}
-          selection={p.selection}
-          onSelectionChange={p.onSelectionChange}
-          className={`preview-grid${p.stale ? " stale" : ""}`}
-        />
+        <div className="preview-main">
+          <SheetGrid
+            key={m.sheet}
+            model={m}
+            selection={p.selection}
+            onSelectionChange={p.onSelectionChange}
+            className={`preview-grid${p.stale ? " stale" : ""}`}
+          />
+          {p.tabs}
+        </div>
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
-import type { HostSnapshot, ParticipantRow } from "@mm/shared";
-import { a1, personColor } from "@mm/shared";
+import type { HostSnapshot, ParticipantRow, SheetCell, SheetModel } from "@mm/shared";
+import { a1, personColor, sheetPrefix } from "@mm/shared";
 import { useState } from "react";
 
 import { api, errorText } from "../../api";
@@ -9,7 +9,8 @@ interface Props {
   snapshot: HostSnapshot | null;
   /** 서비스가 꺼져 있을 때 보일 명단. */
   roster: string[];
-  origin: { row: number; col: number };
+  /** 확정한 시트들(현재 위치 주소, 승인 범위의 시트). */
+  sheets: SheetModel[];
   onRosterChanged: () => void;
   /** 승인하며 IP 명단에 저장했다. */
   onIpNamesChanged: () => void;
@@ -23,12 +24,20 @@ function StatusText({ p }: { p: ParticipantRow }) {
   return <span className="muted">○ 미접속</span>;
 }
 
+/** 시트 주소(시트가 둘 이상이면 `인력계획!F7`). */
+function where(sheets: SheetModel[], at: SheetCell): string {
+  const m = sheets[at.sheet];
+  const origin = m?.origin ?? { row: 0, col: 0 };
+  const cell = a1(origin.row + at.row, origin.col + at.col);
+  return sheets.length > 1 && m ? `${sheetPrefix(m.sheet)}${cell}` : cell;
+}
+
 /** 1c 접속자: 승인 대기 + 명단 표(상태·배정·현재 위치·필수 입력). */
 export function ParticipantsPanel({
   running,
   snapshot,
   roster,
-  origin,
+  sheets,
   onRosterChanged,
   onIpNamesChanged,
   onGoConfig,
@@ -36,6 +45,8 @@ export function ParticipantsPanel({
 }: Props) {
   const [approving, setApproving] = useState<string | null>(null);
   const [range, setRange] = useState("");
+  /** 배정 범위의 시트(범위에 `시트!`를 적으면 그쪽이 먼저). */
+  const [rangeSheet, setRangeSheet] = useState(0);
   const [note, setNote] = useState("");
   /** 승인하면서 그 IP를 IP 명단에 그 이름으로 저장(다음부터 바로 들어온다). */
   const [remember, setRemember] = useState(false);
@@ -78,7 +89,7 @@ export function ParticipantsPanel({
             e.preventDefault();
             if (!newName.trim()) return;
             void run(async () => {
-              await api.configApply({ op: "addPerson", name: newName }, null);
+              await api.configApply(0, { op: "addPerson", name: newName }, null);
               setNewName("");
               onRosterChanged();
             });
@@ -112,7 +123,7 @@ export function ParticipantsPanel({
               onSubmit={(e) => {
                 e.preventDefault();
                 void run(async () => {
-                  await api.participantApprove(p.name, range.trim() || null, note);
+                  await api.participantApprove(p.name, rangeSheet, range.trim() || null, note);
                   if (remember && p.ip) {
                     await api.ipNamesPut(p.ip, p.name);
                     onIpNamesChanged();
@@ -124,6 +135,19 @@ export function ParticipantsPanel({
                 });
               }}
             >
+              {sheets.length > 1 && (
+                <select
+                  aria-label="배정 시트"
+                  value={rangeSheet}
+                  onChange={(e) => setRangeSheet(Number(e.target.value))}
+                >
+                  {sheets.map((m, i) => (
+                    <option key={i} value={i}>
+                      {m.sheet}
+                    </option>
+                  ))}
+                </select>
+              )}
               <input
                 aria-label="배정 범위"
                 className="mono"
@@ -186,10 +210,10 @@ export function ParticipantsPanel({
               <span className="mono small">
                 {p.editing ? (
                   <span className="editing" title="편집 중(다른 사람에게 잠김)">
-                    ✎ {a1(origin.row + p.editing.row, origin.col + p.editing.col)}
+                    ✎ {where(sheets, p.editing)}
                   </span>
                 ) : p.cursor ? (
-                  a1(origin.row + p.cursor.row, origin.col + p.cursor.col)
+                  where(sheets, p.cursor)
                 ) : (
                   "–"
                 )}
