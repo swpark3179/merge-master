@@ -1,14 +1,4 @@
-:root {
-  --ink: #222;
-  --muted: #777;
-  --line: #cfcdc6;
-  --paper: #f7f6f3;
-  --accent: #2a78d6;
-  --ok: #2f9e6b;
-  --warn: #a86a00;
-  --danger: #d64545;
-  color-scheme: light;
-}
+/* 색 토큰은 @mm/shared/tokens.css(main.tsx가 먼저 불러온다). */
 
 * {
   box-sizing: border-box;
@@ -84,6 +74,12 @@ button {
   cursor: pointer;
 }
 
+/* 키보드 포커스: 텍스트 입력칸과 그리드는 따로 표시하고, 나머지는 바깥 테두리를 긋는다. */
+:where(button, a[href], summary, input[type="checkbox"], input[type="radio"]):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 .grid-host {
   flex: 1;
   min-height: 0;
@@ -150,7 +146,7 @@ button {
 .join-card .desc {
   padding: 10px 12px;
   border-radius: 6px;
-  background: #f4f3ef;
+  background: var(--head);
   line-height: 1.35;
 }
 
@@ -168,13 +164,13 @@ button {
 
 .join-card .hint,
 .join-card .note {
-  color: #666;
+  color: var(--muted);
   font-size: 14px;
 }
 
 .join-card .note {
   text-align: center;
-  color: #888;
+  color: var(--muted);
 }
 
 button.primary {
@@ -331,19 +327,19 @@ button.link {
 .tag {
   padding: 0 6px;
   border-radius: 3px;
-  background: #eeede9;
+  background: var(--chip);
   font-size: 12px;
   white-space: nowrap;
 }
 
 .tag-required {
-  background: #fdecec;
+  background: var(--danger-tint);
   color: var(--danger);
 }
 
 .tag-mine {
   background: #efe7fb;
-  color: #8a5cd6;
+  color: #6d42b8;
 }
 
 .hint-bar {
@@ -363,7 +359,7 @@ button.link {
   padding: 4px 14px;
   border-top: 1px solid var(--line);
   font-size: 13px;
-  color: #666;
+  color: var(--muted);
 }
 
 .status .ok {
@@ -459,7 +455,7 @@ button.link {
 }
 
 .picker-desc {
-  color: #555;
+  color: var(--ink-2);
   font-size: 14px;
   line-height: 1.35;
 }

@@ -57,7 +57,7 @@ button.small {
 }
 
 .toolbar button.icon.on {
-  background: #dbe8f8;
+  background: var(--accent-tint);
 }
 
 .fill-menu {
@@ -152,13 +152,13 @@ button.small {
 }
 
 .tag-filter {
-  background: #e8f1fb;
-  color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-ink);
 }
 
 .hint-bar.lock {
-  background: #fff4e5;
-  color: #8a4b00;
+  background: var(--warn-soft);
+  color: var(--warn-ink);
 }
 
 .hint-bar .link {
@@ -168,9 +168,36 @@ button.small {
 .readonly-bar {
   padding: 6px 16px;
   border-bottom: 1px solid var(--line);
-  background: #fdecec;
+  background: var(--danger-tint);
   color: var(--danger);
   font-size: 13px;
+}
+
+/* 연결 끊김(그리드 위): 입력은 막지 않는다. 다시 연결되면 잠깐 초록으로 바뀌었다가 접힌다. */
+.connection-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.connection-bar svg,
+.connection-bar b {
+  flex: none;
+  color: var(--warn-ink);
+}
+
+.connection-bar.back {
+  border-bottom-color: var(--line);
+  background: var(--ok-soft);
+}
+
+.connection-bar.back b {
+  color: var(--ok-ink);
 }
 
 /* 답을 기다리는 내 입력: 왼쪽 아래 파란 모서리 */
@@ -336,7 +363,7 @@ button.small {
   padding: 8px 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background-color: #fbfaf8;
+  background-color: var(--others-bg);
   background-image: repeating-linear-gradient(135deg, rgba(0, 0, 0, 0.06) 0 1.5px, transparent 1.5px 7px);
   font-size: 13px;
 }
@@ -388,12 +415,12 @@ button.small {
 .field input[aria-invalid="true"],
 .field textarea[aria-invalid="true"] {
   border-color: var(--danger);
-  box-shadow: 0 0 0 2px #fdecec;
+  box-shadow: 0 0 0 2px var(--danger-tint);
 }
 
 .field.disabled input,
 .field.disabled textarea {
-  background: #f4f3ef;
+  background: var(--head);
 }
 
 .field-input {
@@ -424,7 +451,7 @@ button.small {
 }
 
 .field-note.lock {
-  color: #8a4b00;
+  color: var(--warn-ink);
 }
 
 .chips {
@@ -610,7 +637,7 @@ textarea.detail-text:focus {
   gap: 10px;
   padding: 6px 16px;
   border-bottom: 1.5px solid var(--warn);
-  background: #fff4e5;
+  background: var(--warn-soft);
   font-size: 14px;
 }
 
@@ -697,8 +724,8 @@ body.side-resizing {
 }
 
 .alert-item.highlight {
-  border-left: 3px solid #e0b400;
-  background: #fffbe6;
+  border-left: 3px solid var(--hl-line);
+  background: var(--hl-soft);
 }
 
 .alert-item.important {
@@ -728,7 +755,7 @@ body.side-resizing {
 
 .chat-msg.mine {
   align-self: flex-end;
-  background: #eef4fc;
+  background: var(--accent-soft);
 }
 
 .chat-input {
@@ -746,8 +773,8 @@ button.cell-ref {
   padding: 0 3px;
   border: 0;
   border-radius: 3px;
-  background: #fff3b0;
-  color: #6b5b00;
+  background: var(--hl-bg);
+  color: var(--hl-ink);
   font:
     12px ui-monospace,
     Menlo,
@@ -774,10 +801,10 @@ button.cell-ref {
   top: 0;
   max-width: 260px;
   padding: 2px 8px;
-  border: 1.5px solid #e0b400;
+  border: 1.5px solid var(--hl-line);
   border-radius: 0 6px 6px 6px;
-  background: #fffbe6;
-  color: #5c4a00;
+  background: var(--hl-soft);
+  color: var(--hl-ink);
   font-size: 12px;
   line-height: 18px;
   white-space: nowrap;
@@ -802,7 +829,7 @@ button.cell-ref {
   padding: 0 10px;
   overflow-x: auto;
   border-top: 1px solid var(--line);
-  background: #f4f3f0;
+  background: var(--head);
 }
 
 .sheet-tabs button {
@@ -833,8 +860,8 @@ button.cell-ref {
   min-width: 18px;
   padding: 0 5px;
   border-radius: 9px;
-  background: #fde2e2;
-  color: #b42318;
+  background: var(--danger-tint);
+  color: var(--danger);
   font-size: 11px;
   font-weight: 700;
   line-height: 16px;
@@ -845,5 +872,5 @@ button.cell-ref {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: #f5b700;
+  background: var(--hl-line);
 }

@@ -271,8 +271,8 @@ button.cell-ref {
   padding: 0 3px;
   border: 0;
   border-radius: 3px;
-  background: #fdecc8;
-  color: var(--warn-ink);
+  background: var(--hl-bg);
+  color: var(--hl-ink);
   font:
     12px Consolas,
     ui-monospace,
@@ -299,7 +299,7 @@ button.cell-ref {
 
 .chat-msg.mine {
   align-self: flex-end;
-  background: #eeeefc;
+  background: var(--accent-tint);
 }
 
 .chat-input {
@@ -419,13 +419,17 @@ button.cell-ref {
   overflow-wrap: anywhere;
 }
 
+/* 되돌리기 버튼은 행에 올리거나 Tab으로 갔을 때만 보인다(숨겨도 Tab으로 갈 수 있게 opacity로 숨긴다). */
 .hrow button {
-  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .hrow:hover button,
+.hrow button:focus-visible,
 .hbatch > .hrow:first-child button {
-  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .kind {
@@ -442,7 +446,7 @@ button.cell-ref {
 }
 
 .kind-revert {
-  background: #eeeefc;
+  background: var(--accent-tint);
   color: var(--accent-ink);
 }
 

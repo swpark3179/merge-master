@@ -92,7 +92,7 @@ test("편집 중인 칸은 다른 사람에게 잠기고, 확정하거나 호스
   await cell(a, 17, H).click();
   await a.keyboard.type("간담회");
   await expect(a.locator(".status")).toContainText("H18 편집 중");
-  await expect(cell(b, 17, H).locator(".lock-tag")).toHaveText("🔒 정하늘");
+  await expect(cell(b, 17, H).locator(".lock-tag")).toHaveText("정하늘");
   await cell(b, 17, H).click();
   await expect(b.locator(".hint-bar.lock")).toContainText("정하늘 님이 입력 중입니다");
   await b.keyboard.type("x");
@@ -345,7 +345,7 @@ test("Alt+Enter 여러 줄은 그리드에 줄을 나눠 보이고, 사이드바
   const box = panel.getByLabel("셀 내용 편집");
   await expect(box).toHaveValue("첫 줄\n둘째 줄");
   await box.fill("첫 줄\n둘째 줄\n셋째 줄");
-  await expect(cell(b, 28, H).locator(".lock-tag")).toHaveText("🔒 오세린"); // 고치는 동안 잠김
+  await expect(cell(b, 28, H).locator(".lock-tag")).toHaveText("오세린"); // 고치는 동안 잠김
   await box.press("Control+Enter");
   await expect.poll(() => lines(b)).toBe("첫 줄\n둘째 줄\n셋째 줄");
   await expect(cell(b, 28, H).locator(".lock-tag")).toHaveCount(0);

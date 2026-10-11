@@ -588,7 +588,7 @@ export function Workspace({ s }: { s: SessionState }) {
       style = { boxShadow: `inset 0 0 0 2px ${color}` };
       adornment = (
         <span className="peer-tag lock-tag" style={{ background: color }}>
-          🔒 {lockedBy}
+          {lockedBy}
         </span>
       );
     } else if (peer) {
@@ -873,6 +873,8 @@ export function Workspace({ s }: { s: SessionState }) {
         </div>
       </div>
 
+      <ConnectionBar connected={s.connected} waiting={waiting} />
+
       {mode === "grid" ? (
         <>
           <div className="filter-bar">
@@ -1034,6 +1036,47 @@ export function Workspace({ s }: { s: SessionState }) {
         <pre className="bench" data-testid="bench">
           {JSON.stringify(bench)}
         </pre>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 연결이 끊긴 동안 그리드 위에 띠로 알린다(입력은 이 기기에 모아 두었다가 다시 연결되면 보낸다). 다시 연결되면
+ * 2초 동안 알리고 접는다. 하단 상태줄은 그대로 둔다.
+ */
+function ConnectionBar({ connected, waiting }: { connected: boolean; waiting: number }) {
+  const [back, setBack] = useState(false);
+  const wasOffline = useRef(false);
+  useEffect(() => {
+    if (!connected) {
+      wasOffline.current = true;
+      setBack(false);
+      return;
+    }
+    if (!wasOffline.current) return;
+    wasOffline.current = false;
+    setBack(true);
+    const id = window.setTimeout(() => setBack(false), 2000);
+    return () => window.clearTimeout(id);
+  }, [connected]);
+  if (connected && !back) return null;
+  return (
+    <div className={`connection-bar${connected ? " back" : ""}`} role="status">
+      {connected ? (
+        <b>다시 연결되었습니다</b>
+      ) : (
+        <>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+            <path d="M2 8.8a15 15 0 0 1 4.2-2.6M22 8.8a15 15 0 0 0-11.3-3.7M5 12.6a10 10 0 0 1 5.2-2.6M19 12.6a10 10 0 0 0-2.5-1.6M8.5 16.3a5 5 0 0 1 7 0M12 20h.01M3 3l18 18" />
+          </svg>
+          <b>오프라인</b>
+          <span>
+            {waiting > 0
+              ? `입력 ${waiting.toLocaleString()}건은 이 기기에 보관 중이에요. 다시 연결되면 자동으로 보냅니다.`
+              : "다시 연결하는 중…"}
+          </span>
+        </>
       )}
     </div>
   );

@@ -1,6 +1,6 @@
 /*
- * 칸 안 편집기(CellEditor): 참여자 화면과 호스트 1b·모니터링이 함께 쓴다. 색은 쓰는 쪽의 --accent·--ink·--line·
- * --muted·--danger를 따르고, 없으면 기본색.
+ * 칸 안 편집기(CellEditor): 참여자 화면과 호스트 1b·모니터링이 함께 쓴다. 색은 공용 토큰
+ * (@mm/shared/tokens.css)을 따른다.
  *
  * 대기 중에는 투명(첫 글자·한글 조합을 받으려고 활성 칸에 미리 둔다). 대기 중에는 마우스가 밑의 칸으로 지나가
  * 활성 칸에서도 끌어 선택·더블클릭할 수 있다.
@@ -42,10 +42,10 @@
   min-width: 100%;
   width: max(100%, 180px);
   background: #fff;
-  color: var(--ink, #222);
+  color: var(--ink);
   caret-color: auto;
   box-shadow:
-    0 0 0 2px var(--accent, #2a78d6),
+    0 0 0 2px var(--accent),
     0 4px 14px rgba(0, 0, 0, 0.18);
   white-space: pre-wrap;
   overflow: auto;
@@ -59,10 +59,10 @@
   width: 18px;
   height: auto;
   padding: 0;
-  border: 1px solid var(--line, #e2e0da);
+  border: 1px solid var(--line);
   border-radius: 3px;
   background: #fff;
-  color: var(--muted, #8a8f98);
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -77,7 +77,7 @@
   padding: 4px 0;
   overflow: auto;
   list-style: none;
-  border: 1.5px solid var(--ink, #222);
+  border: 1.5px solid var(--ink);
   border-radius: 6px;
   background: #fff;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
@@ -91,7 +91,7 @@
 
 .cell-list li.hi,
 .cell-list li:hover {
-  background: #dbe8f8;
+  background: var(--accent-tint);
 }
 
 .cell-error {
@@ -101,7 +101,7 @@
   z-index: 11;
   padding: 4px 8px;
   border-radius: 4px;
-  background: var(--danger, #d64545);
+  background: var(--danger);
   color: #fff;
   font-size: 12px;
   white-space: nowrap;
