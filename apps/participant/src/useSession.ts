@@ -436,6 +436,7 @@ export function useSession(slug: string) {
       socket.onopen = () => {
         attempt = 0;
         setConnected(true);
+        setMissing(false); // 붙었으면 공개 중인 업무다(다시 공개됨)
         if (wantJoin.current) void sendJoin(wantJoin.current);
         ping = window.setInterval(() => send({ type: "ping" }), PING_MS);
       };

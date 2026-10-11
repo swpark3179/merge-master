@@ -188,7 +188,7 @@ function JobList(props: {
           const unread = j.id !== current && j.lastChat > (chatSeen[j.id] ?? 0);
           const name = j.title || "새 취합";
           return (
-            <li key={j.id} className={`job-item${j.id === current ? " active" : ""}`}>
+            <li key={j.id} className={`job-item${j.id === current ? " active" : ""}`} data-job={j.id}>
               <button
                 className="job-pick"
                 aria-current={j.id === current ? "page" : undefined}
