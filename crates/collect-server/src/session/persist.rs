@@ -25,6 +25,12 @@ pub const BLOB_COMMS: &str = "comms";
 pub const BLOB_PEOPLE: &str = "people";
 pub const META_CLOSED: &str = "closed";
 pub const META_SERVER: &str = "server";
+/// 호스트 앱의 업무 id(다시 확정해 새 파일이 생겨도 같은 업무면 같다). 7단계 전 파일에는 없다.
+pub const META_JOB: &str = "job";
+/// 호스트가 업무를 끝냈다(앱을 다시 켜도 되살리지 않는다).
+pub const META_ENDED: &str = "ended";
+/// 7단계 '버리고 새로 시작'(되살리지 않는다).
+pub const META_DISCARDED: &str = "discarded";
 
 /// 서비스 상태(메타 `server`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,7 +254,9 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     let server = meta.get(META_SERVER).and_then(|s| serde_json::from_str(s).ok());
     let changes = saved.changes.len();
     let store = Store::open(path).map_err(|e| e.to_string())?;
-    let host_meta = meta.get(META_SERVER).map(|v| (META_SERVER.to_string(), v.clone())).into_iter().collect();
+    // 호스트가 남긴 메타 중 다음 기록 파일(다시 확정)로 옮겨 갈 것.
+    let host_meta =
+        [META_SERVER, META_JOB].into_iter().filter_map(|k| Some((k.to_string(), meta.get(k)?.clone()))).collect();
     let restore =
         Restore { log: saved.changes, snapshots: saved.snapshots, baselines, comms, closed, host_meta, tokens };
     let mut sheets = meta_sheets(&meta);

@@ -5,24 +5,28 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-use crate::AppState;
 use crate::guard::{Bucket, MAX_DROPPED, origin_allowed};
+use crate::hub::{Gone, Target};
 use crate::protocol::{ClientMsg, ServerMsg};
 use crate::session::{Command, Outgoing};
+use crate::{AppState, Pick};
 
 /// 붙여넣기 묶음(최대 2만 칸)이 들어가는 크기.
 const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
+/// `GET /ws?s=<주소 경로>`: 그 업무의 세션에 붙는다. 공개 중인 업무가 아니면 업그레이드하지 않고 404(브라우저는 조금 뒤 다시
+/// 붙어 본다 — 호스트가 다시 공개하면 이어진다).
 pub async fn upgrade(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Query(pick): Query<Pick>,
     headers: HeaderMap,
 ) -> Response {
     // 다른 웹사이트에서 열린 페이지가 참여자 브라우저를 통해 붙는 것을 막는다.
@@ -30,17 +34,22 @@ pub async fn upgrade(
         tracing::warn!(%peer, origin = ?headers.get("origin"), "다른 출처의 WebSocket 거절");
         return (StatusCode::FORBIDDEN, "다른 사이트에서 열린 페이지는 연결할 수 없습니다").into_response();
     }
-    ws.max_message_size(MAX_MESSAGE_BYTES).on_upgrade(move |socket| handle(socket, state, peer))
+    let target = match state.hub.resolve(pick.s.as_deref()) {
+        Ok(t) => t,
+        Err(e) => return e.into_response(),
+    };
+    ws.max_message_size(MAX_MESSAGE_BYTES).on_upgrade(move |socket| handle(socket, state, target, peer))
 }
 
 fn encode(msg: &ServerMsg) -> Message {
     Message::Text(serde_json::to_string(msg).expect("ServerMsg 직렬화").into())
 }
 
-async fn handle(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
+async fn handle(socket: WebSocket, state: Arc<AppState>, target: Target, peer: SocketAddr) {
+    let Target { session, mut gone } = target;
     let conn = state.next_conn.fetch_add(1, Ordering::Relaxed);
     let (outbox, mut inbox) = mpsc::unbounded_channel();
-    state.session.send(Command::Connect { conn, ip: peer.ip(), outbox });
+    session.send(Command::Connect { conn, ip: peer.ip(), outbox });
     tracing::info!(conn, %peer, "연결");
 
     let (mut sink, mut stream) = socket.split();
@@ -66,7 +75,7 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
                     }
                 }
                 Some(Ok(Message::Text(text))) => match serde_json::from_str::<ClientMsg>(&text) {
-                    Ok(msg) => state.session.send(Command::Client { conn, msg }),
+                    Ok(msg) => session.send(Command::Client { conn, msg }),
                     Err(e) => {
                         let err = ServerMsg::Error { message: format!("알 수 없는 메시지: {e}") };
                         if sink.send(encode(&err)).await.is_err() {
@@ -90,12 +99,18 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, peer: SocketAddr) {
             },
             // wait_for가 돌려주는 읽기 가드는 Send가 아니라서 블록 안에서 바로 버린다.
             () = async { let _ = shutdown.wait_for(|stop| *stop).await; } => {
-                let _ = sink.send(encode(&ServerMsg::Closing)).await;
+                let _ = sink.send(encode(&ServerMsg::Closing { ended: false })).await;
+                let _ = sink.send(Message::Close(None)).await;
+                break;
+            }
+            // 이 업무만 공개를 멈췄다(다른 업무의 연결은 그대로).
+            ended = async { gone.wait_for(Option::is_some).await.map(|g| *g == Some(Gone::Ended)).unwrap_or(false) } => {
+                let _ = sink.send(encode(&ServerMsg::Closing { ended })).await;
                 let _ = sink.send(Message::Close(None)).await;
                 break;
             }
         }
     }
-    state.session.send(Command::Disconnect { conn });
+    session.send(Command::Disconnect { conn });
     tracing::info!(conn, "연결 종료");
 }

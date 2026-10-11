@@ -98,6 +98,7 @@ export type { ServerMsg } from "./ServerMsg";
 export type { ServiceInfo } from "./ServiceInfo";
 export type { ServiceUrl } from "./ServiceUrl";
 export type { SessionInfo } from "./SessionInfo";
+export type { SessionListItem } from "./SessionListItem";
 export type { SheetCell } from "./SheetCell";
 export type { SheetCheck } from "./SheetCheck";
 export type { SheetInspection } from "./SheetInspection";

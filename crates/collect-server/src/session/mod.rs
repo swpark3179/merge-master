@@ -12,14 +12,15 @@
 
 mod comms;
 mod edit;
+pub mod files;
 mod persist;
 mod snapshots;
 
 pub use comms::CommsData;
 pub use comms::{CommsSnapshot, HighlightAudience, HighlightSummary, NoticeSummary, NoticeTarget};
 pub use persist::{
-    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_SERVER, META_SHEETS, Recovered,
-    Restore, ServerMeta, meta_sheets, recover,
+    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_DISCARDED, META_ENDED, META_JOB,
+    META_SERVER, META_SHEETS, Recovered, Restore, ServerMeta, meta_sheets, recover,
 };
 pub use snapshots::AUTO_SNAPSHOT;
 
@@ -572,6 +573,21 @@ impl SessionHandle {
 
     pub fn info(&self) -> SessionInfo {
         self.info.borrow().clone()
+    }
+
+    /// 공개 정보(업무명 등)가 바뀔 때마다 깨어나는 수신기.
+    pub fn subscribe_info(&self) -> watch::Receiver<SessionInfo> {
+        self.info.clone()
+    }
+
+    /// 같은 세션을 가리키는 손잡이인가.
+    pub fn same(&self, other: &SessionHandle) -> bool {
+        self.tx.same_channel(&other.tx)
+    }
+
+    /// 그 이름이 명단에 있는가(접속자 표로 본다 — 세션에 묻지 않으므로 막히지 않는다).
+    pub fn has_person(&self, name: &str) -> bool {
+        self.snapshot.borrow().participants.iter().any(|p| p.name == name)
     }
 
     /// 1i 소통 패널: 보낸 공지·강조, 모든 채팅.
@@ -1448,6 +1464,7 @@ impl State {
             read_only: self.read_only,
             closed: self.closed,
             online: self.people.values().filter(|p| p.conn.is_some()).count() as u32,
+            job: self.host_meta.get(META_JOB).cloned(),
         }
     }
 

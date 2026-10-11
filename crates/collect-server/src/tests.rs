@@ -13,16 +13,27 @@ use super::*;
 use crate::protocol::{KickReason, PROTOCOL_VERSION};
 
 fn config(dev_admin: bool) -> ServerConfig {
-    ServerConfig { bind: IpAddr::V4(Ipv4Addr::LOCALHOST), port: 0, slug: "q4".into(), dev_admin }
+    ServerConfig { bind: IpAddr::V4(Ipv4Addr::LOCALHOST), port: 0, dev_admin }
 }
 
 fn init() -> SessionHandle {
+    init_titled("2026년 부서별 예산 신청")
+}
+
+fn init_titled(title: &str) -> SessionHandle {
     let model: SheetModel = serde_json::from_slice(include_bytes!("../../../fixtures/budget.sheet.json")).unwrap();
     let mut config = CollectConfig::suggest(&model);
     config.assignment.key_col = suggested_key_col(&model); // C 담당자
-    config.title = "2026년 부서별 예산 신청".into();
+    config.title = title.into();
     config.requester = "박지훈".into();
     SessionHandle::spawn(SessionInit::new(model, config))
+}
+
+/// 세션 하나를 `q4`로 공개한 서버.
+async fn serve(session: SessionHandle, dev_admin: bool) -> ServerHandle {
+    let hub = Hub::new();
+    hub.publish("q4", session).unwrap();
+    start(config(dev_admin), hub).await.unwrap()
 }
 
 async fn http(addr: SocketAddr, method: &str, path: &str, body: &str) -> String {
@@ -41,6 +52,11 @@ type Client = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStre
 
 async fn open(addr: SocketAddr) -> Client {
     tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.unwrap().0
+}
+
+/// 그 업무(주소 경로)의 WebSocket.
+async fn open_at(addr: SocketAddr, slug: &str) -> Client {
+    tokio_tungstenite::connect_async(format!("ws://{addr}/ws?s={slug}")).await.unwrap().0
 }
 
 async fn next(ws: &mut Client) -> ServerMsg {
@@ -82,7 +98,7 @@ async fn enter(session: &SessionHandle, ws: &mut Client, name: &str) -> Box<prot
 
 #[tokio::test]
 async fn http_routes() {
-    let server = start(config(false), init()).await.unwrap();
+    let server = serve(init(), false).await;
     let addr = server.local_addr;
     assert!(http(addr, "GET", "/api/health", "").await.ends_with("ok"));
     let info = http(addr, "GET", "/api/session", "").await;
@@ -90,15 +106,21 @@ async fn http_routes() {
     // 시트는 입장한 뒤 WebSocket으로만, 그 사람 기준으로 보낸다.
     assert!(http(addr, "GET", "/api/sheet", "").await.starts_with("HTTP/1.1 404"));
     assert!(http(addr, "GET", "/__dev/snapshot", "").await.starts_with("HTTP/1.1 404"));
-    assert!(http(addr, "GET", "/", "").await.contains("location: /q4"));
+    // 맨 위 주소는 업무 목록 화면(예전처럼 한 업무로 보내지 않는다), 공개 중이 아닌 주소는 404.
+    let root = http(addr, "GET", "/", "").await;
+    assert!(!root.contains("location:"), "{root}");
     assert!(http(addr, "GET", "/wrong", "").await.starts_with("HTTP/1.1 404"));
+    assert!(http(addr, "GET", "/api/session?s=wrong", "").await.starts_with("HTTP/1.1 404"));
+    let list = http(addr, "GET", "/api/sessions", "").await;
+    assert!(list.contains(r#""slug":"q4""#) && list.contains(r#""title":"2026년 부서별 예산 신청""#), "{list}");
     assert!(http(addr, "GET", "/assets/../../Cargo.toml", "").await.starts_with("HTTP/1.1 404"));
     server.stop().await;
 }
 
 #[tokio::test]
 async fn join_pending_approve_and_switch_over_websocket() {
-    let server = start(config(true), init()).await.unwrap();
+    let session = init();
+    let server = serve(session.clone(), true).await;
     let addr = server.local_addr;
 
     // IP 명단 밖에서는 명단에 있는 이름이어도 승인을 기다린다.
@@ -123,7 +145,7 @@ async fn join_pending_approve_and_switch_over_websocket() {
     // 이 PC(127.0.0.1)를 IP 명단에 김민지로 올리면: 새 연결은 이름을 묻지 않고(`known`) 들어오려 하고,
     // 김민지가 이미 접속 중이라 중복 확인 → 전환 → 앞 기기는 끊긴다.
     let names = IpNames::parse_json(r#"{"127.0.0.1": "김민지"}"#).unwrap();
-    server.session().set_ip_names(names);
+    session.set_ip_names(names);
     let mut c = open(addr).await;
     assert!(matches!(next(&mut c).await, ServerMsg::Known { name } if name == "김민지"));
     send(&mut c, &join("")).await;
@@ -139,17 +161,19 @@ async fn join_pending_approve_and_switch_over_websocket() {
     assert!(matches!(cur, ServerMsg::Cursor { name, .. } if name == "김민지"));
 
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(server.online(), 2);
+    assert_eq!(session.snapshot().online, 2);
     tokio::time::timeout(Duration::from_secs(5), server.stop()).await.expect("stop()이 끝나지 않음");
-    assert!(matches!(until(&mut b, |m| matches!(m, ServerMsg::Closing)).await, ServerMsg::Closing));
+    let closing = until(&mut b, |m| matches!(m, ServerMsg::Closing { .. })).await;
+    assert!(matches!(closing, ServerMsg::Closing { ended: false }));
 }
 
 #[tokio::test]
 async fn host_events_follow_participants() {
-    let server = start(config(false), init()).await.unwrap();
-    let mut events = server.session().subscribe();
+    let session = init();
+    let server = serve(session.clone(), false).await;
+    let mut events = session.subscribe();
     let mut a = open(server.local_addr).await;
-    enter(server.session(), &mut a, "이서연").await;
+    enter(&session, &mut a, "이서연").await;
     tokio::time::timeout(Duration::from_secs(5), events.wait_for(|s| s.online == 1)).await.unwrap().unwrap();
     drop(a);
     tokio::time::timeout(Duration::from_secs(5), events.wait_for(|s| s.online == 0)).await.unwrap().unwrap();
@@ -158,10 +182,10 @@ async fn host_events_follow_participants() {
 
 #[tokio::test]
 async fn bind_conflict_is_reported() {
-    let first = start(config(false), init()).await.unwrap();
+    let first = serve(init(), false).await;
     let mut cfg = config(false);
     cfg.port = first.local_addr.port();
-    assert!(matches!(start(cfg, init()).await, Err(ServerError::Bind { .. })));
+    assert!(matches!(start(cfg, Hub::new()).await, Err(ServerError::Bind { .. })));
     first.stop().await;
 }
 
@@ -172,7 +196,7 @@ async fn edits_flow_over_websocket_and_survive_restart() {
     use collect_core::CellValue;
 
     let session = init();
-    let server = start(config(true), session.clone()).await.unwrap();
+    let server = serve(session.clone(), true).await;
     let addr = server.local_addr;
     let mut a = open(addr).await;
     let mut b = open(addr).await;
@@ -199,7 +223,7 @@ async fn edits_flow_over_websocket_and_survive_restart() {
     assert!(w.session.read_only);
 
     server.stop().await;
-    let again = start(config(false), session.clone()).await.unwrap();
+    let again = serve(session.clone(), false).await;
     // 승인받은 브라우저는 토큰으로 다시 묻지 않고 들어온다.
     let mut c = open(again.local_addr).await;
     send(&mut c, &ClientMsg::Join { name: "최도윤".into(), token: Some(tb), protocol: PROTOCOL_VERSION }).await;
@@ -233,7 +257,7 @@ async fn snapshot_is_published_before_host_job_returns() {
 async fn security_headers_and_foreign_origins() {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-    let server = start(config(false), init()).await.unwrap();
+    let server = serve(init(), false).await;
     let addr = server.local_addr;
     let page = http(addr, "GET", "/q4", "").await.to_lowercase();
     assert!(page.contains("x-content-type-options: nosniff"), "{page}");
@@ -254,7 +278,7 @@ async fn security_headers_and_foreign_origins() {
 
 #[tokio::test]
 async fn flooding_connection_is_warned_then_closed() {
-    let server = start(config(false), init()).await.unwrap();
+    let server = serve(init(), false).await;
     let mut ws = open(server.local_addr).await;
     for _ in 0..400 {
         send(&mut ws, &ClientMsg::Ping).await;
@@ -282,9 +306,93 @@ async fn flooding_connection_is_warned_then_closed() {
 
 #[tokio::test]
 async fn stopping_the_service_closes_the_port() {
-    let server = start(config(false), init()).await.unwrap();
+    let server = serve(init(), false).await;
     let addr = server.local_addr;
     assert!(http(addr, "GET", "/api/health", "").await.ends_with("ok"));
     server.stop().await;
     assert!(tokio::net::TcpStream::connect(addr).await.is_err(), "서비스를 멈추면 포트도 닫힌다");
+}
+
+/// 포트 하나에 업무 둘: 주소 경로로 가려 붙고, 한 업무만 공개를 멈추면 그 업무의 연결만 닫힌다.
+#[tokio::test]
+async fn two_sessions_on_one_port() {
+    let (a, b) = (init(), init_titled("인력 계획 취합"));
+    let hub = Hub::new();
+    hub.publish("q4", a.clone()).unwrap();
+    hub.publish("hr", b.clone()).unwrap();
+    let server = start(config(true), hub.clone()).await.unwrap();
+    let addr = server.local_addr;
+
+    let list = http(addr, "GET", "/api/sessions", "").await;
+    let (i, j) = (list.find(r#""slug":"q4""#).unwrap(), list.find(r#""slug":"hr""#).unwrap());
+    assert!(i < j, "공개한 순서: {list}");
+    assert!(list.contains(r#""title":"인력 계획 취합""#));
+    assert!(http(addr, "GET", "/api/session?s=hr", "").await.contains(r#""title":"인력 계획 취합""#));
+    assert!(http(addr, "GET", "/api/session", "").await.starts_with("HTTP/1.1 400"), "둘 이상이면 주소가 필요하다");
+    assert!(!http(addr, "GET", "/hr", "").await.starts_with("HTTP/1.1 404"));
+    assert!(http(addr, "GET", "/__dev/snapshot", "").await.starts_with("HTTP/1.1 400"));
+    // 업그레이드 전에 거절한다(없는 업무·주소 없음).
+    assert!(tokio_tungstenite::connect_async(format!("ws://{addr}/ws?s=nope")).await.is_err());
+    assert!(tokio_tungstenite::connect_async(format!("ws://{addr}/ws")).await.is_err());
+
+    // 업무마다 따로 들어간다: 같은 이름이어도 다른 세션의 사람이다.
+    let mut wa = open_at(addr, "q4").await;
+    let mut wb = open_at(addr, "HR").await; // 주소 경로는 대소문자를 가리지 않는다
+    let welcome_a = enter(&a, &mut wa, "이서연").await;
+    send(&mut wb, &join("이서연")).await;
+    assert!(matches!(until(&mut wb, |m| matches!(m, ServerMsg::Pending { .. })).await, ServerMsg::Pending { .. }));
+    assert!(a.snapshot().pending.is_empty() && b.snapshot().pending.len() == 1, "승인 대기는 그 업무에만");
+    let ok = http(addr, "POST", "/__dev/approve?s=hr", r#"{"name":"이서연"}"#).await;
+    assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+    let ServerMsg::Welcome(welcome_b) = until(&mut wb, |m| matches!(m, ServerMsg::Welcome(_))).await else {
+        unreachable!()
+    };
+    assert_eq!(welcome_a.session.title, "2026년 부서별 예산 신청");
+    assert_eq!(welcome_b.session.title, "인력 계획 취합");
+    assert_ne!(welcome_a.token, welcome_b.token, "토큰도 업무마다");
+
+    // IP 명단은 업무마다 넣는다(호스트 앱은 모든 업무에): 개발 API는 모든 업무와 목록에 넣는다.
+    let r = http(addr, "POST", "/__dev/ip-names", r#"{"127.0.0.1": "김민지"}"#).await;
+    assert!(r.starts_with("HTTP/1.1 200"), "{r}");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let list = http(addr, "GET", "/api/sessions", "").await;
+    assert_eq!(list.matches(r#""mine":true"#).count(), 2, "{list}");
+    for slug in ["q4", "hr"] {
+        let mut c = open_at(addr, slug).await;
+        assert!(matches!(next(&mut c).await, ServerMsg::Known { name } if name == "김민지"), "{slug}");
+    }
+
+    // hr만 공개를 멈추면(업무 끝냄) hr 연결만 닫히고 q4는 그대로.
+    assert!(hub.unpublish("hr", true).is_some());
+    let closing = until(&mut wb, |m| matches!(m, ServerMsg::Closing { .. })).await;
+    assert!(matches!(closing, ServerMsg::Closing { ended: true }));
+    send(&mut wa, &ClientMsg::Ping).await;
+    assert!(matches!(until(&mut wa, |m| matches!(m, ServerMsg::Pong)).await, ServerMsg::Pong));
+    assert!(!http(addr, "GET", "/api/sessions", "").await.contains(r#""slug":"hr""#));
+    assert!(http(addr, "GET", "/hr", "").await.starts_with("HTTP/1.1 404"));
+    assert!(tokio_tungstenite::connect_async(format!("ws://{addr}/ws?s=hr")).await.is_err());
+    // 하나만 남으면 주소 없이도 그 업무.
+    assert!(http(addr, "GET", "/api/session", "").await.contains(r#""title":"2026년 부서별 예산 신청""#));
+
+    // 다시 공개하면 토큰으로 다시 들어온다.
+    hub.publish("hr", b.clone()).unwrap();
+    let mut again = open_at(addr, "hr").await;
+    let rejoin =
+        ClientMsg::Join { name: "이서연".into(), token: Some(welcome_b.token.clone()), protocol: PROTOCOL_VERSION };
+    send(&mut again, &rejoin).await;
+    assert!(matches!(until(&mut again, |m| matches!(m, ServerMsg::Welcome(_))).await, ServerMsg::Welcome(_)));
+
+    // 개발용 관리 API로 멈췄다 다시 열기.
+    assert!(http(addr, "POST", "/__dev/unpublish?s=hr", "").await.starts_with("HTTP/1.1 200"));
+    let closing = until(&mut again, |m| matches!(m, ServerMsg::Closing { .. })).await;
+    assert!(matches!(closing, ServerMsg::Closing { ended: false }));
+    assert!(http(addr, "POST", "/__dev/publish?s=hr", "").await.starts_with("HTTP/1.1 200"));
+    assert!(http(addr, "GET", "/api/session?s=hr", "").await.contains("인력 계획 취합"));
+
+    // 서버를 멈추면 모두 닫힌다.
+    server.stop().await;
+    assert!(matches!(
+        until(&mut wa, |m| matches!(m, ServerMsg::Closing { .. })).await,
+        ServerMsg::Closing { ended: false }
+    ));
 }

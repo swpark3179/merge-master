@@ -189,6 +189,10 @@ pub struct SessionInfo {
     #[serde(default)]
     pub closed: bool,
     pub online: u32,
+    /// 호스트 앱의 업무 id. 같은 주소 경로를 새 업무가 다시 쓰면 바뀐다(참여자가 앞 업무의 대기열·토큰을 버린다).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub job: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -409,8 +413,11 @@ pub enum ServerMsg {
         sheet: u32,
         range: CellRange,
     },
-    /// 서버가 곧 닫힌다(호스트가 서비스 중지).
-    Closing,
+    /// 이 연결이 곧 닫힌다(호스트가 서비스·업무 공개를 멈춤). `ended`면 호스트가 업무를 끝냈다(다시 열리지 않는다).
+    Closing {
+        #[serde(default)]
+        ended: bool,
+    },
     Pong,
     Error {
         message: String,
