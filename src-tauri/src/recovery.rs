@@ -51,9 +51,9 @@ pub(crate) fn cleanup(dir: &Path) {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct RecoveryInfo {
-    /// 원본 통합문서 이름과 시트.
+    /// 원본 통합문서 이름과 시트들(불러온 순서).
     pub workbook: String,
-    pub sheet: String,
+    pub sheets: Vec<String>,
     /// 확정한 시각(`YYYYMMDD-HHMMSS`).
     pub created: String,
     #[ts(type = "number")]
@@ -88,7 +88,7 @@ pub fn recovery_check(app: AppHandle, state: State<'_, AppState>) -> Option<Reco
     let workbook = meta.get("workbook").cloned().unwrap_or_default();
     Some(RecoveryInfo {
         workbook: Path::new(&workbook).file_name().map_or(workbook.clone(), |n| n.to_string_lossy().to_string()),
-        sheet: meta.get("sheet").cloned().unwrap_or_default(),
+        sheets: collect_server::session::meta_sheets(meta),
         created: meta.get("created").cloned().unwrap_or_default(),
         changes: peek.changes,
         last_change_ms: peek.last_change_ms,
@@ -102,7 +102,8 @@ pub fn recovery_check(app: AppHandle, state: State<'_, AppState>) -> Option<Reco
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct ResumeResult {
-    pub model: SheetModel,
+    /// 되살린 시트들(세션 안 순번 순서).
+    pub models: Vec<SheetModel>,
     /// 다시 연 서비스(켜져 있었을 때).
     #[ts(optional)]
     pub service: Option<ServiceInfo>,
@@ -118,15 +119,15 @@ pub async fn recovery_resume(app: AppHandle, state: State<'_, AppState>) -> CmdR
     }
     let (path, _) = latest(&app).ok_or("이어서 할 취합이 없습니다")?;
     let rec = collect_server::recover(&path)?;
-    let (workbook_id, sheet, server) = (rec.workbook_id.clone(), rec.sheet.clone(), rec.server.clone());
+    let (workbook_id, sheets, server) = (rec.workbook_id.clone(), rec.sheets.clone(), rec.server.clone());
     let session = SessionHandle::spawn(rec.init);
     crate::people::attach(&state, &session);
     crate::service::forward_participants(&app, &session);
     crate::monitor::forward_events(&app, &session);
     *state.session.lock().unwrap() = Some(session.clone());
     *state.source.lock().unwrap() =
-        Some(crate::save::Source { workbook_id: workbook_id.clone(), sheet: sheet.clone() });
-    let model = session.with(|s| s.model.clone()).await?;
+        Some(crate::save::Source { workbook_id: workbook_id.clone(), sheets: sheets.clone() });
+    let models: Vec<SheetModel> = session.with(|s| s.sheets.iter().map(|x| x.model.clone()).collect()).await?;
 
     // 앞 앱이 남긴 숨은 Excel(계산 사본·원본)을 정리하고, 계산 사본을 다시 연다. Excel이 없어도 취합은 이어서 한다.
     let id = workbook_id.clone();
@@ -135,7 +136,7 @@ pub async fn recovery_resume(app: AppHandle, state: State<'_, AppState>) -> CmdR
         Ok(_) => {}
         Err(e) => tracing::warn!("Excel 정리 실패: {e}"),
     }
-    state.recalc.start(&app, state.excel.clone(), session, &model, &workbook_id, &sheet);
+    state.recalc.start(&app, state.excel.clone(), session, &models, &workbook_id, &sheets);
 
     let (mut service, mut service_error) = (None, None);
     if let Some(s) = server.filter(|s| s.running) {
@@ -144,7 +145,7 @@ pub async fn recovery_resume(app: AppHandle, state: State<'_, AppState>) -> CmdR
             Err(e) => service_error = Some(e),
         }
     }
-    Ok(ResumeResult { model, service, service_error })
+    Ok(ResumeResult { models, service, service_error })
 }
 
 /// '버리고 새로 시작': 그 파일은 다시 묻지 않는다(파일은 남는다).

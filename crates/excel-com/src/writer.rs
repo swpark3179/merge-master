@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use collect_core::export::{ExportPlan, HistoryTable, RowInsert, ValueBlock};
-use collect_core::{CellRange, CellRef, CellStyle, CellValue, HAlign};
+use collect_core::{CellRange, CellRef, CellStyle, CellValue, HAlign, SheetCell};
 use serde::Serialize;
 use ts_rs::TS;
 
@@ -50,8 +50,8 @@ pub struct SaveReport {
     pub path: String,
     /// 값을 쓴 칸 수.
     pub written: u32,
-    /// 저장한 뒤 다시 읽었더니 다른 칸(모델 좌표).
-    pub mismatched: Vec<CellRef>,
+    /// 저장한 뒤 다시 읽었더니 다른 칸(시트 순번 = 넘긴 계획 순서, 모델 좌표).
+    pub mismatched: Vec<SheetCell>,
     /// 서식을 바꾼 칸 수.
     pub styled: u32,
     pub merges: u32,
@@ -275,14 +275,12 @@ fn add_history(book: &Dispatch, table: &HistoryTable) -> Result<String> {
     Ok(name)
 }
 
-/// 계획을 시트에 쓴다(저장은 하지 않는다).
-fn apply(book: &Dispatch, ws: &Dispatch, plan: &ExportPlan, report: &mut SaveReport) -> Result<()> {
-    let app = book.obj("Application")?;
-    let _suspend = Suspend::new(&app);
+/// 계획 하나를 그 시트에 쓴다(저장은 하지 않는다. '변경 이력' 시트는 [`apply_all`]이 한 번 더한다).
+fn apply_sheet(ws: &Dispatch, plan: &ExportPlan, report: &mut SaveReport) -> Result<()> {
     let t = Target { ws, origin: plan.origin };
     if let Some(ins) = &plan.insert {
         insert_rows(&t, ins)?;
-        report.inserted = ins.count;
+        report.inserted += ins.count;
     }
     for m in &plan.merges_remove {
         t.range(*m)?.call("UnMerge", vec![])?;
@@ -294,26 +292,36 @@ fn apply(book: &Dispatch, ws: &Dispatch, plan: &ExportPlan, report: &mut SaveRep
     for m in &plan.merges_add {
         t.range(*m)?.call("Merge", vec![])?;
     }
-    report.merges = (plan.merges_add.len() + plan.merges_remove.len()) as u32;
+    report.merges += (plan.merges_add.len() + plan.merges_remove.len()) as u32;
     for s in &plan.styles {
         apply_style(&t.range(s.range)?, s.range, &s.style)?;
         report.styled += s.range.len() as u32;
     }
     apply_sizes(&t, plan)?;
-    report.resized = plan.resized();
+    report.resized += plan.resized();
     if let Some(rgb) = plan.mark {
         for b in &plan.blocks {
             t.range(b.range)?.obj("Interior")?.put("Color", Var::f64(rgb_to_bgr(rgb)))?;
         }
     }
-    if let Some(table) = &plan.history {
+    Ok(())
+}
+
+/// 계획들을 시트마다 쓰고, 계획에 든 '변경 이력' 표(처음 것 하나)를 시트로 더한다(저장은 하지 않는다).
+fn apply_all(book: &Dispatch, sheets: &[(Dispatch, &ExportPlan)], report: &mut SaveReport) -> Result<()> {
+    let app = book.obj("Application")?;
+    let _suspend = Suspend::new(&app);
+    for (ws, plan) in sheets {
+        apply_sheet(ws, plan, report)?;
+    }
+    if let Some(table) = sheets.iter().find_map(|(_, p)| p.history.as_ref()) {
         report.history_sheet = Some(add_history(book, table)?);
     }
     Ok(())
 }
 
 /// 저장한 뒤 쓴 칸을 다시 읽어 확인한다.
-fn verify(ws: &Dispatch, plan: &ExportPlan) -> Result<Vec<CellRef>> {
+fn verify(sheet: u32, ws: &Dispatch, plan: &ExportPlan) -> Result<Vec<SheetCell>> {
     let t = Target { ws, origin: plan.origin };
     let mut bad = Vec::new();
     for b in &plan.blocks {
@@ -325,7 +333,7 @@ fn verify(ws: &Dispatch, plan: &ExportPlan) -> Result<Vec<CellRef>> {
                 v => v.clone(),
             };
             if got != want {
-                bad.push(CellRef::new(b.range.row + i as u32, b.range.col));
+                bad.push(SheetCell::new(sheet, CellRef::new(b.range.row + i as u32, b.range.col)));
             }
         }
     }
@@ -336,6 +344,22 @@ fn sheet_of(book: &Dispatch, sheet: &str) -> Result<Dispatch> {
     book.obj("Worksheets")?
         .obj_call("Item", vec![Var::str(sheet)])
         .map_err(|_| ExcelError::SheetNotFound(sheet.to_string()))
+}
+
+/// 쓸 시트를 모두 먼저 찾는다(없는 시트가 있으면 아무것도 쓰지 않는다).
+fn sheets_of<'a>(book: &Dispatch, plans: &'a [(String, ExportPlan)]) -> Result<Vec<(Dispatch, &'a ExportPlan)>> {
+    plans.iter().map(|(name, plan)| Ok((sheet_of(book, name)?, plan))).collect()
+}
+
+/// 쓰고 저장한 뒤 시트마다 다시 읽어 확인한다.
+fn write_and_save(book: &Dispatch, plans: &[(String, ExportPlan)], report: &mut SaveReport) -> Result<()> {
+    let sheets = sheets_of(book, plans)?;
+    apply_all(book, &sheets, report)?;
+    book.call("Save", vec![])?;
+    for (i, (ws, plan)) in sheets.iter().enumerate() {
+        report.mismatched.extend(verify(i as u32, ws, plan)?);
+    }
+    Ok(())
 }
 
 fn extension(name: &str) -> String {
@@ -392,8 +416,13 @@ impl Session {
         Ok(out)
     }
 
-    /// 원본 통합문서에 쓰고 저장한다.
+    /// 원본 통합문서의 한 시트에 쓰고 저장한다. [`Session::save_into_multi`] 참고.
     pub fn save_into(&mut self, workbook_id: &str, sheet: &str, plan: &ExportPlan) -> Result<SaveReport> {
+        self.save_into_multi(workbook_id, &[(sheet.to_string(), plan.clone())])
+    }
+
+    /// 원본 통합문서의 시트들(이름, 계획)에 쓰고 한 번 저장한다. '변경 이력' 시트는 하나만 더한다.
+    pub fn save_into_multi(&mut self, workbook_id: &str, plans: &[(String, ExportPlan)]) -> Result<SaveReport> {
         let started = std::time::Instant::now();
         let book = self.workbook(workbook_id)?.clone();
         if book.get_string("Path").unwrap_or_default().is_empty() {
@@ -406,18 +435,25 @@ impl Session {
                 "원본이 읽기 전용으로 열려 있습니다. '다른 이름으로 저장'을 골라 주세요".into(),
             ));
         }
-        let ws = sheet_of(&book, sheet)?;
         let mut report = SaveReport { path: book.get_string("FullName")?, ..Default::default() };
-        apply(&book, &ws, plan, &mut report)?;
-        book.call("Save", vec![])?;
-        report.mismatched = verify(&ws, plan)?;
+        write_and_save(&book, plans, &mut report)?;
         report.ms = started.elapsed().as_millis() as u64;
         Ok(report)
     }
 
-    /// 원본의 지금 상태를 `path`로 복사하고, 숨은 Excel에서 그 복사본에 쓰고 저장한다. 원본은 그대로 둔다.
-    /// 실패하면 만들다 만 파일은 지운다.
+    /// 원본의 지금 상태를 `path`로 복사하고 한 시트에 쓴다. [`Session::save_copy_multi`] 참고.
     pub fn save_copy(&mut self, workbook_id: &str, sheet: &str, plan: &ExportPlan, path: &Path) -> Result<SaveReport> {
+        self.save_copy_multi(workbook_id, &[(sheet.to_string(), plan.clone())], path)
+    }
+
+    /// 원본의 지금 상태를 `path`로 복사하고, 숨은 Excel에서 그 복사본의 시트들에 쓰고 저장한다. 원본은 그대로 둔다.
+    /// 실패하면 만들다 만 파일은 지운다.
+    pub fn save_copy_multi(
+        &mut self,
+        workbook_id: &str,
+        plans: &[(String, ExportPlan)],
+        path: &Path,
+    ) -> Result<SaveReport> {
         let started = std::time::Instant::now();
         let source = self.workbook(workbook_id)?.clone();
         let source_ext = extension(&source.get_string("Name")?);
@@ -446,11 +482,8 @@ impl Session {
                     vec![Var::str(&full_text), Var::i32(0) /* UpdateLinks: 안 함 */, Var::bool(false)],
                 )?;
                 let saved = (|| -> Result<SaveReport> {
-                    let ws = sheet_of(&book, sheet)?;
                     let mut report = SaveReport { path: full_text.clone(), ..Default::default() };
-                    apply(&book, &ws, plan, &mut report)?;
-                    book.call("Save", vec![])?;
-                    report.mismatched = verify(&ws, plan)?;
+                    write_and_save(&book, plans, &mut report)?;
                     Ok(report)
                 })();
                 let _ = book.call("Close", vec![Var::bool(false)]);

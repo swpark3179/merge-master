@@ -3,9 +3,9 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use collect_core::detect::{TableGuess, column_labels};
-use collect_core::history::{self, BatchOrigin, ChangeEntry, HistoryFilter, HistoryPage, RevertPlan};
-use collect_core::{CellRef, CellValue};
+use collect_core::history::{self, BatchOrigin, ChangeEntry, HistoryFilter, HistoryPage, RevertPlan, SheetLabels};
+use collect_core::{CellRef, CellValue, SheetCell};
+use collect_server::Shared;
 use collect_store::SnapshotMeta;
 use serde::Serialize;
 use tauri::State;
@@ -30,6 +30,7 @@ pub async fn history_query(
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct Timeline {
+    pub sheet: u32,
     pub at: CellRef,
     /// 불러온 원본 값.
     #[ts(as = "Option<CellValue>", optional)]
@@ -42,25 +43,22 @@ pub struct Timeline {
 }
 
 #[tauri::command]
-pub async fn history_timeline(state: State<'_, AppState>, at: CellRef) -> CmdResult<Timeline> {
+pub async fn history_timeline(state: State<'_, AppState>, sheet: u32, at: CellRef) -> CmdResult<Timeline> {
     state
         .session()?
         .with(move |s| {
-            let cols = s.model.cols.max(1);
+            let slot = s.sheets.get(sheet as usize).ok_or("없는 시트입니다")?;
+            let cols = slot.model.cols.max(1);
+            let current = slot.model.cell(at).map(|c| c.v.clone()).unwrap_or_default();
             let original = s
                 .snapshots()
                 .first()
                 .and_then(|m| s.snapshot_values(m.id))
-                .and_then(|v| v.get((at.row * cols + at.col) as usize).cloned())
+                .and_then(|v| v.get(sheet as usize)?.get((at.row * cols + at.col) as usize).cloned())
                 .unwrap_or_default();
-            Timeline {
-                at,
-                original,
-                current: s.model.cell(at).map(|c| c.v.clone()).unwrap_or_default(),
-                entries: history::timeline(s.history(), 0, at),
-            }
+            Ok(Timeline { sheet, at, original, current, entries: history::timeline(s.history(), sheet, at) })
         })
-        .await
+        .await?
 }
 
 #[derive(Serialize, TS)]
@@ -70,7 +68,7 @@ pub struct RevertResult {
     /// 되돌린 칸 수. `stale`이 있고 `force`가 아니면 0(아무것도 하지 않음).
     pub changed: u32,
     /// 기록 뒤에 다시 바뀐 칸(되돌리면 그 변경도 덮어쓴다).
-    pub stale: Vec<CellRef>,
+    pub stale: Vec<SheetCell>,
 }
 
 async fn revert(state: &AppState, pick: Pick, force: bool) -> CmdResult<RevertResult> {
@@ -84,13 +82,25 @@ async fn revert(state: &AppState, pick: Pick, force: bool) -> CmdResult<RevertRe
             if entries.is_empty() {
                 return Err("기록을 찾을 수 없습니다".to_string());
             }
-            let RevertPlan { changes, stale } = history::revert_plan(s.model, &entries);
+            // 시트마다 되돌릴 값(한 묶음은 한 시트지만, 칸 여럿을 고르면 여러 시트일 수 있다).
+            let mut plans: Vec<(usize, RevertPlan)> = Vec::new();
+            for (i, slot) in s.sheets.iter().enumerate() {
+                let mine: Vec<&ChangeEntry> = entries.iter().copied().filter(|e| e.sheet as usize == i).collect();
+                if !mine.is_empty() {
+                    plans.push((i, history::revert_plan(&slot.model, &mine)));
+                }
+            }
+            let stale: Vec<SheetCell> =
+                plans.iter().flat_map(|(i, p)| p.stale.iter().map(|at| SheetCell::new(*i as u32, *at))).collect();
             if !stale.is_empty() && !force {
                 return Ok(RevertResult { changed: 0, stale });
             }
-            let n = changes.len() as u32;
             let user = s.host_name().to_string();
-            s.host_set(&user, BatchOrigin::Revert, changes);
+            let mut n = 0;
+            for (i, RevertPlan { changes, .. }) in plans {
+                n += changes.len() as u32;
+                s.host_set(&user, BatchOrigin::Revert, i, changes);
+            }
             Ok(RevertResult { changed: n, stale })
         })
         .await?
@@ -115,17 +125,17 @@ pub async fn history_revert_batch(state: State<'_, AppState>, batch: String, for
 
 /// 셀 타임라인의 '이 값으로'.
 #[tauri::command]
-pub async fn history_set_value(state: State<'_, AppState>, at: CellRef, value: CellValue) -> CmdResult<()> {
+pub async fn history_set_value(state: State<'_, AppState>, sheet: u32, at: CellRef, value: CellValue) -> CmdResult<()> {
     state
         .session()?
         .with(move |s| {
             let user = s.host_name().to_string();
-            s.host_set(&user, BatchOrigin::Revert, vec![(at, value)]);
+            s.host_set(&user, BatchOrigin::Revert, sheet as usize, vec![(at, value)]);
         })
         .await
 }
 
-/// CSV로 내보낸다(필터에 걸린 기록 전부). 쓴 줄 수를 돌려준다.
+/// CSV로 내보낸다(필터에 걸린 기록 전부). 쓴 줄 수를 돌려준다. 시트가 둘 이상이면 '시트' 열이 있다.
 #[tauri::command]
 pub async fn history_export_csv(state: State<'_, AppState>, filter: HistoryFilter, path: PathBuf) -> CmdResult<u32> {
     let offset = chrono::Local::now().offset().local_minus_utc() / 60;
@@ -133,7 +143,7 @@ pub async fn history_export_csv(state: State<'_, AppState>, filter: HistoryFilte
         .session()?
         .with(move |s| {
             let entries: Vec<ChangeEntry> = s.history().iter().filter(|e| filter.matches(e)).cloned().collect();
-            let sheets = [history::SheetLabels::of(s.model)];
+            let sheets: Vec<SheetLabels> = s.sheets.iter().map(|x| SheetLabels::of(&x.model)).collect();
             (history::to_csv(&entries, &sheets, offset), entries.len() as u32)
         })
         .await?;
@@ -148,10 +158,22 @@ pub async fn history_export_csv(state: State<'_, AppState>, filter: HistoryFilte
 #[ts(export)]
 pub struct SnapshotView {
     pub meta: SnapshotMeta,
-    /// 지금과 다른 칸 수.
+    /// 지금과 다른 칸 수(모든 시트).
     pub diff: u32,
     /// 이 스냅샷 뒤에 바꾼 사람.
     pub users_after: Vec<String>,
+}
+
+/// 스냅샷과 지금 시트들이 다른 칸(시트 순번, 칸).
+fn diff_all(values: &[Vec<CellValue>], s: &Shared<'_>) -> Vec<SheetCell> {
+    values
+        .iter()
+        .zip(s.sheets.iter())
+        .enumerate()
+        .flat_map(|(i, (v, slot))| {
+            history::diff(v, &slot.model).into_iter().map(move |at| SheetCell::new(i as u32, at))
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -163,7 +185,7 @@ pub async fn snapshot_list(state: State<'_, AppState>) -> CmdResult<Vec<Snapshot
                 .snapshots()
                 .into_iter()
                 .map(|meta| {
-                    let diff = s.snapshot_values(meta.id).map_or(0, |v| history::diff(&v, s.model).len() as u32);
+                    let diff = s.snapshot_values(meta.id).map_or(0, |v| diff_all(&v, s).len() as u32);
                     let users_after = history::users_after(s.history(), meta.seq);
                     SnapshotView { meta, diff, users_after }
                 })
@@ -183,6 +205,7 @@ pub async fn snapshot_take(state: State<'_, AppState>, label: String) -> CmdResu
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct DiffCell {
+    pub sheet: u32,
     pub at: CellRef,
     #[ts(as = "Option<CellValue>", optional)]
     pub snapshot: CellValue,
@@ -195,8 +218,18 @@ pub struct DiffCell {
 #[ts(export)]
 pub struct SnapshotDiff {
     pub total: u32,
-    /// 앞 몇 칸(행 우선).
+    /// 앞 몇 칸(시트 순서, 행 우선).
     pub cells: Vec<DiffCell>,
+    /// 시트마다 이름·위치·열 이름(주소·항목 표시용).
+    pub sheets: Vec<DiffSheet>,
+}
+
+#[derive(Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct DiffSheet {
+    pub name: String,
+    pub origin: CellRef,
     pub labels: Vec<String>,
 }
 
@@ -206,21 +239,28 @@ pub async fn snapshot_diff(state: State<'_, AppState>, id: u32) -> CmdResult<Sna
         .session()?
         .with(move |s| {
             let values = s.snapshot_values(id).ok_or("스냅샷을 찾을 수 없습니다")?;
-            let cols = s.model.cols.max(1);
-            let diff = history::diff(&values, s.model);
-            let table = TableGuess { range: s.model.bounds(), header_rows: s.model.header_rows };
+            let diff = diff_all(&values, s);
+            let cell = |c: &SheetCell| {
+                let slot = &s.sheets[c.sheet as usize];
+                let cols = slot.model.cols.max(1);
+                DiffCell {
+                    sheet: c.sheet,
+                    at: c.at(),
+                    snapshot: values[c.sheet as usize][(c.row * cols + c.col) as usize].clone(),
+                    current: slot.model.cell(c.at()).map(|x| x.v.clone()).unwrap_or_default(),
+                }
+            };
             Ok(SnapshotDiff {
                 total: diff.len() as u32,
-                cells: diff
+                cells: diff.iter().take(DIFF_LIMIT).map(cell).collect(),
+                sheets: s
+                    .sheets
                     .iter()
-                    .take(DIFF_LIMIT)
-                    .map(|&at| DiffCell {
-                        at,
-                        snapshot: values[(at.row * cols + at.col) as usize].clone(),
-                        current: s.model.cell(at).map(|c| c.v.clone()).unwrap_or_default(),
+                    .map(|x| {
+                        let l = SheetLabels::of(&x.model);
+                        DiffSheet { name: l.name, origin: l.origin, labels: l.labels }
                     })
                     .collect(),
-                labels: column_labels(s.model, &table),
             })
         })
         .await?

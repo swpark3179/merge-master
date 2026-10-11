@@ -2,7 +2,11 @@
 import type { ServiceInfo } from "./ServiceInfo";
 import type { SheetModel } from "./SheetModel";
 
-export type ResumeResult = { model: SheetModel, 
+export type ResumeResult = { 
+/**
+ * 되살린 시트들(세션 안 순번 순서).
+ */
+models: Array<SheetModel>, 
 /**
  * 다시 연 서비스(켜져 있었을 때).
  */

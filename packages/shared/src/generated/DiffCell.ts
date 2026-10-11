@@ -2,4 +2,4 @@
 import type { CellRef } from "./CellRef";
 import type { CellValue } from "./CellValue";
 
-export type DiffCell = { at: CellRef, snapshot?: CellValue, current?: CellValue, };
+export type DiffCell = { sheet: number, at: CellRef, snapshot?: CellValue, current?: CellValue, };
