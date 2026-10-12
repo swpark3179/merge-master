@@ -363,6 +363,36 @@ test("Alt+Enter 여러 줄은 그리드에 줄을 나눠 보이고, 사이드바
   await expect(a.locator(".side-panel")).toBeVisible();
 });
 
+test("크기 조절: 호스트가 허용하면 참여자가 머리글 경계를 끌어 열 너비를 바꾸고 모두에게 보인다", async ({
+  browser,
+  request,
+}) => {
+  const a = await open(browser, "오세린");
+  const b = await open(browser, "김민지");
+  const colHead = (page: Page, letter: string) => page.locator(".mmg-colhead", { hasText: new RegExp(`^${letter}$`) });
+  const width = async (page: Page) => (await colHead(page, "H").boundingBox())!.width;
+  // 기본은 금지: 머리글 경계 손잡이가 없다.
+  await expect(colHead(a, "H")).toBeVisible();
+  await expect(colHead(a, "H").locator(".mmg-resize-col")).toHaveCount(0);
+  expect((await request.post("/__dev/config", { data: { resize: true } })).ok()).toBe(true);
+  try {
+    const grip = colHead(a, "H").locator(".mmg-resize-col");
+    await expect(grip).toHaveCount(1);
+    await expect(a.locator(".status")).toContainText("머리글 경계를 끌어 크기 조절");
+    const before = await width(b);
+    const box = (await grip.boundingBox())!;
+    await a.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await a.mouse.down();
+    await a.mouse.move(box.x + 60, box.y + 5, { steps: 5 });
+    await a.mouse.up();
+    await expect.poll(() => width(a)).toBeGreaterThan(before + 40);
+    await expect.poll(() => width(b)).toBeGreaterThan(before + 40);
+  } finally {
+    await request.post("/__dev/config", { data: { resize: false } });
+  }
+  await expect(colHead(a, "H").locator(".mmg-resize-col")).toHaveCount(0);
+});
+
 // 표에 행을 붙이므로 이 파일의 마지막에 둔다(개발 서버 상태가 남는다).
 test("행 추가: 표 아래에 붙인 행은 모두에게 보이고 추가한 사람의 행이 된다", async ({ browser, request }) => {
   const a = await open(browser, "한지우");

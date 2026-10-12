@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { a1, colLetters, formatValue, rgbHex } from "./format";
+import { a1, colLetters, formatValue, parseHex, rgbHex } from "./format";
 
 describe("formatValue", () => {
   it("숫자 표시 형식", () => {
@@ -38,5 +38,14 @@ describe("주소 유틸", () => {
   it("색", () => {
     expect(rgbHex(0xbfbfbf)).toBe("#bfbfbf");
     expect(rgbHex(0xff)).toBe("#0000ff");
+  });
+
+  it("색 코드 읽기", () => {
+    expect(parseHex("#ff00ff")).toBe(0xff00ff);
+    expect(parseHex(" FF00FF ")).toBe(0xff00ff);
+    expect(parseHex("#f0f")).toBe(0xff00ff);
+    expect(parseHex("#000000")).toBe(0);
+    expect(parseHex(rgbHex(0x12ab34))).toBe(0x12ab34);
+    for (const bad of ["", "#", "#ff00f", "#ff00ffa", "red", "#gg0000"]) expect(parseHex(bad)).toBeNull();
   });
 });

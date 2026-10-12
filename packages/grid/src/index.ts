@@ -37,3 +37,4 @@ export {
   selectionRange,
 } from "./selection";
 export type { GridSelection } from "./selection";
+export { resizeRuns, resizeSpan, withLineSize } from "./sizes";

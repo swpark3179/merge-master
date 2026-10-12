@@ -3,6 +3,7 @@ export type { Activity } from "./Activity";
 export type { AfterSave } from "./AfterSave";
 export type { AssigneeCandidate } from "./AssigneeCandidate";
 export type { Assignment } from "./Assignment";
+export type { Axis } from "./Axis";
 export type { BatchOrigin } from "./BatchOrigin";
 export type { BatchView } from "./BatchView";
 export type { BorderEdge } from "./BorderEdge";

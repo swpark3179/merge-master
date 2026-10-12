@@ -5,10 +5,11 @@
 //! - 편집: 셀 잠금, 셀 수정 묶음(기준 버전으로 충돌 감지), 진행률, 마감 읽기 전용, 서식, 행 이력(4단계)
 //! - 소통: 공지(읽음 확인), 셀 강조(확인), 채팅(전체·호스트와 1:1)(6단계)
 //! - 행 추가: 참여자가 표 아래에 행을 붙인다(참여자 권한 '행 추가')
+//! - 크기 조절: 열 너비·행 높이(호스트, 참여자 권한 '크기 조절'이면 참여자도). 모두에게 보인다
 
 pub use collect_core::access::PersonProgress;
 use collect_core::config::{ColumnRule, Permissions};
-use collect_core::format::StylePatch;
+use collect_core::format::{Axis, StylePatch};
 pub use collect_core::history::{BatchOrigin, ChangeEntry, ChangeKind};
 use collect_core::{CellRange, CellRef, CellStyle, CellValue, SheetCell, SheetModel};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,8 @@ use ts_rs::TS;
 
 /// 2: 4단계 편집 메시지 추가. 3: 6단계 공지·강조·채팅, 묶음 출처. 4: IP 명단 입장(`known`), 행 추가.
 /// 5: 여러 시트(칸·범위가 든 메시지마다 `sheet` = 세션 안 시트 순번, `welcome.sheets`).
-pub const PROTOCOL_VERSION: u32 = 5;
+/// 6: 열 너비·행 높이(`resize` → 모두에게 `resized`).
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// 채팅 받는 쪽. 참여자는 전체나 호스트에게, 호스트는 전체나 한 사람에게 보낸다.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
@@ -169,6 +171,16 @@ pub enum ClientMsg {
         #[serde(default)]
         sheet: u32,
         count: u32,
+    },
+    /// `from`부터 `count`개 열 너비(행 높이)를 `size`(pt)로(그 시트의 참여자 권한 '크기 조절'일 때만, 행은 내게 보이는 행만).
+    /// 결과는 모두에게 `resized`.
+    Resize {
+        #[serde(default)]
+        sheet: u32,
+        axis: Axis,
+        from: u32,
+        count: u32,
+        size: f32,
     },
 }
 
@@ -412,6 +424,16 @@ pub enum ServerMsg {
         by: String,
         sheet: u32,
         range: CellRange,
+    },
+    /// 누군가(호스트 포함) 열 너비·행 높이를 바꿨다: `from`부터 `count`개 줄이 `size`(pt, 서버가 맞춘 값). 숨긴 줄
+    /// (크기 0 — 남의 행 숨김으로 숨은 행 포함)은 그대로 둔다.
+    Resized {
+        by: String,
+        sheet: u32,
+        axis: Axis,
+        from: u32,
+        count: u32,
+        size: f32,
     },
     /// 이 연결이 곧 닫힌다(호스트가 서비스·업무 공개를 멈춤). `ended`면 호스트가 업무를 끝냈다(다시 열리지 않는다).
     Closing {

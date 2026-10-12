@@ -298,7 +298,8 @@ struct FormatResult {
     view: ConfigView,
 }
 
-/// 서식 도구 줄. 병합이 바뀌면 입력 가능 셀도 바뀌므로 설정 보기를 함께 돌려준다.
+/// 서식 도구 줄·크기 조절(1b, 열 너비·행 높이는 1d에서도). 병합이 바뀌면 입력 가능 셀도 바뀌므로 설정 보기를 함께
+/// 돌려준다. 열 너비·행 높이는 권한이 그대로라 참여자에게 새 시트를 다시 보내지 않고 바뀐 크기만 알린다.
 #[tauri::command]
 async fn sheet_format(
     state: State<'_, AppState>,
@@ -310,10 +311,14 @@ async fn sheet_format(
     state
         .session(&job)?
         .with(move |s| {
-            let slot = s.sheets.get_mut(sheet).ok_or("없는 시트입니다")?;
-            apply_format(&mut slot.model, edit).map_err(|e| e.to_string())?;
-            let model = slot.model.clone();
-            s.changed();
+            if let Some((axis, from, count, size)) = edit.as_resize() {
+                s.resize(sheet, axis, from, count, size)?;
+            } else {
+                let slot = s.sheets.get_mut(sheet).ok_or("없는 시트입니다")?;
+                apply_format(&mut slot.model, edit).map_err(|e| e.to_string())?;
+                s.changed();
+            }
+            let model = s.sheets[sheet].model.clone();
             let view = view_or_host(s, sheet, viewer.as_deref())?;
             Ok(FormatResult { model, view })
         })

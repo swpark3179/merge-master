@@ -279,8 +279,16 @@ try {
   await colHead("E").click();
   check((await columnPanel.getByLabel("필수").count()) === 0, "잠금 열(E)은 열 속성에 필수 체크가 없음");
 
+  // 칸 하나를 골라도 위쪽 입력/잠금은 열 전체: 칸 단위는 오른쪽 셀 예외에서만.
   await cfg.locator('.mmg-cell[data-r="5"][data-c="5"]').click();
-  await roleBar.getByRole("button", { name: "잠금", exact: true }).click();
+  await expect(roleBar).toContainText("F열 전체에 적용");
+  check(
+    (await roleBar.getByRole("button", { name: "입력", exact: true }).getAttribute("aria-pressed")) === "true",
+    "F6만 골라도 역할 줄은 F열 역할(입력)",
+  );
+  const exceptions = cfg.getByRole("region", { name: "셀 예외" });
+  await exceptions.getByLabel("예외 종류").selectOption("locked");
+  await exceptions.getByRole("button", { name: "+ 선택 셀을 예외로" }).click();
   await expect(legend).toContainText("예외 1");
   await expect(cfg.locator(".exception-row").first()).toContainText("F6");
   check(
@@ -389,7 +397,11 @@ try {
   console.log("[1c 서비스]");
   await page.getByRole("button", { name: "다음: 서비스 →" }).click();
   const svc = page.locator(".service-screen");
+  // 이 PC는 IP 명단 밖이라 내 이름이 채워지지 않는다: 비어 있으면 빨간 테두리.
+  await expect(svc.getByLabel("내 이름")).toHaveClass(/invalid/);
+  check(true, "내 이름이 비어 있으면 빨간 테두리");
   await svc.getByLabel("내 이름").fill("박지훈 (기획팀)");
+  await expect(svc.getByLabel("내 이름")).not.toHaveClass(/invalid/);
   await expect(svc.getByLabel("취합 제목")).toHaveValue("variants");
   check(true, "취합 제목 기본값 = 엑셀 파일 이름(variants)");
   await svc.getByLabel("취합 제목").fill("하반기 교육 수요 조사");
@@ -531,6 +543,25 @@ try {
   await expect(mon.getByTestId("mon-rows")).toContainText("1,000행 중 170행");
   await mon.getByRole("button", { name: "필터 지우기" }).click();
   check(true, "담당자별 진행률을 누르면 그 사람 행만(170행)");
+
+  // 크기 조절: 호스트가 모니터링 그리드의 H열 머리글 경계를 끌면 참여자 화면에도 바로 보인다(참여자는 기본 금지).
+  const colHeadOf = (scope, letter) => scope.locator(".mmg-colhead", { hasText: new RegExp(`^${letter}$`) });
+  check(
+    (await colHeadOf(p4, "H").locator(".mmg-resize-col").count()) === 0,
+    "참여자 크기 조절은 기본 금지(손잡이 없음)",
+  );
+  const pWidth = async () => (await colHeadOf(p4, "H").boundingBox()).width;
+  const pWidthBefore = await pWidth();
+  const monGrip = await colHeadOf(mon, "H").locator(".mmg-resize-col").boundingBox();
+  await page.mouse.move(monGrip.x + monGrip.width / 2, monGrip.y + monGrip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(monGrip.x + 50, monGrip.y + 5, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(pWidth, { timeout: 10_000 }).toBeGreaterThan(pWidthBefore + 30);
+  check(
+    true,
+    `모니터링에서 H열 너비 변경 → 참여자 화면에 반영 (${Math.round(pWidthBefore)} → ${Math.round(await pWidth())}px)`,
+  );
 
   // 범위 삭제 → 빨간 묶음 → 그 자리에서 되돌리기
   await pcell(2, 5).click();

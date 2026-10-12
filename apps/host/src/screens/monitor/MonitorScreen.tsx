@@ -1,7 +1,8 @@
 import type { CellDecoration, GridMark, GridSelection, SheetGridHandle } from "@mm/grid";
-import { filterOptions, rowsNotMatching, SheetGrid, withHiddenRows } from "@mm/grid";
+import { filterOptions, rowsNotMatching, SheetGrid, withHiddenRows, withLineSize } from "@mm/grid";
 import type {
   Activity,
+  Axis,
   BatchView,
   CellRange,
   CellRef,
@@ -41,6 +42,7 @@ import { errorText, jobEvent } from "../../api";
 import { useApi, useJobId } from "../../job";
 import { useToast } from "../../frame";
 import { SheetTabs } from "../../SheetTabs";
+import { sizeEdits } from "../../sizes";
 import { useHostEditor } from "../../useHostEditor";
 
 type Panel = "activity" | "notice" | "highlight" | "chat";
@@ -260,7 +262,7 @@ function SheetMonitor({
       window.clearTimeout(refreshTimer.current);
       refreshTimer.current = window.setTimeout(refresh, 400);
       if (ev.sheet !== sheet) return;
-      // 바뀐 칸을 바꾼 사람 색으로 잠깐 물들인다(수식 결과는 by가 빈 문자열이라 빼고).
+      // 바뀐 칸을 바꾼 사람 색으로 잠깐 물들인다(수식 결과는 by가 빈 문자열이라 빼고). 크기 조절은 물들이지 않는다.
       if (ev.type === "cells" && ev.by) {
         const seq = ++flashSeq.current;
         const keys = ev.cells.map((u) => `${u.row}:${u.col}`);
@@ -283,6 +285,7 @@ function SheetMonitor({
       setData((d) => {
         if (!d) return d;
         const m = d.model;
+        if (ev.type === "resized") return { ...d, model: withLineSize(m, ev.axis, ev.from, ev.count, ev.size) };
         if (ev.type === "cells") {
           for (const u of ev.cells) {
             const cell = m.cells[u.row * m.cols + u.col];
@@ -465,6 +468,22 @@ function SheetMonitor({
     commit: commitCells,
     notify: toast,
   });
+
+  // 머리글 경계를 끌어 열 너비·행 높이를 바꾼다(1b와 같이, 모두에게 보인다). 바뀐 크기는 `resized`로도 다시 온다.
+  const onResize = async (axis: Axis, index: number, size: number) => {
+    if (!viewModel) return;
+    setError(null);
+    try {
+      for (const edit of sizeEdits(viewModel, sel, axis, index, size)) {
+        const r = await api.sheetFormat(sheet, edit, null);
+        setData((d) =>
+          d ? { ...d, model: { ...d.model, colWidths: r.model.colWidths, rowHeights: r.model.rowHeights } } : d,
+        );
+      }
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
 
   const decorate = (r: number, c: number): CellDecoration | undefined => {
     const d = decorateState(r, c);
@@ -654,8 +673,11 @@ function SheetMonitor({
           </button>
         )}
         <span className="spacer" />
-        <span className="muted small" title="칸을 두 번 누르거나 바로 입력해 고치고, Delete로 지웁니다">
-          두 번 눌러 고치기
+        <span
+          className="muted small"
+          title="칸을 두 번 누르거나 바로 입력해 고치고, Delete로 지웁니다. 열·행 머리글 경계를 끌면 너비·높이가 바뀝니다(참여자에게도 보입니다)."
+        >
+          두 번 눌러 고치기 · 머리글 경계를 끌어 크기 조절
         </span>
         <span className="muted small" data-testid="mon-rows">
           {(model.rows - model.headerRows).toLocaleString()}행 중 {shown.toLocaleString()}행
@@ -722,6 +744,7 @@ function SheetMonitor({
             overlay={editor.overlay}
             onKey={editor.onKey}
             onCellDoubleClick={editor.onCellDoubleClick}
+            onResize={(axis, index, size) => void onResize(axis, index, size)}
           />
           <SheetTabs
             names={sheets.map((m) => m.sheet)}

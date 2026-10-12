@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use collect_core::access::{Viewer, flag};
 use collect_core::config::{CellException, ExceptionKind, FormatPolicy};
-use collect_core::format::{FormatEdit, StylePatch, apply_format};
+use collect_core::format::{Axis, FormatEdit, StylePatch, apply_format, resize};
 use collect_core::validate::normalize;
 use collect_core::{CellRange, CellRef, CellValue};
 use tokio::time::Instant;
@@ -596,6 +596,38 @@ impl State {
         self.persist_sheet();
         self.feed(HostEvent::Styles { sheet, styles: styles.clone(), changes: changes.clone() });
         self.broadcast(&ServerMsg::Styles { sheet, styles, changes }, None);
+    }
+
+    /// 참여자가 열 너비·행 높이를 바꾼다(그 시트의 참여자 권한 '크기 조절'). 행은 그 사람에게 보이는 행만(남의 행 숨김).
+    /// 모두에게 `resized`를 보낸다(보낸 사람도 서버가 맞춘 크기로 그린다).
+    pub(super) fn resize(&mut self, conn: ConnId, sheet: u32, axis: Axis, from: u32, count: u32, size: f32) {
+        let Some((name, p)) = self.person_of(conn) else { return };
+        self.touch(conn);
+        let error = |s: &State, message: &str| s.send(conn, ServerMsg::Error { message: message.into() });
+        let Some(si) = self.sheet_index(sheet) else { return error(self, super::NO_SHEET) };
+        if !self.sheets[si].config.permissions.resize {
+            return error(self, "이 시트에서는 열 너비·행 높이를 바꿀 수 없습니다");
+        }
+        if self.read_only {
+            return error(self, READ_ONLY);
+        }
+        let model = &self.sheets[si].model;
+        let end = from.saturating_add(count.max(1)).min(if axis == Axis::Col { model.cols } else { model.rows });
+        if axis == Axis::Row && (from..end).any(|r| !self.row_visible(si, p, r)) {
+            return error(self, "보이는 행만 높이를 바꿀 수 있습니다");
+        }
+        match resize(&mut self.sheets[si].model, axis, from, count, size) {
+            Ok(size) => self.resized(si, &name, axis, from, count, size),
+            Err(e) => error(self, &e.to_string()),
+        }
+    }
+
+    /// 열 너비·행 높이가 바뀌었다(시트에는 이미 반영): 시트를 남기고 호스트 화면과 모든 참여자에게 알린다.
+    pub(super) fn resized(&mut self, sheet: usize, by: &str, axis: Axis, from: u32, count: u32, size: f32) {
+        let sheet = sheet as u32;
+        self.persist_sheet();
+        self.feed(HostEvent::Resized { sheet, axis, from, count, size });
+        self.broadcast(&ServerMsg::Resized { by: by.to_string(), sheet, axis, from, count, size }, None);
     }
 
     /// 호스트(Excel)가 다시 계산한 수식 칸. 바뀐 칸만 시트마다 보낸다(이력에는 남기지 않는다).

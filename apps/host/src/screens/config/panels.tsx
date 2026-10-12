@@ -161,7 +161,10 @@ export function ExceptionsPanel({ s }: { s: ConfigState }) {
     <section className="side-card" aria-label="셀 예외">
       <b>셀 예외</b>
       {list.length === 0 && (
-        <div className="muted small">열 역할 위에 셀 단위로 덮어씁니다. 입력 금지가 항상 우선.</div>
+        <div className="muted small">
+          칸 단위 입력 가능·입력 금지는 여기서만 정합니다(위쪽 입력/잠금은 열 전체). 열 역할 위에 덮어쓰고, 입력 금지가
+          항상 우선.
+        </div>
       )}
       {list.map((e, i) => (
         <div key={`${formatRange(e.range)}-${i}`} className="exception-row">
@@ -418,6 +421,29 @@ export function PermissionsPanel({ s }: { s: ConfigState }) {
             ] as const
           ).map(([v, label]) => (
             <button key={v} className={p.othersRows === v ? "on" : ""} onClick={() => set({ othersRows: v })}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div
+        className="kv"
+        title="허용하면 참여자도 열·행 머리글 경계를 끌어 너비·높이를 바꿀 수 있습니다(모두에게 보입니다)"
+      >
+        <span className="muted">크기 조절</span>
+        <div className="segmented" role="group" aria-label="참여자 크기 조절">
+          {(
+            [
+              [false, "금지"],
+              [true, "허용"],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={label}
+              className={p.resize === v ? "on" : ""}
+              aria-pressed={p.resize === v}
+              onClick={() => set({ resize: v })}
+            >
               {label}
             </button>
           ))}

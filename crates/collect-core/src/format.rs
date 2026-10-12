@@ -78,6 +78,26 @@ pub enum FormatEdit {
     },
 }
 
+/// 크기를 바꿀 줄의 방향: 열 너비 · 행 높이.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum Axis {
+    Col,
+    Row,
+}
+
+impl FormatEdit {
+    /// 크기 바꾸기(열 너비·행 높이)면 `(방향, 시작, 개수, 크기 pt)`.
+    pub fn as_resize(&self) -> Option<(Axis, u32, u32, f32)> {
+        match *self {
+            FormatEdit::ColWidth { from, count, width } => Some((Axis::Col, from, count, width)),
+            FormatEdit::RowHeight { from, count, height } => Some((Axis::Row, from, count, height)),
+            _ => None,
+        }
+    }
+}
+
 /// 열 너비 범위(pt). Excel 최대 열 너비(255자)보다 넉넉히 작다.
 pub const COL_WIDTH_PT: (f32, f32) = (2.0, 1000.0);
 /// 행 높이 범위(pt). Excel 최대 행 높이는 409pt.
@@ -140,42 +160,37 @@ pub fn apply_format(model: &mut SheetModel, edit: FormatEdit) -> Result<(), Form
             model.merges.retain(|m| m.intersect(&range).is_none());
         }
         FormatEdit::ColWidth { from, count, width } => {
-            let hidden = model.hidden_cols.clone();
-            resize(&mut model.col_widths, model.cols, &hidden, from, count, width, COL_WIDTH_PT)?;
+            resize(model, Axis::Col, from, count, width)?;
         }
         FormatEdit::RowHeight { from, count, height } => {
-            let hidden = model.hidden_rows.clone();
-            resize(&mut model.row_heights, model.rows, &hidden, from, count, height, ROW_HEIGHT_PT)?;
+            resize(model, Axis::Row, from, count, height)?;
         }
     }
     Ok(())
 }
 
-/// `sizes[from..from+count]`를 `size`(범위 안으로)로 바꾼다. 숨긴 줄(크기 0으로 둔 줄)은 그대로 둔다.
-fn resize(
-    sizes: &mut Vec<f32>,
-    lines: u32,
-    hidden: &[u32],
-    from: u32,
-    count: u32,
-    size: f32,
-    (min, max): (f32, f32),
-) -> Result<(), FormatError> {
+/// `from`부터 `count`개 열(행)의 크기를 `size`(pt, 범위 안으로·0.25pt 단위)로 바꾸고 실제로 쓴 크기를 돌려준다. 숨긴
+/// 줄(크기 0으로 둔 줄)은 그대로 둔다. 끝을 넘는 개수는 표 안으로 자른다.
+pub fn resize(model: &mut SheetModel, axis: Axis, from: u32, count: u32, size: f32) -> Result<f32, FormatError> {
     if !size.is_finite() {
         return Err(FormatError::BadSize);
     }
+    let (sizes, lines, hidden, (min, max)) = match axis {
+        Axis::Col => (&mut model.col_widths, model.cols, &model.hidden_cols, COL_WIDTH_PT),
+        Axis::Row => (&mut model.row_heights, model.rows, &model.hidden_rows, ROW_HEIGHT_PT),
+    };
     let end = from.saturating_add(count.max(1)).min(lines);
     if from >= end {
         return Err(FormatError::OutOfLines);
     }
     sizes.resize(lines as usize, 0.0);
-    let size = (size * 4.0).round() / 4.0; // Excel처럼 0.25pt 단위
+    let size = ((size * 4.0).round() / 4.0).clamp(min, max); // Excel처럼 0.25pt 단위
     for i in from..end {
         if !hidden.contains(&i) {
-            sizes[i as usize] = size.clamp(min, max);
+            sizes[i as usize] = size;
         }
     }
-    Ok(())
+    Ok(size)
 }
 
 fn patch_style(s: &mut CellStyle, p: &StylePatch, at: CellRef, range: CellRange) {
@@ -350,6 +365,20 @@ mod tests {
         apply_format(&mut m, FormatEdit::ColWidth { from: 8, count: 5, width: 80.0 }).unwrap();
         assert_eq!(m.col_widths.len(), 9);
         assert_eq!(m.col_widths[8], 80.0);
+    }
+
+    #[test]
+    fn resize_returns_written_size() {
+        let mut m = budget();
+        assert_eq!(resize(&mut m, Axis::Col, 1, 1, 33.3), Ok(33.25));
+        assert_eq!(m.col_widths[1], 33.25);
+        assert_eq!(resize(&mut m, Axis::Row, 0, 2, 5000.0), Ok(ROW_HEIGHT_PT.1));
+        assert_eq!(
+            FormatEdit::RowHeight { from: 2, count: 3, height: 20.0 }.as_resize(),
+            Some((Axis::Row, 2, 3, 20.0))
+        );
+        assert_eq!(FormatEdit::Unmerge { range: r("A1") }.as_resize(), None);
+        assert_eq!(serde_json::to_string(&Axis::Col).unwrap(), r#""col""#);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import type {
+  Axis,
   BatchOrigin,
   CellRange,
   CellRef,
@@ -27,7 +28,7 @@ import { loadOutbox, outboxKey, saveOutbox, splitBySheet } from "./outbox";
 import { storageSlug } from "./slug";
 
 /** 서버 `protocol::PROTOCOL_VERSION`과 같아야 한다. */
-const PROTOCOL = 5;
+const PROTOCOL = 6;
 const RETRY_MS = [500, 1000, 2000, 4000, 8000];
 const PING_MS = 20_000;
 const CURSOR_MS = 100;
@@ -442,6 +443,10 @@ export function useSession(slug: string) {
         case "rowsAdded":
           setRowsAdded({ seq: ++rowsSeq.current, by: msg.by, sheet: msg.sheet, range: msg.range });
           break;
+        case "resized":
+          sheetOf(msg.sheet)?.resized(msg.axis, msg.from, msg.count, msg.size);
+          refresh();
+          break;
         case "pong":
           break;
         case "error":
@@ -630,6 +635,12 @@ export function useSession(slug: string) {
   const sendChat = useCallback((to: ChatTo, text: string) => send({ type: "chat", to, text }), [send]);
   /** 지금 시트 표 아래에 빈 행을 붙인다(그 시트의 참여자 권한 '행 추가'). 결과는 새 시트(`welcome`) + `rowsAdded`. */
   const addRows = useCallback((count = 1) => send({ type: "addRows", sheet: activeRef.current, count }), [send]);
+  /** 지금 시트의 열 너비·행 높이를 바꾼다(그 시트의 참여자 권한 '크기 조절'). 결과는 모두에게 `resized`. */
+  const resize = useCallback(
+    (axis: Axis, from: number, count: number, size: number) =>
+      send({ type: "resize", sheet: activeRef.current, axis, from, count, size }),
+    [send],
+  );
 
   const view = welcome?.sheets[active] ?? null;
   const flags = useMemo(() => (view ? decodeFlags(view.flags) : new Uint8Array()), [view]);
@@ -694,6 +705,7 @@ export function useSession(slug: string) {
     ackHighlight,
     sendChat,
     addRows,
+    resize,
     notify,
     dismiss,
     savedName: knownName.current ?? load("name"),

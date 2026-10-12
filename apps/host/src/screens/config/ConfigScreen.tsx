@@ -1,14 +1,15 @@
 import type { CellDecoration, SheetGridHandle } from "@mm/grid";
-import { countCells, SheetGrid } from "@mm/grid";
-import type { Brush, CellRange, ColumnRule, FormatEdit, HAlign, SheetModel, StylePatch } from "@mm/shared";
-import { colLetters, FLAG, formatRange, formatValue, personColor, rgbHex } from "@mm/shared";
+import { countCells, SheetGrid, withHiddenRows } from "@mm/grid";
+import type { Axis, Brush, CellRange, ColumnRule, HAlign, SheetModel, StylePatch } from "@mm/shared";
+import { colLetters, FLAG, formatRange, formatValue, parseHex, personColor, rgbHex } from "@mm/shared";
 import type { ReactNode } from "react";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useToast } from "../../frame";
 import { SheetTabs } from "../../SheetTabs";
+import { sizeEdits } from "../../sizes";
 import { useHostEditor } from "../../useHostEditor";
-import { cellsRole, rangeAccess } from "./access";
+import { rangeAccess } from "./access";
 import {
   AssignBar,
   ColumnPanel,
@@ -94,34 +95,8 @@ function SheetConfig({
   });
 
   // 머리글로 여러 열(행)을 골라 두고 그중 하나의 경계를 끌면 고른 열(행) 모두를 같은 크기로(Excel처럼).
-  const onResize = (axis: "col" | "row", index: number, size: number) => {
-    const r = s.range;
-    let from = index;
-    let count = 1;
-    if (
-      r &&
-      axis === "col" &&
-      r.row <= hr &&
-      r.row + r.rows >= model.rows &&
-      index >= r.col &&
-      index < r.col + r.cols
-    ) {
-      from = r.col;
-      count = r.cols;
-    } else if (
-      r &&
-      axis === "row" &&
-      r.col === 0 &&
-      r.cols === model.cols &&
-      index >= r.row &&
-      index < r.row + r.rows
-    ) {
-      from = r.row;
-      count = r.rows;
-    }
-    const edit: FormatEdit =
-      axis === "col" ? { op: "colWidth", from, count, width: size } : { op: "rowHeight", from, count, height: size };
-    void s.format(edit);
+  const onResize = async (axis: Axis, index: number, size: number) => {
+    for (const edit of sizeEdits(shown, s.range, axis, index, size)) await s.format(edit);
   };
 
   // 머리글 맨 아래 행(병합이면 그 병합의 왼쪽 위)에 열 태그(조회·배정 기준·필수·목록)를 붙인다.
@@ -204,13 +179,11 @@ function SheetConfig({
     [view],
   );
 
-  // '남의 행 숨김' 시점이면 그 행을 크기 0으로 둔다(그리드는 크기 0인 행을 그리지 않는다).
-  const shown = useMemo(() => {
-    if (!view || view.hiddenRows.length === 0) return model;
-    const rowHeights = [...model.rowHeights];
-    for (const r of view.hiddenRows) rowHeights[r] = 0;
-    return { ...model, rowHeights };
-  }, [model, view]);
+  // '남의 행 숨김' 시점이면 그 행을 숨긴 행(크기 0)으로 둔다(그리드는 크기 0인 행을 그리지 않고, 크기 조절도 건너뛴다).
+  const shown = useMemo(
+    () => (view && view.hiddenRows.length > 0 ? withHiddenRows(model, new Set(view.hiddenRows)) : model),
+    [model, view],
+  );
 
   const keyCol = view?.config.assignment.keyCol;
   return (
@@ -264,7 +237,7 @@ function SheetConfig({
                 overlay={editor.overlay}
                 onKey={editor.onKey}
                 onCellDoubleClick={editor.onCellDoubleClick}
-                onResize={onResize}
+                onResize={(axis, index, size) => void onResize(axis, index, size)}
                 className="preview-grid"
               />
             ) : (
@@ -378,6 +351,12 @@ function FormatBar({ s }: { s: ConfigState }) {
           onChange={(e) => style({ fill: { kind: "color", rgb: parseInt(e.target.value.slice(1), 16) } })}
         />
       </label>
+      <FillHex
+        fill={st?.fill}
+        range={range}
+        disabled={disabled}
+        onApply={(r, rgb) => void s.format({ op: "style", range: r, patch: { fill: { kind: "color", rgb } } })}
+      />
       <button className="small ghost" disabled={disabled} onClick={() => style({ fill: { kind: "none" } })}>
         채우기 없음
       </button>
@@ -417,6 +396,74 @@ function FormatBar({ s }: { s: ConfigState }) {
   );
 }
 
+/**
+ * 채우기 색 코드(`#ff00ff`): 고른 칸(활성 칸)의 채우기를 보이고, 고쳐 Enter·붙여넣기·칸 밖으로 나가면 고른 범위에 칠한다.
+ * 한 칸의 코드를 복사해 다른 칸을 고르고 붙여넣으면 같은 색이 된다. 고치기 시작할 때 고른 범위에 칠한다(다른 칸을 눌러
+ * 나가도 그 칸에 칠하지 않게).
+ */
+function FillHex({
+  fill,
+  range,
+  disabled,
+  onApply,
+}: {
+  fill: number | undefined;
+  range: CellRange | null;
+  disabled: boolean;
+  onApply: (range: CellRange, rgb: number) => void;
+}) {
+  const shown = fill !== undefined ? rgbHex(fill) : "";
+  /** 고치는 중인 글과 그때 고른 범위(고치지 않으면 `null`). */
+  const [draft, setDraft] = useState<{ text: string; range: CellRange } | null>(null);
+  const [invalid, setInvalid] = useState(false);
+  const commit = (text: string, target: CellRange | null) => {
+    const rgb = parseHex(text);
+    setDraft(null);
+    setInvalid(false);
+    if (rgb !== null && target) onApply(target, rgb); // 범위의 다른 칸은 색이 다를 수 있어 같은 색이어도 칠한다
+  };
+  return (
+    <input
+      className={`hex-input mono${invalid ? " invalid" : ""}`}
+      aria-label="채우기 색 코드"
+      aria-invalid={invalid}
+      title="채우기 색 코드 — 복사해 다른 칸을 고른 뒤 붙여넣으면 같은 색이 됩니다"
+      placeholder={disabled ? "" : "없음"}
+      spellCheck={false}
+      maxLength={9}
+      disabled={disabled}
+      value={draft?.text ?? shown}
+      onFocus={(e) => e.currentTarget.select()}
+      onChange={(e) => {
+        setInvalid(false);
+        if (range) setDraft({ text: e.target.value, range: draft?.range ?? range });
+      }}
+      onPaste={(e) => {
+        const text = e.clipboardData.getData("text");
+        if (parseHex(text) === null) return; // 색 코드가 아니면 그냥 붙여 넣는다(Enter로 확인)
+        e.preventDefault();
+        commit(text, draft?.range ?? range);
+        e.currentTarget.select();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+          if (!draft) return;
+          if (parseHex(draft.text) === null) return setInvalid(true);
+          commit(draft.text, draft.range);
+          e.currentTarget.select();
+        } else if (e.key === "Escape") {
+          setDraft(null);
+          setInvalid(false);
+          e.currentTarget.blur();
+        }
+      }}
+      onBlur={() => {
+        if (draft) commit(draft.text, draft.range); // 색 코드가 아니면 원래대로
+      }}
+    />
+  );
+}
+
 function ViewerPick({ s }: { s: ConfigState }) {
   return (
     <label className="viewer-pick">
@@ -436,27 +483,23 @@ function ViewerPick({ s }: { s: ConfigState }) {
   );
 }
 
-/** 열 역할 줄: 범위(열 머리글 = 데이터 행 전체)를 고르고 입력/잠금 중 하나를 고른다. 필수는 오른쪽 열 속성에서. */
+/**
+ * 열 역할 줄: 칸이나 열을 고르고 입력/잠금 중 하나를 고른다. 일부 칸만 골라도 **고른 열 전체**에 적용한다 — 칸 단위
+ * 입력 가능·입력 금지는 오른쪽 '셀 예외'에서만 정한다. 필수는 오른쪽 열 속성에서.
+ */
 function RoleBar({ s }: { s: ConfigState }) {
   const disabled = !s.range || s.busy;
   const brush = (b: Brush) => s.range && void s.apply({ op: "brush", range: s.range, brush: b });
   const r = s.range;
   const whole = r !== null && r.row <= s.model.headerRows && r.row + r.rows >= s.model.rows;
-  // 열 전체를 골랐으면 그 열들의 역할, 일부 칸만 골랐으면 그 칸들의 실제 역할(셀 예외 반영)을 켠 것으로 보인다.
+  // 고른 열들의 역할이 모두 같으면 그 역할을 켠 것으로 보인다(셀 예외는 따로 — 오른쪽 '셀 예외').
   const cols = r ? s.view!.config.columns.slice(r.col, r.col + r.cols) : [];
-  const role = !r
-    ? null
-    : whole
-      ? cols.length > 0 && cols.every((c) => c.role === cols[0]!.role)
-        ? cols[0]!.role
-        : null
-      : (cellsRole(s.flags, s.model.cols, r) ??
-        (cols.length > 0 && cols.every((c) => c.role === cols[0]!.role) ? cols[0]!.role : null));
+  const role = cols.length > 0 && cols.every((c) => c.role === cols[0]!.role) ? cols[0]!.role : null;
   const hint = !r
-    ? "열 머리글(A, B, C…)을 누르거나 범위를 끌어 고르세요. Shift로 여러 열을 함께 고를 수 있어요."
+    ? "열 머리글(A, B, C…)이나 칸을 고르세요. 입력/잠금은 고른 열 전체에 적용돼요. Shift로 여러 열을 함께 고를 수 있어요."
     : whole
       ? `${colSpan(s.model, r)}열을 골랐어요. 필수는 오른쪽 열 속성에서 정해요.`
-      : `${rangeLabel(s.model, r)}을 골랐어요. 일부 칸만 바꾸면 셀 예외가 됩니다.`;
+      : `${rangeLabel(s.model, r)}을 골랐어요. 입력/잠금은 ${colSpan(s.model, r)}열 전체에 적용돼요. 이 칸만 바꾸려면 오른쪽 셀 예외에서.`;
   return (
     <div className="role-bar" role="toolbar" aria-label="역할 지정">
       <span className="role-hint">{hint}</span>
@@ -464,7 +507,7 @@ function RoleBar({ s }: { s: ConfigState }) {
         <button
           className={role === "input" ? "on" : ""}
           aria-pressed={role === "input"}
-          title="참여자가 쓸 수 있는 칸으로"
+          title="고른 열 전체를 참여자가 쓸 수 있는 열로"
           disabled={disabled}
           onClick={() => brush("input")}
         >
@@ -474,7 +517,7 @@ function RoleBar({ s }: { s: ConfigState }) {
         <button
           className={role === "locked" ? "on" : ""}
           aria-pressed={role === "locked"}
-          title="보기만 가능한 칸으로"
+          title="고른 열 전체를 보기만 가능한 열로"
           disabled={disabled}
           onClick={() => brush("locked")}
         >
