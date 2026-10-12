@@ -1,4 +1,4 @@
-import type { CellDecoration, GridSelection, SheetGridHandle } from "@mm/grid";
+import type { CellDecoration, GridMark, GridSelection, SheetGridHandle } from "@mm/grid";
 import { filterOptions, rowsNotMatching, SheetGrid, withHiddenRows } from "@mm/grid";
 import type {
   Activity,
@@ -397,12 +397,28 @@ function SheetMonitor({
       if (p.editing?.sheet === sheet) map.set(`${p.editing.row}:${p.editing.col}`, p.name);
     return map;
   }, [snapshot, sheet]);
-  const cursors = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const p of snapshot?.participants ?? [])
-      if (p.cursor?.sheet === sheet && p.status !== "offline") map.set(`${p.cursor.row}:${p.cursor.col}`, p.name);
-    return map;
-  }, [snapshot, sheet]);
+  // 다른 사람 표시(그리드 위 겹): 편집 중이면 그 칸에 자물쇠 이름표, 아니면 커서(미접속은 뺀다). 머리글 칸은 테두리만.
+  const marks = useMemo(() => {
+    const out: GridMark[] = [];
+    if (!model) return out;
+    for (const p of snapshot?.participants ?? []) {
+      const lock = p.editing?.sheet === sheet;
+      const at = lock ? p.editing : p.cursor?.sheet === sheet && p.status !== "offline" ? p.cursor : undefined;
+      if (!at) continue;
+      const header = (flags[at.row * model.cols + at.col] ?? 0) & FLAG.HEADER;
+      out.push({
+        key: p.name,
+        row: at.row,
+        col: at.col,
+        color: colorOf(p.name),
+        label: header ? undefined : p.name,
+        lock,
+      });
+    }
+    return out;
+    // colorOf는 roster로 정해진다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot, sheet, model, flags, roster]);
   const highlighted = useMemo(() => {
     const set = new Set<string>();
     for (const h of comms?.highlights ?? []) {
@@ -477,34 +493,6 @@ function SheetMonitor({
     if (!(f & FLAG.INPUT)) cls.push("deco-locked");
     if (f & FLAG.REQUIRED && isEmpty(model.cells[i]?.v)) cls.push("deco-missing");
     if (highlighted.has(key)) cls.push("deco-highlight");
-    const editor = editing.get(key);
-    const cursor = cursors.get(key);
-    if (editor) {
-      const color = colorOf(editor);
-      cls.push("deco-peer");
-      return {
-        className: cls.join(" "),
-        style: { boxShadow: `inset 0 0 0 2px ${color}` },
-        adornment: (
-          <span className="peer-tag lock-tag" style={{ background: color }}>
-            {editor}
-          </span>
-        ),
-      };
-    }
-    if (cursor) {
-      const color = colorOf(cursor);
-      cls.push("deco-peer");
-      return {
-        className: cls.join(" "),
-        style: { boxShadow: `inset 0 0 0 2px ${color}` },
-        adornment: (
-          <span className="peer-tag" style={{ background: color }}>
-            {cursor}
-          </span>
-        ),
-      };
-    }
     return { className: cls.join(" ") };
   };
 
@@ -723,6 +711,7 @@ function SheetMonitor({
             handle={grid}
             model={viewModel}
             decorate={decorate}
+            marks={marks}
             cellText={cellText}
             rowMarker={(r) => {
               const o = view.rowOwner[r] ?? -1;

@@ -126,7 +126,7 @@ test("다른 사람의 커서가 이름표로 보인다", async ({ browser }) =>
   await enterAs(b, "오세린");
   await expect(b.locator('.avatar[title^="최도윤"]')).toBeVisible();
   await a.locator('.mmg-cell[data-r="9"][data-c="5"]').click();
-  await expect(b.locator('.mmg-cell[data-r="9"][data-c="5"] .peer-tag')).toHaveText("최도윤");
+  await expect(b.locator('.mmg-mark[data-r="9"][data-c="5"] .peer-tag')).toHaveText("최도윤");
 });
 
 test("IP 명단 밖의 다른 기기는 같은 이름이어도 승인을 받고, 승인하면 앞 기기는 끊긴다", async ({ browser }) => {

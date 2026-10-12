@@ -34,6 +34,8 @@ async function open(browser: Browser, name: string, path = "/q4"): Promise<Page>
 }
 
 const cell = (page: Page, r: number, c: number) => page.locator(`.mmg-cell[data-r="${r}"][data-c="${c}"]`);
+// 다른 사람의 커서·편집 잠금 표시(칸 위 겹). 칸과 같은 좌표(병합이면 왼쪽 위)를 단다.
+const mark = (page: Page, r: number, c: number) => page.locator(`.mmg-mark[data-r="${r}"][data-c="${c}"]`);
 const text = (page: Page, r: number, c: number) => cell(page, r, c).locator(".mmg-text");
 
 async function typeInto(page: Page, r: number, c: number, value: string, key = "Enter") {
@@ -92,7 +94,7 @@ test("편집 중인 칸은 다른 사람에게 잠기고, 확정하거나 호스
   await cell(a, 17, H).click();
   await a.keyboard.type("간담회");
   await expect(a.locator(".status")).toContainText("H18 편집 중");
-  await expect(cell(b, 17, H).locator(".lock-tag")).toHaveText("정하늘");
+  await expect(mark(b, 17, H).locator(".lock-tag")).toHaveText("정하늘");
   await cell(b, 17, H).click();
   await expect(b.locator(".hint-bar.lock")).toContainText("정하늘 님이 입력 중입니다");
   await b.keyboard.type("x");
@@ -101,14 +103,14 @@ test("편집 중인 칸은 다른 사람에게 잠기고, 확정하거나 호스
 
   await a.keyboard.type(" 4회");
   await a.keyboard.press("Enter");
-  await expect(cell(b, 17, H).locator(".lock-tag")).toHaveCount(0);
+  await expect(mark(b, 17, H).locator(".lock-tag")).toHaveCount(0);
   await expect(text(b, 17, H)).toHaveText("간담회 4회");
   await expect(b.locator(".toast", { hasText: "H18 칸을 이제 입력할 수 있습니다" })).toBeVisible();
 
   // 편집기를 열어 둔 채 자리를 비우면 호스트가 잠금을 푼다.
   await cell(a, 18, H).click();
   await a.keyboard.type("임시");
-  await expect(cell(b, 18, H).locator(".lock-tag")).toBeVisible();
+  await expect(mark(b, 18, H).locator(".lock-tag")).toBeVisible();
   const snap = await (await request.get("/__dev/snapshot")).json();
   expect(snap.participants.find((p: { name: string }) => p.name === "정하늘").editing).toEqual({
     sheet: 0,
@@ -117,7 +119,7 @@ test("편집 중인 칸은 다른 사람에게 잠기고, 확정하거나 호스
   });
   expect((await request.post("/__dev/unlock", { data: { name: "정하늘" } })).ok()).toBe(true);
   await expect(a.locator(".toast", { hasText: "호스트가 편집 잠금을 해제했습니다" })).toBeVisible();
-  await expect(cell(b, 18, H).locator(".lock-tag")).toHaveCount(0);
+  await expect(mark(b, 18, H).locator(".lock-tag")).toHaveCount(0);
   await expect(text(a, 18, H)).toHaveText("");
 });
 
@@ -345,10 +347,10 @@ test("Alt+Enter 여러 줄은 그리드에 줄을 나눠 보이고, 사이드바
   const box = panel.getByLabel("셀 내용 편집");
   await expect(box).toHaveValue("첫 줄\n둘째 줄");
   await box.fill("첫 줄\n둘째 줄\n셋째 줄");
-  await expect(cell(b, 28, H).locator(".lock-tag")).toHaveText("오세린"); // 고치는 동안 잠김
+  await expect(mark(b, 28, H).locator(".lock-tag")).toHaveText("오세린"); // 고치는 동안 잠김
   await box.press("Control+Enter");
   await expect.poll(() => lines(b)).toBe("첫 줄\n둘째 줄\n셋째 줄");
-  await expect(cell(b, 28, H).locator(".lock-tag")).toHaveCount(0);
+  await expect(mark(b, 28, H).locator(".lock-tag")).toHaveCount(0);
   // 남의 칸은 읽기만 한다.
   await cell(b, 28, H).click();
   await expect(b.locator(".cell-detail .detail-value")).toContainText("셋째 줄");

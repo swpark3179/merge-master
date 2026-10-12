@@ -36,6 +36,8 @@ const KIND: Record<string, string> = { input: "입력", edit: "수정", delete: 
 
 interface Props {
   s: SessionState;
+  /** 방금 사람이 열었다(미끄러져 들어온다). */
+  slide?: boolean;
   tab: PanelTab;
   onTab: (t: PanelTab) => void;
   onClose: () => void;
@@ -115,7 +117,12 @@ export function SidePanel(props: Props) {
   };
 
   return (
-    <aside className="side-panel" aria-label="사이드바" ref={panel} style={{ width }}>
+    <aside
+      className={`side-panel${props.slide ? " slide-in" : ""}`}
+      aria-label="사이드바"
+      ref={panel}
+      style={{ width }}
+    >
       <div
         className="side-resize"
         role="separator"
