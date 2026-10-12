@@ -4,7 +4,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./tokens.css": "./src/tokens.css"
+    "./tokens.css": "./src/tokens.css",
+    "./motion.css": "./src/motion.css"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -523,9 +523,16 @@ function ImportStatus({ s }: { s: ImportState }) {
           {p && (p.stage === "styles" || p.stage === "merges")
             ? `${doneRows.toLocaleString()} / ${rows.toLocaleString()}행`
             : ""}
-          <span className="bar">
-            <span style={{ width: `${p && (p.stage === "styles" || p.stage === "merges") ? pct : 15}%` }} />
-          </span>
+          {p && (p.stage === "styles" || p.stage === "merges") ? (
+            <span className="bar">
+              <span style={{ width: `${pct}%` }} />
+            </span>
+          ) : (
+            // 행 수를 모르는 단계: 멈춘 막대 대신 움직이는 막대로 읽는 중임을 보인다.
+            <span className="bar indeterminate">
+              <span />
+            </span>
+          )}
         </div>
       ) : (
         <span className="error">{s.error}</span>

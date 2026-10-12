@@ -53,7 +53,16 @@ export function SessionPicker() {
             <div className="muted">호스트가 업무를 공개하면 여기에 보입니다.</div>
           </div>
         )}
-        <ul className="picker-list" aria-label="취합 업무 목록">
+        <ul className="picker-list" aria-label="취합 업무 목록" aria-busy={list === null && !error}>
+          {list === null &&
+            !error &&
+            [0, 1, 2].map((i) => (
+              <li key={`sk${i}`} className="picker-skeleton" aria-hidden>
+                <span className="sk title" />
+                <span className="sk" />
+                <span className="sk short" />
+              </li>
+            ))}
           {sorted.map((s) => {
             const state = sessionState(s);
             return (

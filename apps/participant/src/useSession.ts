@@ -17,7 +17,7 @@ import type {
   StylePatch,
   Welcome,
 } from "@mm/shared";
-import { a1, decodeFlags, sheetPrefix } from "@mm/shared";
+import { a1, decodeFlags, FLASH_MS, sheetPrefix } from "@mm/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { Batch, CellChange } from "./edits";
@@ -44,6 +44,12 @@ export type Phase =
   | { kind: "closed" }
   /** 호스트가 이 업무를 끝냈다(다시 붙지 않는다). */
   | { kind: "ended" };
+
+/** 다른 사람이 방금 바꾼 칸: 바꾼 사람과 번호(같은 칸을 또 바꾸면 번호가 바뀌어 다시 깜빡인다). */
+export interface RecentEdit {
+  by: string;
+  seq: number;
+}
 
 export interface Notice {
   id: number;
@@ -127,6 +133,8 @@ export function useSession(slug: string) {
   const [readOnlyReason, setReadOnlyReason] = useState<string | null>(null);
   const [history, setHistory] = useState<{ sheet: number; row: number; entries: ChangeEntry[] } | null>(null);
   const [notices, setNotices] = useState<Notice[]>([]);
+  /** 다른 사람이 방금 바꾼 칸(`시트:행:열` → 바꾼 사람). FLASH_MS가 지나면 지운다. */
+  const [recentEdits, setRecentEdits] = useState<ReadonlyMap<string, RecentEdit>>(new Map());
   /** 호스트가 보낸 공지·셀 강조·채팅. */
   const [announcements, setAnnouncements] = useState<NoticeView[]>([]);
   const [highlights, setHighlights] = useState<HighlightView[]>([]);
@@ -153,6 +161,7 @@ export function useSession(slug: string) {
   const saved = useRef(new Map<string, StoredBatch[]>());
   const saving = useRef<Promise<void>>(Promise.resolve());
   const noticeSeq = useRef(0);
+  const flashSeq = useRef(0);
   const lockSeq = useRef(0);
   const rowsSeq = useRef(0);
   /** E2E: 오프라인 흉내(연결을 끊고 다시 붙지 않음). */
@@ -173,6 +182,27 @@ export function useSession(slug: string) {
   }, []);
 
   const dismiss = useCallback((id: number) => setNotices((list) => list.filter((n) => n.id !== id)), []);
+
+  /** 다른 사람(호스트 포함)이 바꾼 칸을 잠깐 표시한다. 수식 결과(`by`가 빈 문자열)는 표시하지 않는다. */
+  const flash = useCallback((sheet: number, by: string, cells: { row: number; col: number }[]) => {
+    if (!by || cells.length === 0) return;
+    const seq = ++flashSeq.current;
+    const keys = cells.map((x) => `${sheet}:${x.row}:${x.col}`);
+    setRecentEdits((m) => {
+      const next = new Map(m);
+      for (const k of keys) next.set(k, { by, seq });
+      return next;
+    });
+    window.setTimeout(
+      () =>
+        setRecentEdits((m) => {
+          const next = new Map(m);
+          for (const k of keys) if (next.get(k)?.seq === seq) next.delete(k);
+          return next;
+        }),
+      FLASH_MS,
+    );
+  }, []);
 
   const persist = useCallback(() => {
     const sheets = edits.current;
@@ -338,6 +368,7 @@ export function useSession(slug: string) {
         case "cells":
           sheetOf(msg.sheet)?.cells(msg.cells);
           refresh();
+          flash(msg.sheet, msg.by, msg.cells);
           break;
         case "lockResult":
           setLockEvent({
@@ -419,7 +450,7 @@ export function useSession(slug: string) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [at, notify, persist, refresh, send, sendJoin],
+    [at, flash, notify, persist, refresh, send, sendJoin],
   );
 
   // 연결 유지: 끊기면 점점 간격을 늘려 다시 붙고, 붙으면 기억한 이름(토큰)으로 다시 입장한다.
@@ -642,6 +673,8 @@ export function useSession(slug: string) {
     chat,
     lockEvent,
     rowsAdded,
+    /** 다른 사람이 방금 바꾼 칸(`시트:행:열`). */
+    recentEdits,
     /** 지금 시트의 편집 상태. */
     sheet: edits.current[active] ?? null,
     /** 시트마다 편집 상태(불러온 순서). */

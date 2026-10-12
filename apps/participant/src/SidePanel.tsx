@@ -1,5 +1,5 @@
 import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
-import { a1, sheetPrefix, splitCellRefs } from "@mm/shared";
+import { a1, scrollBehavior, sheetPrefix, splitCellRefs } from "@mm/shared";
 import type { KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
@@ -240,9 +240,12 @@ function Chat({
   const [text, setText] = useState("");
   const list = useRef<HTMLDivElement>(null);
   const last = s.chat[s.chat.length - 1]?.id ?? 0;
+  // 새 메시지가 오면 맨 아래로(처음 열 때는 바로, 그 뒤로는 부드럽게).
+  const scrolled = useRef(false);
   useEffect(() => {
     onSeen(last);
-    list.current?.scrollTo({ top: list.current.scrollHeight });
+    list.current?.scrollTo({ top: list.current.scrollHeight, behavior: scrollBehavior(!scrolled.current) });
+    scrolled.current = true;
   }, [last, onSeen]);
   const send = () => {
     const to: ChatTo = toHost ? { kind: "host" } : { kind: "all" };
