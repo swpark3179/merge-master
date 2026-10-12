@@ -4,10 +4,21 @@ import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode, Ref } from "r
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import "./grid.css";
-import { boxRect, buildLayout, cellBox, GUTTER_W, HEADER_H, isHidden, nextVisible, visibleSpan } from "./layout";
-import type { GridLayout } from "./layout";
+import {
+  boxRect,
+  buildLayout,
+  cellBox,
+  GUTTER_W,
+  HEADER_H,
+  isHidden,
+  layerOf,
+  nextVisible,
+  splitByFrozen,
+  visibleSpan,
+} from "./layout";
+import type { GridLayout, Layer } from "./layout";
 import type { GridSelection } from "./selection";
-import { cellSelection, columnSelection, containsCell, intersects, rowSelection, selectionRange } from "./selection";
+import { cellSelection, columnSelection, rowSelection, selectionRange } from "./selection";
 
 /** 화면에 겹쳐 그릴 표시(입력 금지 빗금, 필수 미입력 표시, 편집 중 이름표 …). */
 export interface CellDecoration {
@@ -15,6 +26,22 @@ export interface CellDecoration {
   style?: CSSProperties;
   /** 셀 안 오른쪽에 붙는 요소(배지·잠금 표시 등). */
   adornment?: ReactNode;
+}
+
+/**
+ * 다른 사람의 커서·편집 잠금 표시. 칸 위의 겹에 사람마다 하나 그린다(같은 `key`면 칸을 옮길 때 미끄러진다).
+ * 칸 장식(`decorate`)과 달리 고정 머리 밑에 깔리지 않게 이름표 위치를 스스로 바꾼다.
+ */
+export interface GridMark {
+  /** 사람마다 하나(보통 이름). */
+  key: string;
+  row: number;
+  col: number;
+  color: string;
+  /** 이름표 글자(없으면 테두리만). */
+  label?: string;
+  /** 편집 잠금(이름표 앞 자물쇠). */
+  lock?: boolean;
 }
 
 /** 바깥에서 그리드를 움직일 때(편집을 확정하고 다음 칸으로 등). */
@@ -39,6 +66,8 @@ export interface SheetGridProps {
   cellText?: (row: number, col: number, cell: Cell | undefined, numberFormat: string) => string | undefined;
   /** 활성 칸 위에 겹쳐 그릴 요소(셀 편집기). */
   overlay?: { at: CellRef; node: ReactNode } | null;
+  /** 다른 사람의 커서·편집 잠금. */
+  marks?: GridMark[];
   /** 방향키 이동보다 먼저 받는다. `preventDefault()`하면 그리드는 이동하지 않는다. */
   onKey?: (e: KeyboardEvent) => void;
   onCellDoubleClick?: (row: number, col: number) => void;
@@ -113,6 +142,9 @@ interface Resize {
 /** 끌어서 줄일 수 있는 가장 작은 크기(px). 0이면 숨김과 구별할 수 없다. */
 const MIN_RESIZE_PX = 4;
 
+/** 이름표 높이(grid.css .peer-tag의 line-height). 고정 머리 바로 아래 칸이면 이름표를 칸 아래로 보낸다. */
+const TAG_H = 16;
+
 export function SheetGrid({
   model,
   handle,
@@ -122,6 +154,7 @@ export function SheetGrid({
   rowMarker,
   cellText,
   overlay,
+  marks,
   onKey,
   onCellDoubleClick,
   onResize,
@@ -206,8 +239,6 @@ export function SheetGrid({
     const below = lastR + 1 < model.rows ? model.styles[model.cells[(lastR + 1) * model.cols + c]?.s ?? 0] : undefined;
     const right = lastC + 1 < model.cols ? model.styles[model.cells[r * model.cols + lastC + 1]?.s ?? 0] : undefined;
     const deco = decorate?.(r, c);
-    const active = selection != null && containsCell(box, selection.anchor.row, selection.anchor.col);
-    const inSel = multi && sel !== null && intersects(sel, box);
     const css: CSSProperties = {
       ...boxRect(layout, box),
       ...styleCss[sid],
@@ -216,7 +247,7 @@ export function SheetGrid({
       borderRight: borderCss(s?.borders.right ?? right?.borders.left),
       ...deco?.style,
     };
-    const cls = `mmg-cell${active ? " mmg-selected" : ""}${inSel ? " mmg-insel" : ""}${deco?.className ? ` ${deco.className}` : ""}`;
+    const cls = `mmg-cell${deco?.className ? ` ${deco.className}` : ""}`;
     return (
       <div key={`${r}:${c}`} className={cls} data-r={r} data-c={c} style={css}>
         <span className="mmg-text">
@@ -423,6 +454,43 @@ export function SheetGrid({
 
   const fr = layout.frozenRows;
   const fc = layout.frozenCols;
+
+  // 칸 위의 겹: 선택(범위 틴트·활성 칸)과 다른 사람 표시. 고정 영역은 띠마다 따로 고정되므로 칸과 같은 띠에 그린다.
+  // 칸 장식보다 위에 있어 강조·잠금 칸에서도 선택이 보인다.
+  const layers: Record<Layer, ReactNode[]> = { corner: [], top: [], left: [], body: [] };
+  if (selection && sel) {
+    if (multi)
+      for (const piece of splitByFrozen(layout, sel))
+        layers[piece.layer].push(<div key="sel" className="mmg-sel" style={boxRect(layout, piece.range)} />);
+    const a = cellBox(layout, selection.anchor.row, selection.anchor.col);
+    layers[layerOf(layout, a.row, a.col)].push(<div key="active" className="mmg-active" style={boxRect(layout, a)} />);
+  }
+  for (const m of marks ?? []) {
+    const box = cellBox(layout, m.row, m.col);
+    const r = boxRect(layout, box);
+    if (r.width === 0 || r.height === 0) continue; // 숨긴 행·열
+    // 스크롤되는 행이 고정 머리 바로 아래에 있으면 위쪽 이름표가 머리에 가린다: 칸 아래로 보낸다.
+    const below = box.row >= fr && r.top < vp.top + cornerH + TAG_H;
+    layers[layerOf(layout, box.row, box.col)].push(
+      <div
+        key={`m:${m.key}`}
+        className={`mmg-mark${m.lock ? " lock" : ""}${below ? " below" : ""}`}
+        data-r={box.row}
+        data-c={box.col}
+        style={
+          {
+            transform: `translate(${r.left}px, ${r.top}px)`,
+            width: r.width,
+            height: r.height,
+            "--mark": m.color,
+          } as CSSProperties
+        }
+      >
+        {m.label && <span className={`peer-tag${m.lock ? " lock-tag" : ""}`}>{m.label}</span>}
+      </div>,
+    );
+  }
+
   return (
     <div
       ref={scroller}
@@ -441,16 +509,20 @@ export function SheetGrid({
           {colHeads(0, fc - 1)}
           {rowHeads(0, fr - 1)}
           {renderBlock(0, fr - 1, 0, fc - 1)}
+          {layers.corner}
         </div>
         <div className="mmg-band mmg-top" style={{ width: totalW, height: cornerH, marginBottom: -cornerH }}>
           {colHeads(colsSpan.first, colsSpan.last)}
           {renderBlock(0, fr - 1, colsSpan.first, colsSpan.last)}
+          {layers.top}
         </div>
         <div className="mmg-band mmg-left" style={{ width: cornerW, height: totalH, marginBottom: -totalH }}>
           {rowHeads(rowsSpan.first, rowsSpan.last)}
           {renderBlock(rowsSpan.first, rowsSpan.last, 0, fc - 1)}
+          {layers.left}
         </div>
         {renderBlock(rowsSpan.first, rowsSpan.last, colsSpan.first, colsSpan.last)}
+        {layers.body}
         {overlay && (
           <div className="mmg-overlay" style={boxRect(layout, cellBox(layout, overlay.at.row, overlay.at.col))}>
             {overlay.node}

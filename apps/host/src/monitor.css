@@ -35,12 +35,6 @@
   gap: 6px;
 }
 
-.mon-head .ghost.small {
-  height: 30px;
-  padding: 0 10px;
-  font-size: 13px;
-}
-
 .warn-pill {
   background: var(--warn-soft);
   color: var(--warn-ink);
@@ -280,6 +274,12 @@ button.cell-ref {
     monospace;
 }
 
+/* 기본 버튼의 파란 hover가 새지 않게: 밑줄로만 */
+button.cell-ref:hover:not(:disabled) {
+  background: var(--hl-bg);
+  text-decoration: underline;
+}
+
 .chat-list {
   flex: 1;
   min-height: 0;
@@ -319,12 +319,16 @@ button.cell-ref {
 }
 
 .steps .badge {
+  min-width: 18px;
   margin-left: auto;
   padding: 0 6px;
   border-radius: 9px;
   background: var(--danger);
   color: #fff;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
 }
 
 /* ---------------------------------------------------------------- 5 히스토리 (1h) */
@@ -434,12 +438,22 @@ button.cell-ref {
   pointer-events: auto;
 }
 
+/* 변경 종류 태그(.tag와 같은 모양) */
 .kind {
+  display: inline-block;
   margin-left: 4px;
   padding: 0 7px;
   border-radius: 9px;
   background: var(--chip);
-  font-size: 11px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.kind-input {
+  background: var(--ok-soft);
+  color: var(--ok-ink);
 }
 
 .kind-delete {

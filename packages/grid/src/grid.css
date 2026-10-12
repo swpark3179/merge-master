@@ -72,12 +72,6 @@
   text-overflow: ellipsis;
 }
 
-.mmg-selected {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-  z-index: 1;
-}
-
 .mmg-colhead,
 .mmg-rowhead {
   position: absolute;
@@ -112,13 +106,50 @@
   box-shadow: inset 0 2px 0 var(--grid-edge);
 }
 
-/* 범위 선택: 선택 안 칸은 옅은 파랑, 활성 칸은 테두리(.mmg-selected). 드래그 중 글자 선택은 막는다. */
+/* 드래그 중 글자 선택은 막는다. */
 .mmg-scroller {
   user-select: none;
 }
 
-.mmg-cell.mmg-insel {
-  box-shadow: inset 0 0 0 999px var(--accent-sel);
+/*
+ * 칸 위의 겹(SheetGrid가 띠마다 그린다): 범위 틴트·활성 칸 테두리·다른 사람 표시. 칸 장식 위에 있어 강조·잠금 칸에서도
+ * 보이고, 띠(z 2~4) 아래라 고정 영역 밑으로는 들어간다. 마우스는 밑의 칸으로 넘긴다.
+ */
+.mmg-sel,
+.mmg-active,
+.mmg-mark {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.mmg-sel {
+  background: var(--accent-sel);
+}
+
+.mmg-active {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+/* 다른 사람 표시: 사람마다 하나, 칸을 옮기면 미끄러진다(크기는 바로 바뀐다). 색은 style의 --mark. */
+.mmg-mark {
+  left: 0;
+  top: 0;
+  box-shadow: inset 0 0 0 2px var(--mark);
+  transition: transform var(--dur-fast) var(--ease-out);
+  animation: mm-fade-in var(--dur-fast) var(--ease-out);
+}
+
+.mmg-mark .peer-tag {
+  background: var(--mark);
+}
+
+/* 고정 머리 바로 아래 칸: 이름표를 칸 아래에 둔다. */
+.mmg-mark.below .peer-tag {
+  top: 100%;
+  bottom: auto;
+  border-radius: 0 3px 3px 3px;
 }
 
 .mmg-colhead,
@@ -179,8 +210,8 @@
   color: var(--others-ink) !important;
 }
 
-/* 다른 사람 커서: 색 테두리 + 셀 위 이름표(색은 style로 준다) */
-.mmg-cell.deco-peer {
+/* 칸 밖으로 넘치는 장식(강조 말풍선 등)을 그리는 칸 */
+.mmg-cell.deco-overflow {
   overflow: visible;
   z-index: 2;
 }
@@ -199,22 +230,34 @@
   animation: mm-fade-in var(--dur-fast) var(--ease-out);
 }
 
-/* 편집 잠금 이름표: 이름 앞 자물쇠(글자색을 따른다) */
-.peer-tag.lock-tag {
+/* 자물쇠 아이콘(글자색을 따른다): 편집 잠금 이름표 앞, 그리고 쓰는 쪽의 .icon-lock */
+:root {
   --lock-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round'%3E%3Crect x='5' y='11' width='14' height='10' rx='2' fill='black'/%3E%3Cpath d='M8 11V7a4 4 0 0 1 8 0v4'/%3E%3C/svg%3E");
+}
+
+.peer-tag.lock-tag {
   display: inline-flex;
   align-items: center;
   gap: 3px;
 }
 
-.peer-tag.lock-tag::before {
+.peer-tag.lock-tag::before,
+.icon-lock {
   content: "";
+  display: inline-block;
   width: 10px;
   height: 10px;
   flex: none;
   background: currentColor;
   -webkit-mask: var(--lock-icon) center / contain no-repeat;
   mask: var(--lock-icon) center / contain no-repeat;
+}
+
+.icon-lock {
+  width: 12px;
+  height: 12px;
+  margin-right: 4px;
+  vertical-align: -1px;
 }
 
 /* 활성 칸 위 편집기 자리(편집기 모양은 쓰는 쪽이 정한다). 틀은 마우스를 밑의 칸으로 넘기고,

@@ -9,7 +9,9 @@ import {
   HEADER_H,
   indexAt,
   isHidden,
+  layerOf,
   nextVisible,
+  splitByFrozen,
   visibleSpan,
 } from "./layout";
 
@@ -86,5 +88,31 @@ describe("숨긴 행·열", () => {
       model({ rows: 4, rowHeights: [15, 0, 15, 15], merges: [{ row: 0, col: 0, rows: 3, cols: 1 }] }),
     );
     expect(boxRect(l, cellBox(l, 2, 0)).height).toBe(40);
+  });
+});
+
+describe("고정 영역 겹", () => {
+  const layout = buildLayout(model({ rows: 10, cols: 5, frozenRows: 2, frozenCols: 1 }));
+
+  it("칸이 속한 겹", () => {
+    expect(layerOf(layout, 0, 0)).toBe("corner");
+    expect(layerOf(layout, 1, 3)).toBe("top");
+    expect(layerOf(layout, 5, 0)).toBe("left");
+    expect(layerOf(layout, 5, 3)).toBe("body");
+  });
+
+  it("범위를 고정 경계에서 겹마다 나눈다", () => {
+    expect(splitByFrozen(layout, { row: 1, col: 0, rows: 3, cols: 3 })).toEqual([
+      { layer: "corner", range: { row: 1, col: 0, rows: 1, cols: 1 } },
+      { layer: "top", range: { row: 1, col: 1, rows: 1, cols: 2 } },
+      { layer: "left", range: { row: 2, col: 0, rows: 2, cols: 1 } },
+      { layer: "body", range: { row: 2, col: 1, rows: 2, cols: 2 } },
+    ]);
+  });
+
+  it("한 겹 안의 범위는 그대로", () => {
+    expect(splitByFrozen(layout, { row: 4, col: 2, rows: 2, cols: 2 })).toEqual([
+      { layer: "body", range: { row: 4, col: 2, rows: 2, cols: 2 } },
+    ]);
   });
 });

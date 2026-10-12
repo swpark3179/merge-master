@@ -10,9 +10,42 @@ button:disabled {
 }
 
 button.small {
-  height: 26px;
+  height: 28px;
   padding: 0 8px;
   font-size: 13px;
+}
+
+/*
+ * 칠한 버튼의 비활성: 흐리게 하면 흰 글자가 읽히지 않으므로 회색 바탕 + 보조 글자색으로.
+ * 테두리 버튼(ghost)·글자 버튼(link)·탭은 위의 opacity로 흐리게 둔다.
+ */
+button:disabled:not([class]):not([role="tab"]),
+button.primary:disabled,
+button.small:disabled:not(.ghost):not(.link) {
+  opacity: 1;
+  border-color: var(--line);
+  background: var(--head);
+  color: var(--muted);
+}
+
+/* hover: 칠한 버튼은 한 단계 옅게, 테두리 버튼·탭은 옅은 바탕, 글자 버튼은 밑줄 */
+button:not([class]):not([role="tab"]):hover:not(:disabled),
+button.primary:hover:not(:disabled),
+button.small:not(.ghost):not(.link):hover:not(:disabled) {
+  border-color: var(--ink-2);
+  background: var(--ink-2);
+}
+
+button.ghost:hover:not(:disabled),
+.mode-tabs button:not([aria-selected="true"]):hover,
+.row-tabs button:not([aria-selected="true"]):hover,
+.side-tabs button[role="tab"]:not([aria-selected="true"]):hover,
+.sheet-tabs button:not([aria-selected="true"]):hover {
+  background: var(--hover);
+}
+
+button.link:hover:not(:disabled) {
+  text-decoration: underline;
 }
 
 .small {
@@ -631,13 +664,18 @@ textarea.detail-text:focus {
   font-weight: 600;
 }
 
+/* 개수 배지(호스트 .steps .badge와 같은 모양): 빨간 바탕(.badge)과 옅은 바탕(.sheet-tabs .left) */
 .badge {
+  min-width: 18px;
   margin-left: 4px;
   padding: 0 6px;
   border-radius: 9px;
   background: var(--danger);
   color: #fff;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
 }
 
 .important-bar {
@@ -655,7 +693,6 @@ textarea.detail-text:focus {
 }
 
 .side-panel {
-  animation: mm-panel-in var(--dur-slow) var(--ease-out);
   position: relative;
   width: 310px;
   /* 창이 좁아져도 그리드 쪽을 남긴다(끈 너비는 SidePanel의 clampSideWidth와 같은 기준). */
@@ -668,6 +705,11 @@ textarea.detail-text:focus {
   border-left: 1.5px solid var(--ink);
   background: #fff;
   min-height: 0;
+}
+
+/* 사람이 연 사이드바만 오른쪽에서 들어온다(처음 열려 있던 것은 그대로) */
+.side-panel.slide-in {
+  animation: mm-panel-in var(--dur-slow) var(--ease-out);
 }
 
 /* 왼쪽 경계 손잡이: 끌어서 너비를 바꾼다. 경계선 위로 조금 넘쳐 잡기 쉽게 한다. */
@@ -873,13 +915,13 @@ button.cell-ref {
 
 .sheet-tabs .left {
   min-width: 18px;
-  padding: 0 5px;
+  padding: 0 6px;
   border-radius: 9px;
   background: var(--danger-tint);
   color: var(--danger);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  line-height: 16px;
+  line-height: 18px;
   text-align: center;
 }
 

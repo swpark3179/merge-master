@@ -1,7 +1,7 @@
 export { CellEditor } from "./CellEditor";
 export type { EditorState, Move } from "./CellEditor";
 export { SheetGrid } from "./SheetGrid";
-export type { CellDecoration, SheetGridHandle, SheetGridProps } from "./SheetGrid";
+export type { CellDecoration, GridMark, SheetGridHandle, SheetGridProps } from "./SheetGrid";
 export { parseTsv, toTsv } from "./clipboard";
 export {
   cellText,
@@ -20,10 +20,12 @@ export {
   HEADER_H,
   indexAt,
   isHidden,
+  layerOf,
   nextVisible,
+  splitByFrozen,
   visibleSpan,
 } from "./layout";
-export type { GridLayout, Span } from "./layout";
+export type { GridLayout, Layer, Span } from "./layout";
 export {
   cellSelection,
   columnSelection,

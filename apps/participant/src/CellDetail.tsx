@@ -153,7 +153,8 @@ export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, wai
       </div>
       {locker && (
         <div className="hint-bar lock" role="status">
-          🔒 {locker} 님이 입력 중입니다 · 끝나면 입력할 수 있어요
+          <span className="icon-lock" aria-hidden />
+          {locker} 님이 입력 중입니다 · 끝나면 입력할 수 있어요
           {waiting ? (
             <span className="muted"> · 끝나면 알려 드릴게요</span>
           ) : (

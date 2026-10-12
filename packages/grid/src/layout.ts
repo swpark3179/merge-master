@@ -134,3 +134,36 @@ export function boxRect(layout: GridLayout, box: CellRange) {
     height: layout.rowY[box.row + box.rows]! - y,
   };
 }
+
+/** 고정 영역으로 나뉜 네 겹: 모서리(행·열 고정)·위(행만 고정)·왼쪽(열만 고정)·본문(스크롤). */
+export type Layer = "corner" | "top" | "left" | "body";
+
+/** 칸(병합이면 왼쪽 위 칸)이 그려지는 겹. 겹마다 따로 고정되므로 그 칸 위에 겹쳐 그릴 것도 같은 겹에 둔다. */
+export function layerOf(layout: GridLayout, row: number, col: number): Layer {
+  const top = row < layout.frozenRows;
+  const left = col < layout.frozenCols;
+  return top ? (left ? "corner" : "top") : left ? "left" : "body";
+}
+
+/** 범위를 고정 행·열 경계에서 겹마다의 조각(최대 4개)으로 나눈다. 빈 조각은 뺀다. */
+export function splitByFrozen(layout: GridLayout, range: CellRange): { layer: Layer; range: CellRange }[] {
+  const fr = layout.frozenRows;
+  const fc = layout.frozenCols;
+  const end = { row: range.row + range.rows, col: range.col + range.cols };
+  const rows = [
+    [range.row, Math.min(end.row, fr)],
+    [Math.max(range.row, fr), end.row],
+  ] as const;
+  const cols = [
+    [range.col, Math.min(end.col, fc)],
+    [Math.max(range.col, fc), end.col],
+  ] as const;
+  const out: { layer: Layer; range: CellRange }[] = [];
+  for (const [i, [r0, r1]] of rows.entries())
+    for (const [j, [c0, c1]] of cols.entries()) {
+      if (r1 <= r0 || c1 <= c0) continue;
+      const layer: Layer = i === 0 ? (j === 0 ? "corner" : "top") : j === 0 ? "left" : "body";
+      out.push({ layer, range: { row: r0, col: c0, rows: r1 - r0, cols: c1 - c0 } });
+    }
+  return out;
+}

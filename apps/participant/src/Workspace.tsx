@@ -1,4 +1,4 @@
-import type { CellDecoration, EditorState, GridSelection, Move, SheetGridHandle } from "@mm/grid";
+import type { CellDecoration, EditorState, GridMark, GridSelection, Move, SheetGridHandle } from "@mm/grid";
 import { CellEditor, fitRowHeights, parseTsv, SheetGrid, toTsv } from "@mm/grid";
 import type { CellRange, CellRef, SheetModel, StylePatch } from "@mm/shared";
 import {
@@ -120,9 +120,12 @@ export function Workspace({ s }: { s: SessionState }) {
   const [bench, setBench] = useState<BenchResult | null>(null);
   /** 오른쪽 사이드바(셀 내용·알림·채팅·셀 이력)와 그 탭. */
   const [sideOpen, setSideOpenState] = useState(loadSide);
+  /** 사람이 연 사이드바만 미끄러져 들어온다(처음 화면에 이미 열려 있는 것은 그대로). */
+  const [sideSlide, setSideSlide] = useState(false);
   const [panel, setPanelTab] = useState<PanelTab>("cell");
   const setSideOpen = useCallback((open: boolean) => {
     setSideOpenState(open);
+    setSideSlide(open);
     saveSide(open);
   }, []);
   const [sideWidth, setSideWidthState] = useState(loadSideWidth);
@@ -478,16 +481,34 @@ export function Workspace({ s }: { s: SessionState }) {
 
   // ------------------------------------------------------------ 그리기
 
-  const peers = useMemo(() => {
-    const map = new Map<string, { name: string; color: string }>();
-    for (const p of s.presence) {
-      if (p.host || p.name === w.name || !p.cursor || p.cursor.sheet !== active) continue;
-      map.set(`${p.cursor.row}:${p.cursor.col}`, { name: p.name, color: personColor(p.color) });
-    }
-    return map;
-  }, [s.presence, w.name, active]);
-
   const colorOf = (name: string) => personColor(Math.max(0, w.roster.indexOf(name)));
+
+  // 다른 사람 표시(그리드 위 겹): 편집 잠금이 있으면 그 칸에 자물쇠 이름표, 없으면 커서. 머리글 칸 커서는 테두리만.
+  // 잠금은 편집 상태 안에서 바뀌므로(sheet.locks) 그릴 때마다 만든다(사람 수만큼이라 가볍다).
+  const marks: GridMark[] = [];
+  const editingNow = new Set<string>();
+  for (const [i, name] of sheet.locks) {
+    editingNow.add(name);
+    marks.push({
+      key: name,
+      row: Math.floor(i / model.cols),
+      col: i % model.cols,
+      color: colorOf(name),
+      label: name,
+      lock: true,
+    });
+  }
+  for (const p of s.presence) {
+    if (p.host || p.name === w.name || !p.cursor || p.cursor.sheet !== active || editingNow.has(p.name)) continue;
+    const header = (flags[idx(p.cursor.row, p.cursor.col)] ?? 0) & FLAG.HEADER;
+    marks.push({
+      key: p.name,
+      row: p.cursor.row,
+      col: p.cursor.col,
+      color: personColor(p.color),
+      label: header ? undefined : p.name,
+    });
+  }
 
   /** 입력할 수 없는 칸에 쓰려 하면 잠깐 내 담당 칸을 깜빡인다(두 번 깜빡이는 동안만 둔다). */
   const [mineHint, setMineHint] = useState(false);
@@ -570,11 +591,7 @@ export function Workspace({ s }: { s: SessionState }) {
   const decorate = (r: number, c: number): CellDecoration | undefined => {
     const i = idx(r, c);
     const f = flags[i] ?? 0;
-    const peer = peers.get(`${r}:${c}`);
-    const lockedBy = sheet.locks.get(i);
-    if (f & FLAG.HEADER) {
-      return peer && { className: "deco-peer", style: { boxShadow: `inset 0 0 0 2px ${peer.color}` } };
-    }
+    if (f & FLAG.HEADER) return undefined;
     const cls: string[] = [];
     if (!myRows[r]) cls.push("deco-others");
     else if (!(f & FLAG.INPUT)) cls.push("deco-locked");
@@ -583,34 +600,15 @@ export function Workspace({ s }: { s: SessionState }) {
     if (f & FLAG.MINE && f & FLAG.REQUIRED && (v === undefined || v === null || v === "")) cls.push("deco-missing");
     if (sheet.pending.has(i)) cls.push("deco-pending");
     if (mineHint && myRows[r] && f & FLAG.INPUT && f & FLAG.MINE) cls.push("deco-mine-hint");
-    let style: CellDecoration["style"];
     let adornment: CellDecoration["adornment"];
     const hl = highlighted.get(`${r}:${c}`);
     if (hl) {
       cls.push("deco-highlight");
       // 메모가 있으면 왼쪽 위 칸에 말풍선으로 보인다(없으면 강조색만).
       if (hl.head && hl.note) {
-        cls.push("deco-peer");
+        cls.push("deco-overflow");
         adornment = <span className="callout">{hl.note}</span>;
       }
-    }
-    if (lockedBy) {
-      const color = colorOf(lockedBy);
-      cls.push("deco-peer", "deco-lockedby");
-      style = { boxShadow: `inset 0 0 0 2px ${color}` };
-      adornment = (
-        <span className="peer-tag lock-tag" style={{ background: color }}>
-          {lockedBy}
-        </span>
-      );
-    } else if (peer) {
-      cls.push("deco-peer");
-      style = { boxShadow: `inset 0 0 0 2px ${peer.color}` };
-      adornment = (
-        <span className="peer-tag" style={{ background: peer.color }}>
-          {peer.name}
-        </span>
-      );
     }
     // 다른 사람이 방금 바꾼 칸은 그 사람 색으로 잠깐 물든다(내 편집에는 쓰지 않는다).
     const recent = s.recentEdits.get(`${active}:${r}:${c}`);
@@ -624,7 +622,7 @@ export function Workspace({ s }: { s: SessionState }) {
         </>
       );
     }
-    return { className: cls.join(" "), style, adornment };
+    return { className: cls.join(" "), adornment };
   };
 
   const cellText = (_r: number, c: number, cell: { v?: unknown } | undefined, nf: string) => {
@@ -986,6 +984,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 handle={grid}
                 model={view}
                 decorate={decorate}
+                marks={marks}
                 rowMarker={rowMarker}
                 cellText={cellText}
                 selection={selection}
@@ -998,6 +997,7 @@ export function Workspace({ s }: { s: SessionState }) {
             {sideOpen && (
               <SidePanel
                 s={s}
+                slide={sideSlide}
                 tab={panel}
                 onTab={setPanelTab}
                 onClose={() => setSideOpen(false)}
