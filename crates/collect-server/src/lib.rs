@@ -250,7 +250,10 @@ struct DevConfig {
     /// 참여자 행 추가 허용.
     #[serde(default)]
     add_rows: Option<bool>,
-    /// 서식 정책·행 추가를 바꿀 시트(기본 첫 시트). 마감은 모든 시트가 같다.
+    /// 참여자 열 너비·행 높이 조절 허용.
+    #[serde(default)]
+    resize: Option<bool>,
+    /// 서식 정책·행 추가·크기 조절을 바꿀 시트(기본 첫 시트). 마감은 모든 시트가 같다.
     #[serde(default)]
     sheet: usize,
 }
@@ -270,6 +273,9 @@ async fn dev_config(Picked(session): Picked, Json(req): Json<DevConfig>) -> Resp
             }
             if let Some(on) = req.add_rows {
                 config.permissions.add_rows = on;
+            }
+            if let Some(on) = req.resize {
+                config.permissions.resize = on;
             }
             s.changed();
             Ok("ok")

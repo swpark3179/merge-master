@@ -1000,6 +1000,11 @@ input.invalid {
   background: #fffafa;
 }
 
+input.invalid:focus {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger-tint);
+}
+
 .accent {
   color: var(--accent);
 }
@@ -1450,6 +1455,15 @@ button.role {
   width: 12px;
   height: 12px;
   border: 1px solid var(--ink);
+}
+
+/* 채우기 색 코드(#ff00ff): 복사해 다른 칸에 붙여넣는다. */
+.toolbar .hex-input {
+  width: 78px;
+  height: 28px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 12px;
 }
 
 .viewer-pick {

@@ -124,6 +124,9 @@ pub struct Permissions {
     /// 마감이 지나면 참여자 입력을 막는다(1c '마감 후 자동 읽기 전용').
     #[serde(default = "yes")]
     pub lock_after_deadline: bool,
+    /// 참여자가 열 너비·행 높이를 바꿀 수 있다(1b 참여자 권한 '크기 조절', 바꾸면 모두에게 보인다). 기본은 금지.
+    #[serde(default)]
+    pub resize: bool,
 }
 
 fn yes() -> bool {
@@ -138,6 +141,7 @@ impl Default for Permissions {
             filter_sort: true,
             add_rows: false,
             lock_after_deadline: true,
+            resize: false,
         }
     }
 }

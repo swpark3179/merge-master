@@ -1,6 +1,6 @@
 import type { CellDecoration, EditorState, GridMark, GridSelection, Move, SheetGridHandle } from "@mm/grid";
-import { CellEditor, fitRowHeights, parseTsv, SheetGrid, toTsv } from "@mm/grid";
-import type { CellRange, CellRef, SheetModel, StylePatch } from "@mm/shared";
+import { CellEditor, fitRowHeights, parseTsv, resizeRuns, SheetGrid, toTsv } from "@mm/grid";
+import type { Axis, CellRange, CellRef, SheetModel, StylePatch } from "@mm/shared";
 import {
   a1,
   displayValue,
@@ -478,6 +478,16 @@ export function Workspace({ s }: { s: SessionState }) {
     s.format(rect, patch);
   };
   const curStyle = at ? model.styles[model.cells[idx(at.row, at.col)]?.s ?? 0] : undefined;
+
+  // 열 너비·행 높이(그 시트의 참여자 권한 '크기 조절'): 머리글 경계를 끌면 서버가 맞춘 크기를 모두에게 보내고(`resized`),
+  // 그때 그린다. 머리글로 여러 열(행)을 골랐으면 모두(필터·남의 행 숨김으로 숨은 행은 건너뛴다).
+  const canResize = sv.permissions.resize && !s.readOnly;
+  const onResize = (axis: Axis, index: number, size: number) => {
+    let sent = true;
+    for (const { from, count } of resizeRuns(view, selection && rectOf(selection), axis, index))
+      sent = s.resize(axis, from, count, size) && sent;
+    if (!sent) notify("연결이 끊겨 크기를 바꾸지 못했습니다. 다시 연결되면 해 주세요", "warn");
+  };
 
   // ------------------------------------------------------------ 그리기
 
@@ -992,6 +1002,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 overlay={editorNode ? { at: editor?.at ?? at!, node: editorNode } : null}
                 onKey={onKey}
                 onCellDoubleClick={onDouble}
+                onResize={canResize ? onResize : undefined}
               />
             </div>
             {sideOpen && (
@@ -1045,6 +1056,7 @@ export function Workspace({ s }: { s: SessionState }) {
         ) : (
           <span className="muted">
             Enter·Tab 이동 · F2 편집 · Delete 지우기 · Ctrl+Z 되돌리기 · Excel에서 복사해 붙여넣기
+            {canResize ? " · 머리글 경계를 끌어 크기 조절" : ""}
           </span>
         )}
       </footer>

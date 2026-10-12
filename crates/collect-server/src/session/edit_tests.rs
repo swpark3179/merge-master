@@ -1,9 +1,9 @@
 //! 편집 단위 테스트: 셀 수정·검사·잠금·충돌·마감·숨김 정책·이력·서식·수식 결과.
 
 use collect_core::config::{FormatPolicy, RangeAssignment};
-use collect_core::format::{FillPatch, StylePatch};
+use collect_core::format::{Axis, FillPatch, StylePatch};
 
-use super::tests::{Client, connect, fixture, host, join};
+use super::tests::{Client, connect, fixture, host, host_get, join};
 use super::*;
 use crate::protocol::{CellEdit, CellUpdate, Rejection, StyleChange};
 
@@ -600,4 +600,85 @@ async fn added_rows_without_key_column_are_open_to_everyone_and_capped() {
     }
     assert_eq!(st.sheets[0].model.rows - st.sheets[0].baseline.rows, super::edit::MAX_ADDED_ROWS);
     assert!(a.take().iter().any(|m| matches!(m, ServerMsg::Error { message } if message.contains("까지 추가"))));
+}
+
+fn resize(st: &mut State, c: &Client, axis: Axis, from: u32, count: u32, size: f32) {
+    st.handle(Command::Client { conn: c.conn, msg: ClientMsg::Resize { sheet: 0, axis, from, count, size } });
+}
+
+fn resized(msgs: &[ServerMsg]) -> Vec<(String, Axis, u32, u32, f32)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMsg::Resized { by, axis, from, count, size, .. } => Some((by.clone(), *axis, *from, *count, *size)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn participants_resize_when_allowed() {
+    let (mut st, mut c) = setup(&["이서연", "최도윤"]);
+    let before = st.sheets[0].model.col_widths[F as usize];
+    resize(&mut st, &c[0], Axis::Col, F, 1, 100.0);
+    assert!(errors(&c[0].take())[0].contains("열 너비·행 높이를 바꿀 수 없습니다"));
+    assert_eq!(st.sheets[0].model.col_widths[F as usize], before);
+
+    host(&mut st, |s| {
+        s.sheets[0].config.permissions.resize = true;
+        s.changed();
+    });
+    c[0].take();
+    c[1].take();
+    let mut feed = st.host_feed.subscribe();
+    resize(&mut st, &c[0], Axis::Col, F, 2, 100.1);
+    assert_eq!(&st.sheets[0].model.col_widths[F as usize..F as usize + 2], &[100.0, 100.0]);
+    for client in &mut c {
+        let msgs = client.take();
+        assert_eq!(resized(&msgs), [("이서연".to_string(), Axis::Col, F, 2, 100.0)], "보낸 사람에게도 맞춘 크기");
+        assert!(!msgs.iter().any(|m| matches!(m, ServerMsg::Welcome(_))), "새 시트를 다시 보내지 않는다");
+    }
+    assert_eq!(feed.try_recv(), Ok(HostEvent::Resized { sheet: 0, axis: Axis::Col, from: F, count: 2, size: 100.0 }));
+
+    let r = first_row(&st, "최도윤");
+    resize(&mut st, &c[0], Axis::Row, r, 1, 40.0); // 남의 행도 보이면(읽기 전용) 바꿀 수 있다
+    assert_eq!(st.sheets[0].model.row_heights[r as usize], 40.0);
+    resize(&mut st, &c[0], Axis::Col, 99, 1, 40.0);
+    assert!(errors(&c[0].take()).iter().any(|e| e.contains("표 밖")));
+
+    host(&mut st, |s| s.set_closed(true));
+    c[0].take();
+    resize(&mut st, &c[0], Axis::Col, F, 1, 50.0);
+    assert!(errors(&c[0].take())[0].contains("마감"));
+    assert_eq!(st.sheets[0].model.col_widths[F as usize], 100.0);
+}
+
+#[tokio::test]
+async fn hidden_rows_cannot_be_resized_by_others() {
+    let mut init = fixture();
+    init.sheets[0].1.permissions.others_rows = OthersRows::Hidden;
+    init.sheets[0].1.permissions.resize = true;
+    let (mut st, mut c) = setup_with(init, &["이서연", "최도윤"]);
+    let (mine, theirs) = (first_row(&st, "이서연"), first_row(&st, "최도윤"));
+    let before = st.sheets[0].model.row_heights[theirs as usize];
+    resize(&mut st, &c[0], Axis::Row, theirs, 1, 40.0);
+    assert!(errors(&c[0].take())[0].contains("보이는 행만"));
+    assert_eq!(st.sheets[0].model.row_heights[theirs as usize], before);
+    resize(&mut st, &c[0], Axis::Row, mine, 1, 40.0);
+    assert_eq!(st.sheets[0].model.row_heights[mine as usize], 40.0);
+    // 최도윤에게도 알린다(숨긴 행은 화면이 그대로 둔다).
+    assert_eq!(resized(&c[1].take()), [("이서연".to_string(), Axis::Row, mine, 1, 40.0)]);
+}
+
+#[tokio::test]
+async fn host_resize_notifies_sizes_only() {
+    let (mut st, mut c) = setup(&["이서연"]);
+    let mut feed = st.host_feed.subscribe();
+    let size = host_get(&mut st, |s| s.resize(0, Axis::Row, 3, 2, 1000.0));
+    assert_eq!(size, Ok(collect_core::format::ROW_HEIGHT_PT.1));
+    assert_eq!(st.sheets[0].model.row_heights[3], collect_core::format::ROW_HEIGHT_PT.1);
+    let msgs = c[0].take();
+    assert_eq!(resized(&msgs), [("박지훈".to_string(), Axis::Row, 3, 2, 409.0)]);
+    assert!(!msgs.iter().any(|m| matches!(m, ServerMsg::Welcome(_))));
+    assert!(matches!(feed.try_recv(), Ok(HostEvent::Resized { axis: Axis::Row, from: 3, .. })));
+    assert!(host_get(&mut st, |s| s.resize(5, Axis::Col, 0, 1, 50.0)).is_err());
 }

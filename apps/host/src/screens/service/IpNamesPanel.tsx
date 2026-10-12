@@ -1,6 +1,6 @@
 import type { HostSnapshot, IpNamesView } from "@mm/shared";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { errorText } from "../../api";
 import { useApi } from "../../job";
@@ -11,6 +11,8 @@ interface Props {
   /** 바뀔 때마다 새로 읽는다(승인하며 'IP 명단에 저장'). */
   rev: number;
   onError: (e: string) => void;
+  /** 명단을 읽거나 바꿀 때마다(1c '내 이름'을 이 PC의 이름으로 채운다). */
+  onChange?: (view: IpNamesView) => void;
 }
 
 const JSON_FILTER = [{ name: "JSON", extensions: ["json"] }];
@@ -19,19 +21,25 @@ const JSON_FILTER = [{ name: "JSON", extensions: ["json"] }];
  * 1c IP 명단: IP별 참여자 이름. 명단의 IP에서 접속하면 이름을 묻지 않고 그 이름으로 바로 들어오고, 명단 밖 IP는 이름을
  * 입력한 뒤 호스트가 승인한다. 이 PC(호스트)의 IP가 명단에 있으면 그 이름이 호스트 이름이다. JSON 파일로 내보내고 불러온다.
  */
-export function IpNamesPanel({ snapshot, rev, onError }: Props) {
+export function IpNamesPanel({ snapshot, rev, onError, onChange }: Props) {
   const api = useApi();
-  const [view, setView] = useState<IpNamesView | null>(null);
+  const [view, setViewState] = useState<IpNamesView | null>(null);
   const [ip, setIp] = useState("");
   const [name, setName] = useState("");
   const toast = useToast();
+  const changed = useRef(onChange);
+  changed.current = onChange;
+  const setView = useCallback((v: IpNamesView) => {
+    setViewState(v);
+    changed.current?.(v);
+  }, []);
 
   const reload = useCallback(() => {
     api
       .ipNamesGet()
       .then(setView)
       .catch((e) => onError(errorText(e)));
-  }, [onError]);
+  }, [onError, setView]);
 
   useEffect(() => reload(), [reload, rev]);
 

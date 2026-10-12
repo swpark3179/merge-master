@@ -29,7 +29,14 @@ function welcome(over: Partial<SheetView> = {}): SheetView {
     locks: [],
     columns: [],
     labels: [],
-    permissions: { format: "none", othersRows: "readOnly", filterSort: true, addRows: false, lockAfterDeadline: true },
+    permissions: {
+      format: "none",
+      othersRows: "readOnly",
+      filterSort: true,
+      addRows: false,
+      lockAfterDeadline: true,
+      resize: false,
+    },
     rowOwner: [-1, 2, 2],
     progress: { name: "김민지", rows: 2, required: 0, filled: 0 },
     ...over,
@@ -170,6 +177,19 @@ describe("EditState", () => {
     };
     s.styles([style], [{ row: 1, col: 1, s: 0 }]);
     expect(s.model).not.toBe(before);
+  });
+
+  it("크기 조절: 숨긴 행(남의 행 숨김)은 그대로", () => {
+    const view = welcome();
+    view.model.hiddenRows = [2];
+    view.model.rowHeights = [15, 15, 0];
+    const s = new EditState(view, "c");
+    const rev = s.rev;
+    s.resized("row", 1, 2, 30);
+    expect(s.model.rowHeights).toEqual([15, 30, 0]);
+    s.resized("col", 0, 1, 90);
+    expect(s.model.colWidths).toEqual([90, 60]);
+    expect(s.rev).toBeGreaterThan(rev);
   });
 
   it("빈 값 비교", () => {

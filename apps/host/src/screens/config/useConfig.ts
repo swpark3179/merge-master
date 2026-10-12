@@ -1,5 +1,5 @@
 import type { GridSelection } from "@mm/grid";
-import { selectionRange, buildLayout } from "@mm/grid";
+import { selectionRange, buildLayout, withLineSize } from "@mm/grid";
 import type { CellRange, ConfigEdit, ConfigView, FormatEdit, HostEvent, SheetModel } from "@mm/shared";
 import { decodeFlags } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
@@ -60,7 +60,7 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
     return () => void off.then((f) => f());
   }, [refresh]);
 
-  // 공유 중 참여자 입력·되돌리기도 이 화면 시트에 반영한다(옛 값 위에 고쳐 쓰지 않게). `reset`은 대개 이 화면의
+  // 공유 중 참여자 입력·되돌리기·크기 조절도 이 화면 시트에 반영한다(옛 값 위에 고쳐 쓰지 않게). `reset`은 대개 이 화면의
   // 동작이 결과(시트·설정 보기)를 직접 돌려받으므로, 참여자가 행을 추가해 시트 크기가 바뀐 때만 다시 읽는다.
   const rows = useRef(initial.rows);
   rows.current = model.rows;
@@ -78,6 +78,7 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
           })
           .catch(() => {});
       } else if (ev.type === "cells") setModel((m) => withValues(m, ev.cells));
+      else if (ev.type === "resized") setModel((m) => withLineSize(m, ev.axis, ev.from, ev.count, ev.size));
       else if (ev.type === "styles")
         setModel((m) => {
           const cells = m.cells.slice();

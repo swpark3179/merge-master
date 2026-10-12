@@ -16,7 +16,9 @@ use crate::sheet::SheetModel;
 pub enum Brush {
     /// 조회조건(열 단위, 켜고 끄기).
     Filter,
+    /// 입력 열(열 단위 — 일부 칸만 골라도 고른 열 전체). 일부 칸만 바꾸는 것은 셀 예외([`ConfigEdit::AddException`]).
     Input,
+    /// 잠금 열(열 단위, 필수도 끈다). 셀 예외는 그대로 둔다.
     Locked,
     /// 필수(켜고 끄기).
     Required,
@@ -187,15 +189,30 @@ impl CollectConfig {
         Ok(())
     }
 
-    /// 범위가 데이터 행 전체에 걸치거나 머리글을 포함하면 **열 단위**로, 아니면 **셀 예외**로 반영한다.
+    /// 조회조건·입력·잠금은 고른 칸의 **열 전체**에 반영한다(일부 칸만 골라도). 입력·잠금은 셀 예외를 건드리지 않는다 —
+    /// 칸 단위 입력 가능·입력 금지는 셀 예외로만 정한다(1b 오른쪽 '셀 예외'). 필수·지우개는 범위가 데이터 행 전체에 걸치거나
+    /// 머리글을 포함하면 **열 단위**로, 아니면 **셀 예외**로 반영한다.
     fn brush(&mut self, model: &SheetModel, sel: CellRange, brush: Brush) -> Result<(), ConfigError> {
         let cols: Vec<usize> = (sel.col..=sel.last_col()).map(|c| c as usize).collect();
-        if brush == Brush::Filter {
-            let on = !cols.iter().all(|&c| self.columns[c].filter);
-            for &c in &cols {
-                self.columns[c].filter = on;
+        match brush {
+            Brush::Filter => {
+                let on = !cols.iter().all(|&c| self.columns[c].filter);
+                for &c in &cols {
+                    self.columns[c].filter = on;
+                }
+                return Ok(());
             }
-            return Ok(());
+            Brush::Input | Brush::Locked => {
+                let role = if brush == Brush::Input { ColumnRole::Input } else { ColumnRole::Locked };
+                for &c in &cols {
+                    self.columns[c].role = role;
+                    if role == ColumnRole::Locked {
+                        self.columns[c].required = false;
+                    }
+                }
+                return Ok(());
+            }
+            Brush::Required | Brush::Erase => {}
         }
         let Some(data) = data_area(model) else { return Err(ConfigError::HeaderOnly) };
         let sel_data = sel.intersect(&data);
@@ -205,22 +222,7 @@ impl CollectConfig {
         let area = if whole_columns { column_area } else { sel_data.ok_or(ConfigError::HeaderOnly)? };
 
         match brush {
-            Brush::Filter => unreachable!(),
-            Brush::Input | Brush::Locked => {
-                let role = if brush == Brush::Input { ColumnRole::Input } else { ColumnRole::Locked };
-                self.remove_inside(area, &[ExceptionKind::Input, ExceptionKind::Locked]);
-                if whole_columns {
-                    for &c in &cols {
-                        self.columns[c].role = role;
-                        if role == ColumnRole::Locked {
-                            self.columns[c].required = false;
-                        }
-                    }
-                } else if !cols.iter().all(|&c| self.columns[c].role == role) {
-                    let kind = if role == ColumnRole::Input { ExceptionKind::Input } else { ExceptionKind::Locked };
-                    self.exceptions.push(CellException { range: area, kind, note: String::new() });
-                }
-            }
+            Brush::Filter | Brush::Input | Brush::Locked => unreachable!(),
             Brush::Required => {
                 if whole_columns {
                     let on = !cols.iter().all(|&c| self.columns[c].required);
@@ -305,29 +307,44 @@ mod tests {
     }
 
     #[test]
-    fn partial_brush_makes_exceptions_and_locked_wins() {
+    fn role_brush_on_some_cells_sets_whole_columns_and_keeps_exceptions() {
         let m = budget();
         let mut cfg = CollectConfig::suggest(&m);
-        brush(&mut cfg, &m, "F6", Brush::Locked);
-        brush(&mut cfg, &m, "F3:F4", Brush::Input); // 이미 입력 열이라 예외를 만들지 않는다
-        brush(&mut cfg, &m, "E3:E4", Brush::Input);
+        assert_eq!(cfg.columns[4].role, ColumnRole::Locked);
+        // 칸 하나만 골라도 그 열 전체가 입력 열이 된다(셀 예외를 만들지 않는다).
+        brush(&mut cfg, &m, "E4", Brush::Input);
+        assert_eq!(cfg.columns[4].role, ColumnRole::Input);
+        assert!(cfg.exceptions.is_empty());
+        cfg.columns[5].required = true;
+        brush(&mut cfg, &m, "E5:F6", Brush::Locked);
+        assert_eq!((cfg.columns[4].role, cfg.columns[5].role), (ColumnRole::Locked, ColumnRole::Locked));
+        assert!(!cfg.columns[5].required, "잠그면 필수도 꺼진다");
+        assert!(cfg.exceptions.is_empty());
+
+        // 칸 단위는 셀 예외로만: 열 역할을 다시 바꿔도 예외는 남는다.
+        let add = |cfg: &mut CollectConfig, a: &str, kind| {
+            cfg.apply(&m, ConfigEdit::AddException { range: r(a), kind, note: String::new() }).unwrap()
+        };
+        add(&mut cfg, "F6", ExceptionKind::Locked);
+        add(&mut cfg, "E3:E4", ExceptionKind::Input);
+        brush(&mut cfg, &m, "F3", Brush::Input);
+        brush(&mut cfg, &m, "E1:E8", Brush::Locked);
+        let kinds: Vec<_> = cfg.exceptions.iter().map(|e| (e.range.to_string(), e.kind)).collect();
+        assert_eq!(kinds, [("F6".to_string(), ExceptionKind::Locked), ("E3:E4".to_string(), ExceptionKind::Input)]);
+        let a = Access::compile(&m, &cfg);
+        assert!(!a.can_edit(Viewer::Host, CellRef::parse("F6").unwrap()), "입력 열이어도 입력 금지 예외");
+        assert!(a.can_edit(Viewer::Host, CellRef::parse("F7").unwrap()));
+        assert!(a.can_edit(Viewer::Host, CellRef::parse("E3").unwrap()), "잠금 열이어도 입력 가능 예외");
+        assert!(!a.can_edit(Viewer::Host, CellRef::parse("E5").unwrap()));
+    }
+
+    #[test]
+    fn partial_required_brush_makes_exceptions() {
+        let m = budget();
+        let mut cfg = CollectConfig::suggest(&m);
         brush(&mut cfg, &m, "H3:H5", Brush::Required);
         let kinds: Vec<_> = cfg.exceptions.iter().map(|e| (e.range.to_string(), e.kind)).collect();
-        assert_eq!(
-            kinds,
-            [
-                ("F6".to_string(), ExceptionKind::Locked),
-                ("E3:E4".to_string(), ExceptionKind::Input),
-                ("H3:H5".to_string(), ExceptionKind::Required),
-            ]
-        );
-        let a = Access::compile(&m, &cfg);
-        assert!(!a.can_edit(Viewer::Host, CellRef::parse("F6").unwrap()));
-        assert!(a.can_edit(Viewer::Host, CellRef::parse("E3").unwrap()));
-
-        // 같은 범위에 반대 역할을 칠하면 예전 예외를 대신한다.
-        brush(&mut cfg, &m, "F6", Brush::Input);
-        assert!(cfg.exceptions.iter().all(|e| e.range != r("F6")));
+        assert_eq!(kinds, [("H3:H5".to_string(), ExceptionKind::Required)]);
         // 같은 범위 필수를 다시 누르면 끈다.
         brush(&mut cfg, &m, "H3:H5", Brush::Required);
         assert!(cfg.exceptions.iter().all(|e| e.kind != ExceptionKind::Required));
@@ -342,7 +359,8 @@ mod tests {
         brush(&mut cfg, &m, "D3:E5", Brush::Filter);
         assert!(!cfg.columns[3].filter && !cfg.columns[4].filter);
 
-        brush(&mut cfg, &m, "F6", Brush::Locked);
+        cfg.apply(&m, ConfigEdit::AddException { range: r("F6"), kind: ExceptionKind::Locked, note: String::new() })
+            .unwrap();
         cfg.apply(&m, ConfigEdit::AssignRange { range: r("I3:I8"), person: "이서연".into(), note: String::new() })
             .unwrap();
         brush(&mut cfg, &m, "F5:I6", Brush::Erase);

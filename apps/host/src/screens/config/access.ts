@@ -1,4 +1,4 @@
-import type { CellRange, ColumnRole, ConfigView } from "@mm/shared";
+import type { CellRange, ConfigView } from "@mm/shared";
 import { FLAG } from "@mm/shared";
 
 /** 고른 범위를 누가 편집할 수 있는지(그리드 아래 줄). 판정 비트는 Rust 권한 엔진이 계산한 `flags`를 그대로 쓴다. */
@@ -50,23 +50,4 @@ export function rangeAccess(view: ConfigView, flags: Uint8Array, cols: number, r
   }
   out.people = [...owners].sort((a, b) => a - b);
   return out;
-}
-
-/** 일부 칸만 고른 범위의 실제 역할(셀 예외 반영): 모두 입력이면 입력, 모두 잠금이면 잠금, 섞였으면 `null`. 머리글·병합에
- *  덮인 칸·숨긴 칸은 세지 않는다(셀 수 있는 칸이 없으면 `null`). */
-export function cellsRole(flags: Uint8Array, cols: number, range: CellRange): ColumnRole | null {
-  let input = 0;
-  let locked = 0;
-  let seen = 0;
-  for (let r = range.row; r < range.row + range.rows && seen < MAX_CELLS; r++) {
-    for (let c = range.col; c < range.col + range.cols; c++) {
-      const f = flags[r * cols + c] ?? 0;
-      if (f & (FLAG.HEADER | FLAG.COVERED | FLAG.HIDDEN)) continue;
-      seen++;
-      if (f & FLAG.INPUT) input++;
-      else locked++;
-      if (input > 0 && locked > 0) return null;
-    }
-  }
-  return input > 0 ? "input" : locked > 0 ? "locked" : null;
 }

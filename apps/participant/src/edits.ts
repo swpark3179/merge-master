@@ -1,4 +1,6 @@
+import { withLineSize } from "@mm/grid";
 import type {
+  Axis,
   BatchOrigin,
   CellEdit,
   CellRef,
@@ -241,6 +243,12 @@ export class EditState {
     const i = this.index(at.row, at.col);
     if (by) this.locks.set(i, by);
     else this.locks.delete(i);
+    this.bump();
+  }
+
+  /** 누군가(호스트 포함) 열 너비·행 높이를 바꿨다. 숨긴 줄(남의 행 숨김 포함)은 그대로 둔다. */
+  resized(axis: Axis, from: number, count: number, size: number) {
+    this.model = withLineSize(this.model, axis, from, count, size);
     this.bump();
   }
 

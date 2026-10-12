@@ -52,6 +52,14 @@ export function rgbHex(rgb: number): string {
   return `#${rgb.toString(16).padStart(6, "0")}`;
 }
 
+/** 색 코드 → `0xRRGGBB`: `#ff00ff`·`ff00ff`·`#f0f`(앞뒤 공백 무시, 대소문자 무관). 색 코드가 아니면 `null`. */
+export function parseHex(text: string): number | null {
+  const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(text.trim());
+  if (!m) return null;
+  const h = m[1]!.length === 3 ? [...m[1]!].map((c) => c + c).join("") : m[1]!;
+  return parseInt(h, 16);
+}
+
 /** `0 → "A"`, `26 → "AA"`. */
 export function colLetters(col: number): string {
   let s = "";

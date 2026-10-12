@@ -1,6 +1,7 @@
 import type {
   CollectConfig,
   HostSnapshot,
+  IpNamesView,
   JobSummary,
   LanAddress,
   RecalcStatus,
@@ -10,7 +11,7 @@ import type {
 } from "@mm/shared";
 import { formatDeadline } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { errorText, jobEvent } from "../../api";
 import { useApi, useJobId } from "../../job";
@@ -65,6 +66,12 @@ export function ServiceScreen(props: Props) {
   useEffect(() => {
     if (savedName !== undefined) setMyName(savedName);
   }, [savedName]);
+  /** IP 명단에 있는 이 PC(호스트)의 이름. 없으면 `null`. */
+  const [pcName, setPcName] = useState<string | null>(null);
+  const onIpNames = useCallback(
+    (v: IpNamesView) => setPcName(v.entries.find((e) => v.hostIps.includes(e.ip))?.name ?? null),
+    [],
+  );
 
   // 수식 재계산(Excel 계산 사본) 상태
   useEffect(() => {
@@ -138,6 +145,17 @@ export function ServiceScreen(props: Props) {
     );
     setConfig(v.config);
   };
+
+  // 내 이름이 비어 있고 이 PC의 IP가 IP 명단에 있으면 그 이름으로 채워 저장한다(입력 중인 글은 덮지 않는다, 한 번만).
+  const autoFilled = useRef<string | null>(null);
+  useEffect(() => {
+    if (!config || config.requester.trim() || !pcName || myName.trim() || autoFilled.current === pcName) return;
+    autoFilled.current = pcName;
+    setMyName(pcName);
+    void saveMeta({ requester: pcName });
+    // saveMeta·myName은 그때의 것을 쓴다(설정·명단이 바뀔 때만 다시 본다).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, pcName]);
 
   /** 내 이름을 저장한다. 비우면 저장하지 않고 앞의 이름으로 돌린다(필수). */
   const saveName = async () => {
@@ -225,8 +243,10 @@ export function ServiceScreen(props: Props) {
                   <input
                     aria-label="내 이름"
                     aria-required="true"
+                    aria-invalid={!myName.trim()}
+                    className={myName.trim() ? undefined : "invalid"}
                     placeholder="예: 박지훈 (기획팀)"
-                    title="공지·셀 강조·채팅에 이 이름으로 보입니다"
+                    title="공지·셀 강조·채팅에 이 이름으로 보입니다. 이 PC의 IP가 IP 명단에 있으면 그 이름으로 채워집니다."
                     value={myName}
                     onChange={(e) => setMyName(e.target.value)}
                     onBlur={() => void saveName()}
@@ -417,7 +437,7 @@ export function ServiceScreen(props: Props) {
         onError={setError}
       />
 
-      <IpNamesPanel snapshot={snapshot} rev={ipRev} onError={setError} />
+      <IpNamesPanel snapshot={snapshot} rev={ipRev} onError={setError} onChange={onIpNames} />
     </div>
   );
 }

@@ -33,6 +33,7 @@ use collect_core::access::{Access, ProgressStats, Viewer, union_roster};
 use collect_core::config::{CollectConfig, OthersRows, SessionCommon};
 use collect_core::detect::{TableGuess, column_labels};
 use collect_core::edit::{ConfigEdit, EditReach};
+use collect_core::format::Axis;
 use collect_core::history::BatchOrigin;
 use collect_core::project::project_with;
 use collect_core::view::{ConfigView, config_view_with, encode_flags};
@@ -131,6 +132,14 @@ pub enum HostEvent {
         styles: Vec<CellStyle>,
         changes: Vec<StyleChange>,
     },
+    /// 열 너비·행 높이가 바뀜(`from`부터 `count`개 줄이 `size` pt, 숨긴 줄은 그대로).
+    Resized {
+        sheet: u32,
+        axis: Axis,
+        from: u32,
+        count: u32,
+        size: f32,
+    },
     Reset,
 }
 
@@ -214,7 +223,8 @@ pub struct RecalcRequest {
     pub writes: Vec<(u32, CellRef, CellValue)>,
 }
 
-/// 호스트가 `with` 안에서 요청한 일(작업이 끝난 뒤 순서대로 한다).
+/// 호스트가 `with` 안에서 요청한 일(작업이 끝난 뒤 순서대로 한다). `Resized`는 호스트가 바꾼 열 너비·행 높이(시트에는
+/// 이미 반영): 참여자·호스트 화면에 알리고 시트를 남긴다.
 enum Action {
     Set { user: String, origin: BatchOrigin, sheet: usize, cells: Vec<(CellRef, CellValue)> },
     Snapshot { kind: SnapshotKind, label: String },
@@ -225,6 +235,7 @@ enum Action {
     Chat { to: ChatTo, text: String },
     Store(Store),
     Meta(String, String),
+    Resized { sheet: usize, axis: Axis, from: u32, count: u32, size: f32 },
 }
 
 const NO_SHEET: &str = "없는 시트입니다";
@@ -253,6 +264,15 @@ impl Shared<'_> {
     /// 설정·서식을 바꿨다: 권한을 다시 계산하고 접속 중인 참여자에게 새 시트를 보낸다.
     pub fn changed(&mut self) {
         self.changed = true;
+    }
+
+    /// 호스트가 열 너비·행 높이를 바꾼다(1b·1d 머리글 경계 끌기). 권한은 그대로라 참여자에게 새 시트를 다시 보내지 않고
+    /// 바뀐 크기만 알린다(`resized`). 실제로 쓴 크기(범위 안으로·0.25pt 단위)를 돌려준다.
+    pub fn resize(&mut self, sheet: usize, axis: Axis, from: u32, count: u32, size: f32) -> Result<f32, String> {
+        let slot = self.sheets.get_mut(sheet).ok_or_else(|| NO_SHEET.to_string())?;
+        let size = collect_core::format::resize(&mut slot.model, axis, from, count, size).map_err(|e| e.to_string())?;
+        self.actions.push(Action::Resized { sheet, axis, from, count, size });
+        Ok(size)
     }
 
     /// 다른 시트(들)로 바꿨다(다시 불러와 확정): 작업이 끝나면 셀 버전·잠금·이력을 새로 시작한다.
@@ -862,6 +882,7 @@ impl State {
             ClientMsg::AckHighlight { id } => self.ack_highlight(conn, id),
             ClientMsg::Chat { to, text } => self.chat(conn, to, text),
             ClientMsg::AddRows { sheet, count } => self.add_rows(conn, sheet, count),
+            ClientMsg::Resize { sheet, axis, from, count, size } => self.resize(conn, sheet, axis, from, count, size),
         }
     }
 
@@ -1227,6 +1248,10 @@ impl State {
                         store.meta(&k, &v);
                     }
                     self.host_meta.insert(k, v);
+                }
+                Action::Resized { sheet, axis, from, count, size } => {
+                    let by = self.host_name();
+                    self.resized(sheet, &by, axis, from, count, size);
                 }
             }
         }
