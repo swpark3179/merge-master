@@ -1,4 +1,14 @@
-import type { CellDecoration, EditorState, GridHit, GridMark, GridSelection, Move, SheetGridHandle } from "@mm/grid";
+import { PickHint, useCellPick } from "@mm/chat";
+import type {
+  CellDecoration,
+  EditorState,
+  GridHit,
+  GridMark,
+  GridRange,
+  GridSelection,
+  Move,
+  SheetGridHandle,
+} from "@mm/grid";
 import {
   CellEditor,
   ContextMenu,
@@ -12,9 +22,22 @@ import {
   SheetGrid,
   SizeControl,
   toTsv,
+  trimHiddenRows,
 } from "@mm/grid";
 import type { Axis, CellRange, CellRef, HAlign, SheetModel, StylePatch } from "@mm/shared";
-import { a1, colLetters, displayValue, editText, FLAG, normalize, personColor, rgbHex, sheetPrefix } from "@mm/shared";
+import {
+  a1,
+  cellRefToken,
+  colLetters,
+  displayValue,
+  editText,
+  FLAG,
+  formatRange,
+  normalize,
+  personColor,
+  rgbHex,
+  sheetPrefix,
+} from "@mm/shared";
 import type { ClipboardEvent, CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -94,6 +117,18 @@ function rectOf(sel: GridSelection): CellRange {
     rows: Math.abs(sel.anchor.row - sel.focus.row) + 1,
     cols: Math.abs(sel.anchor.col - sel.focus.col) + 1,
   };
+}
+
+/** 채팅 참조로 간 범위를 표시해 두는 시간(ms): 그리드의 `mm-ping`(900ms)이 끝난 뒤 뗀다. */
+const PING_MS = 1000;
+
+/** 범위를 시트 안으로 줄인다(채팅에 적힌 주소가 시트보다 클 수 있다). 시트 밖이면 `null`. */
+function clampTo(model: Pick<SheetModel, "rows" | "cols">, r: CellRange): CellRange | null {
+  const row = Math.max(0, r.row);
+  const col = Math.max(0, r.col);
+  const rows = Math.min(model.rows, r.row + r.rows) - row;
+  const cols = Math.min(model.cols, r.col + r.cols) - col;
+  return rows > 0 && cols > 0 ? { row, col, rows, cols } : null;
 }
 
 /** 사이드바를 열어 둘지(주소 경로마다 기억). 처음에는 넓은 화면이면 연다. */
@@ -186,6 +221,14 @@ export function Workspace({ s }: { s: SessionState }) {
   const [chatSeen, setChatSeen] = useState(0);
   const [menu, setMenu] = useState<HeaderMenu | null>(null);
   const onChatSeen = useCallback((id: number) => setChatSeen((x) => Math.max(x, id)), []);
+  /** 채팅 참조·강조로 간 범위: 테두리가 두 번 깜빡인다(`PING_MS` 뒤에 뗀다). */
+  const [ping, setPing] = useState<{ sheet: number; range: CellRange; seq: number } | null>(null);
+  const pingSeq = useRef(0);
+  useEffect(() => {
+    if (!ping) return;
+    const id = window.setTimeout(() => setPing(null), PING_MS);
+    return () => window.clearTimeout(id);
+  }, [ping]);
   const editorRef = useRef<ActiveEdit | null>(null);
   editorRef.current = editor;
   const input = useRef<HTMLTextAreaElement>(null);
@@ -331,6 +374,20 @@ export function Workspace({ s }: { s: SessionState }) {
     },
     [leave, s, active],
   );
+
+  /** 채팅의 '@ 셀 선택': 지금 시트에서 범위를 골라 `#시트!범위`로 넣는다(시트 탭을 바꿔도 이어진다). */
+  const pick = useCellPick({
+    start: () => selection?.anchor ?? { row: Math.min(model.headerRows, model.rows - 1), col: 0 },
+    move: (from, dRow, dCol) => grid.current?.moveFrom(from, dRow, dCol) ?? from,
+    describe: (r) => {
+      const at = { ...r, row: model.origin.row + r.row, col: model.origin.col + r.col };
+      return { token: cellRefToken(model.sheet, at), sheet: sheetPrefix(model.sheet), addr: formatRange(at) };
+    },
+    fromSheet: (r) => ({ ...r, row: r.row - model.origin.row, col: r.col - model.origin.col }),
+    onBegin: () => {
+      if (editorRef.current) leave();
+    },
+  });
 
   // 활성 칸이 입력 가능하면 투명 편집기에, 아니면 그리드에 포커스(그리드 안에서 움직일 때만).
   const overlayOn = mode === "grid" && at !== null && (editable || editor !== null);
@@ -733,6 +790,9 @@ export function Workspace({ s }: { s: SessionState }) {
     });
   }
 
+  const gridRanges: GridRange[] = [...pick.ranges];
+  if (ping && ping.sheet === active) gridRanges.push({ key: `ping${ping.seq}`, range: ping.range, kind: "ping" });
+
   /** 입력할 수 없는 칸에 쓰려 하면 잠깐 내 담당 칸을 깜빡인다(두 번 깜빡이는 동안만 둔다). */
   const [mineHint, setMineHint] = useState(false);
   useEffect(() => {
@@ -770,9 +830,15 @@ export function Workspace({ s }: { s: SessionState }) {
     setFormRow(null);
     s.setActive(to);
     s.cursor(back?.selection?.anchor ?? null);
+    pick.reset();
   };
 
-  /** 그 칸(그 시트의 모델 좌표)으로 간다. 다른 시트면 시트를 바꾸고, 필터에 걸려 숨었으면 필터를 지운다. */
+  const othersRows = useMemo(() => new Set(model.hiddenRows), [model]);
+
+  /**
+   * 그 범위(그 시트의 모델 좌표)를 선택한다. 다른 시트면 시트를 바꾸고, 필터에 걸려 숨은 행이 있으면 필터를 지운다.
+   * 앞뒤로 걸친 남의 행은 잘라 내고 보이는 부분만 고른다.
+   */
   const revealRange = (range: CellRange, highlight?: number, target: number = active) => {
     if (highlight !== undefined) s.ackHighlight(highlight);
     if (mode !== "grid") setMode("grid");
@@ -782,12 +848,24 @@ export function Workspace({ s }: { s: SessionState }) {
       setPendingReveal({ sheet: target, range });
       return;
     }
-    if (hidden.has(range.row)) setFilter(NO_FILTER);
-    if (model.hiddenRows.includes(range.row)) {
+    const inSheet = clampTo(model, range);
+    const shown = inSheet && trimHiddenRows(inSheet, (r) => othersRows.has(r));
+    if (!inSheet || !shown) {
       notify("그 칸은 이 화면에서 볼 수 없습니다(남의 행)", "warn");
       return;
     }
-    requestAnimationFrame(() => grid.current?.reveal({ row: range.row, col: range.col }));
+    if (shown.rows < inSheet.rows) {
+      const where = formatRange({ ...shown, row: model.origin.row + shown.row, col: model.origin.col + shown.col });
+      notify(`일부 행은 볼 수 없어 보이는 부분(${where})만 선택했습니다`, "warn");
+    }
+    for (let r = shown.row; r < shown.row + shown.rows; r++)
+      if (hidden.has(r)) {
+        setFilter(NO_FILTER);
+        break;
+      }
+    const last = { row: shown.row + shown.rows - 1, col: shown.col + shown.cols - 1 };
+    requestAnimationFrame(() => grid.current?.select({ anchor: { row: shown.row, col: shown.col }, focus: last }));
+    setPing({ sheet: active, range: shown, seq: ++pingSeq.current });
   };
 
   // 시트를 바꾼 뒤(새 시트를 그린 뒤) 가려던 칸을 보인다.
@@ -1219,7 +1297,10 @@ export function Workspace({ s }: { s: SessionState }) {
               ref={gridHost}
               // 칸을 누르면 브라우저가 그리드에 준 포커스를 바로 편집기로 옮긴다(곧바로 입력해도 첫 글자를 받는다).
               onClick={() => {
-                if (overlayOn && !editorRef.current) input.current?.focus({ preventScroll: true });
+                // 채팅에 넣을 범위를 골랐으면 초점은 채팅 입력 칸에 그대로 둔다.
+                const now = document.activeElement;
+                const here = !now || now === document.body || gridHost.current?.contains(now);
+                if (overlayOn && !editorRef.current && here) input.current?.focus({ preventScroll: true });
               }}
               onCopy={(e) => onCopy(e, false)}
               onCut={(e) => onCopy(e, true)}
@@ -1231,6 +1312,8 @@ export function Workspace({ s }: { s: SessionState }) {
                 model={view}
                 decorate={decorate}
                 marks={marks}
+                ranges={gridRanges}
+                pick={pick.grid}
                 rowMarker={rowMarker}
                 cellText={cellText}
                 selection={selection}
@@ -1255,6 +1338,7 @@ export function Workspace({ s }: { s: SessionState }) {
                   ) : undefined
                 }
               />
+              {pick.active && <PickHint />}
             </div>
             {sideOpen && (
               <SidePanel
@@ -1277,6 +1361,8 @@ export function Workspace({ s }: { s: SessionState }) {
                 onReveal={revealRange}
                 onRef={revealRef}
                 onChatSeen={onChatSeen}
+                chatSeen={chatSeen}
+                pick={pick}
               />
             )}
           </div>
@@ -1292,7 +1378,7 @@ export function Workspace({ s }: { s: SessionState }) {
         />
       )}
 
-      {s.sheets.length > 1 && <SheetTabs s={s} onSelect={switchSheet} />}
+      {s.sheets.length > 1 && <SheetTabs s={s} onSelect={switchSheet} keepFocus={pick.active} />}
       {menu && mode === "grid" && headerMenu(menu)}
 
       <footer className="status">
@@ -1385,7 +1471,16 @@ function ConnectionBar({ connected, waiting }: { connected: boolean; waiting: nu
 }
 
 /** 엑셀처럼 그리드 아래의 시트 탭: 시트 이름, 내가 아직 채우지 않은 필수 칸 수, 확인하지 않은 강조. */
-function SheetTabs({ s, onSelect }: { s: SessionState; onSelect: (sheet: number) => void }) {
+function SheetTabs({
+  s,
+  onSelect,
+  keepFocus,
+}: {
+  s: SessionState;
+  onSelect: (sheet: number) => void;
+  /** 채팅에 넣을 범위를 고르는 중: 탭을 눌러도 초점을 채팅 입력 칸에 둔다(다른 시트에서 이어 고른다). */
+  keepFocus?: boolean;
+}) {
   return (
     <div className="sheet-tabs" role="tablist" aria-label="시트">
       {s.sheets.map((x, i) => {
@@ -1400,6 +1495,7 @@ function SheetTabs({ s, onSelect }: { s: SessionState; onSelect: (sheet: number)
             title={[x.model.sheet, left > 0 && `내 필수 미입력 ${left}칸`, alert && "확인하지 않은 강조 있음"]
               .filter(Boolean)
               .join(" · ")}
+            onMouseDown={(e) => keepFocus && e.preventDefault()}
             onClick={() => onSelect(i)}
           >
             {alert && <span className="dot" aria-hidden />}

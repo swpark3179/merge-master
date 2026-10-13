@@ -23,6 +23,9 @@ importers:
 
   apps/host:
     dependencies:
+      '@mm/chat':
+        specifier: workspace:*
+        version: link:../../packages/chat
       '@mm/grid':
         specifier: workspace:*
         version: link:../../packages/grid
@@ -63,6 +66,9 @@ importers:
 
   apps/participant:
     dependencies:
+      '@mm/chat':
+        specifier: workspace:*
+        version: link:../../packages/chat
       '@mm/grid':
         specifier: workspace:*
         version: link:../../packages/grid
@@ -94,6 +100,34 @@ importers:
       vite:
         specifier: ^8.3.4
         version: 8.3.4(@types/node@24.19.1)
+      vitest:
+        specifier: ^5.0.3
+        version: 5.0.3(@types/node@24.19.1)(vite@8.3.4(@types/node@24.19.1))
+
+  packages/chat:
+    dependencies:
+      '@mm/grid':
+        specifier: workspace:*
+        version: link:../grid
+      '@mm/shared':
+        specifier: workspace:*
+        version: link:../shared
+    devDependencies:
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+      react:
+        specifier: ^19.3.0
+        version: 19.3.0
+      react-dom:
+        specifier: ^19.3.0
+        version: 19.3.0(react@19.3.0)
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
       vitest:
         specifier: ^5.0.3
         version: 5.0.3(@types/node@24.19.1)(vite@8.3.4(@types/node@24.19.1))

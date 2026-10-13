@@ -44,6 +44,25 @@ export interface GridMark {
   lock?: boolean;
 }
 
+/**
+ * 칸 위에 겹쳐 그릴 범위 표시: 채팅에 넣을 범위를 고르는 중(`pick`, 흐르는 점선), 채팅 참조로 간 범위(`ping`, 테두리가
+ * 두 번 깜빡이고 사라짐 — 다시 깜빡이려면 `key`를 바꾼다).
+ */
+export interface GridRange {
+  key: string;
+  range: CellRange;
+  kind: "pick" | "ping";
+}
+
+/**
+ * 채팅에 넣을 범위를 고르는 중: 칸·머리글을 누르고 끌면 선택을 바꾸는 대신 `onChange`로 알리고, 놓으면 `onEnd`.
+ * 누를 때 포커스를 가져가지 않는다(채팅 입력 칸에 그대로 둔다). 더블클릭·오른쪽 클릭 메뉴는 받지 않는다.
+ */
+export interface GridPick {
+  onChange(sel: GridSelection): void;
+  onEnd(): void;
+}
+
 /** 오른쪽 클릭한 곳: 칸(병합이면 그 칸 좌표), 열 머리글, 행 머리글. */
 export type GridHit =
   { kind: "cell"; row: number; col: number } | { kind: "col"; col: number } | { kind: "row"; row: number };
@@ -55,6 +74,10 @@ export interface SheetGridHandle {
   step(dRow: -1 | 0 | 1, dCol: -1 | 0 | 1): CellRef | null;
   /** 칸이 보이도록 스크롤하고 그 칸을 선택한다. */
   reveal(at: CellRef): void;
+  /** 범위를 선택하고 보이도록 스크롤한다(범위가 화면보다 크면 왼쪽 위부터). */
+  select(sel: GridSelection): void;
+  /** `from`에서 한 칸 옮긴 칸(병합·숨긴 행 고려)을 보이게 스크롤하고 돌려준다. 선택은 바꾸지 않는다. */
+  moveFrom(from: CellRef, dRow: -1 | 0 | 1, dCol: -1 | 0 | 1): CellRef;
 }
 
 export interface SheetGridProps {
@@ -72,6 +95,10 @@ export interface SheetGridProps {
   overlay?: { at: CellRef; node: ReactNode } | null;
   /** 다른 사람의 커서·편집 잠금. */
   marks?: GridMark[];
+  /** 칸 위에 겹쳐 그릴 범위 표시(고르는 중인 범위, 채팅 참조로 간 범위). */
+  ranges?: GridRange[];
+  /** 주면 채팅에 넣을 범위를 고르는 중이다. */
+  pick?: GridPick | null;
   /** 방향키 이동보다 먼저 받는다. `preventDefault()`하면 그리드는 이동하지 않는다. */
   onKey?: (e: KeyboardEvent) => void;
   onCellDoubleClick?: (row: number, col: number) => void;
@@ -139,7 +166,13 @@ interface Viewport {
   height: number;
 }
 
-type Drag = { kind: "cells" | "cols" | "rows"; anchor: number; anchorCell: { row: number; col: number } };
+type Drag = {
+  kind: "cells" | "cols" | "rows";
+  anchor: number;
+  anchorCell: { row: number; col: number };
+  /** 채팅에 넣을 범위를 고르는 중(선택 대신 `pick`에 알린다). */
+  pick: boolean;
+};
 
 /** 머리글 경계를 끄는 중: 처음 크기·마우스 위치와 지금 크기(px). */
 interface Resize {
@@ -169,6 +202,8 @@ export function SheetGrid({
   cellText,
   overlay,
   marks,
+  ranges,
+  pick,
   onKey,
   onCellDoubleClick,
   onResize,
@@ -202,8 +237,14 @@ export function SheetGrid({
     return () => ro.disconnect();
   }, [measure]);
 
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
   useEffect(() => {
-    const up = () => (drag.current = null);
+    const up = () => {
+      const d = drag.current;
+      drag.current = null;
+      if (d?.pick) pickRef.current?.onEnd();
+    };
     window.addEventListener("mouseup", up);
     return () => {
       window.removeEventListener("mouseup", up);
@@ -325,6 +366,8 @@ export function SheetGrid({
   };
 
   const emit = (s: GridSelection) => onSelectionChange?.(s);
+  /** 끄는 동안의 선택: 고르는 중이면 `pick`으로, 아니면 선택으로. */
+  const send = (d: Drag | null, s: GridSelection) => (d?.pick ? pickRef.current?.onChange(s) : emit(s));
 
   const hit = (e: MouseEvent) =>
     (e.target as HTMLElement).closest<HTMLElement>("[data-r],[data-col-head],[data-row-head]");
@@ -377,26 +420,35 @@ export function SheetGrid({
   }, [resizing]);
 
   const onMouseDown = (e: MouseEvent) => {
-    if (e.button !== 0 || startResize(e) || !onSelectionChange) return;
+    if (e.button !== 0 || startResize(e)) return;
+    const picking = pick != null;
+    // 고르는 중에는 포커스를 채팅 입력 칸에 둔다(그리드·편집기로 옮기지 않는다, 스크롤 막대를 눌러도).
+    if (picking) e.preventDefault();
+    else if (!onSelectionChange) return;
     const el = hit(e);
     if (!el) return;
-    const shift = e.shiftKey && selection != null;
+    const shift = !picking && e.shiftKey && selection != null;
+    let d: Drag | null = null;
+    let s: GridSelection | null = null;
     if (el.dataset.r !== undefined) {
       const at = { row: Number(el.dataset.r), col: Number(el.dataset.c) };
       const anchor = shift ? selection!.anchor : at;
-      drag.current = { kind: "cells", anchor: 0, anchorCell: anchor };
-      emit({ anchor, focus: at });
+      d = { kind: "cells", anchor: 0, anchorCell: anchor, pick: picking };
+      s = { anchor, focus: at };
     } else if (el.dataset.colHead !== undefined) {
       const c = Number(el.dataset.colHead);
       const from = shift ? selection!.anchor.col : c;
-      drag.current = { kind: "cols", anchor: from, anchorCell: { row: 0, col: from } };
-      emit(columnSelection(layout, model.headerRows, from, c));
+      d = { kind: "cols", anchor: from, anchorCell: { row: 0, col: from }, pick: picking };
+      s = columnSelection(layout, model.headerRows, from, c);
     } else if (el.dataset.rowHead !== undefined) {
       const r = Number(el.dataset.rowHead);
       const from = shift ? selection!.anchor.row : r;
-      drag.current = { kind: "rows", anchor: from, anchorCell: { row: from, col: 0 } };
-      emit(rowSelection(layout, from, r));
+      d = { kind: "rows", anchor: from, anchorCell: { row: from, col: 0 }, pick: picking };
+      s = rowSelection(layout, from, r);
     }
+    if (!d || !s) return;
+    drag.current = d;
+    send(d, s);
   };
 
   const onMouseOver = (e: MouseEvent) => {
@@ -405,13 +457,13 @@ export function SheetGrid({
     const el = hit(e);
     if (!el) return;
     if (d.kind === "cells" && el.dataset.r !== undefined) {
-      emit({ anchor: d.anchorCell, focus: { row: Number(el.dataset.r), col: Number(el.dataset.c) } });
+      send(d, { anchor: d.anchorCell, focus: { row: Number(el.dataset.r), col: Number(el.dataset.c) } });
     } else if (d.kind === "cols") {
       const c = el.dataset.colHead ?? el.dataset.c;
-      if (c !== undefined) emit(columnSelection(layout, model.headerRows, d.anchor, Number(c)));
+      if (c !== undefined) send(d, columnSelection(layout, model.headerRows, d.anchor, Number(c)));
     } else if (d.kind === "rows") {
       const r = el.dataset.rowHead ?? el.dataset.r;
-      if (r !== undefined) emit(rowSelection(layout, d.anchor, Number(r)));
+      if (r !== undefined) send(d, rowSelection(layout, d.anchor, Number(r)));
     }
   };
 
@@ -444,6 +496,15 @@ export function SheetGrid({
         emit(cellSelection(at));
         scrollIntoView(scroller.current, layout, cellBox(layout, at.row, at.col));
       },
+      select: (s) => {
+        emit(s);
+        scrollIntoView(scroller.current, layout, selectionRange(layout, s));
+      },
+      moveFrom: (from, dRow, dCol) => {
+        const at = stepFrom(from, dRow, dCol);
+        scrollIntoView(scroller.current, layout, cellBox(layout, at.row, at.col));
+        return at;
+      },
     }),
     // stepFrom·emit은 layout·selection·onSelectionChange로 정해진다.
     [layout, selection, onSelectionChange],
@@ -467,6 +528,10 @@ export function SheetGrid({
   };
 
   const onContext = (e: MouseEvent) => {
+    if (pick) {
+      e.preventDefault();
+      return;
+    }
     if (!onContextMenu) return;
     const el = hit(e);
     if (!el) return;
@@ -477,6 +542,7 @@ export function SheetGrid({
   };
 
   const onDoubleClick = (e: MouseEvent) => {
+    if (pick) return;
     const el = (e.target as HTMLElement).closest<HTMLElement>("[data-r]");
     if (el && onCellDoubleClick) onCellDoubleClick(Number(el.dataset.r), Number(el.dataset.c));
   };
@@ -493,6 +559,26 @@ export function SheetGrid({
         layers[piece.layer].push(<div key="sel" className="mmg-sel" style={boxRect(layout, piece.range)} />);
     const a = cellBox(layout, selection.anchor.row, selection.anchor.col);
     layers[layerOf(layout, a.row, a.col)].push(<div key="active" className="mmg-active" style={boxRect(layout, a)} />);
+  }
+  for (const g of ranges ?? []) {
+    const range = clampRange(layout, g.range);
+    if (!range) continue;
+    for (const [i, piece] of splitByFrozen(layout, range).entries()) {
+      const css = boxRect(layout, piece.range);
+      if (css.width === 0 || css.height === 0) continue;
+      layers[piece.layer].push(
+        g.kind === "pick" ? (
+          <div key={`r:${g.key}:${i}`} className="mmg-pick" style={css}>
+            <span className="t" />
+            <span className="r" />
+            <span className="b" />
+            <span className="l" />
+          </div>
+        ) : (
+          <div key={`r:${g.key}:${i}`} className="mmg-ping" style={css} />
+        ),
+      );
+    }
   }
   for (const m of marks ?? []) {
     const box = cellBox(layout, m.row, m.col);
@@ -523,7 +609,7 @@ export function SheetGrid({
   return (
     <div
       ref={scroller}
-      className={`mmg-scroller${className ? ` ${className}` : ""}`}
+      className={`mmg-scroller${pick ? " mmg-picking" : ""}${className ? ` ${className}` : ""}`}
       style={style}
       tabIndex={0}
       onScroll={onScroll}
@@ -603,19 +689,31 @@ function ResizeGuide({ resize, layout, vp }: { resize: Resize; layout: GridLayou
   );
 }
 
-/** 고정 영역에 가리지 않도록 스크롤을 옮긴다. */
+/** 범위를 시트 안으로 줄인다(채팅에 적힌 주소가 시트보다 클 수 있다). 시트 밖이면 `null`. */
+function clampRange(layout: GridLayout, r: CellRange): CellRange | null {
+  const row = Math.max(0, r.row);
+  const col = Math.max(0, r.col);
+  const lastRow = Math.min(layout.rows, r.row + r.rows);
+  const lastCol = Math.min(layout.cols, r.col + r.cols);
+  if (lastRow <= row || lastCol <= col) return null;
+  return { row, col, rows: lastRow - row, cols: lastCol - col };
+}
+
+/** 고정 영역에 가리지 않도록 스크롤을 옮긴다. 화면보다 큰 범위는 위·왼쪽을 맞춘다. */
 function scrollIntoView(el: HTMLDivElement | null, layout: GridLayout, box: CellRange) {
   if (!el) return;
-  const r = boxRect(layout, box);
-  if (box.row >= layout.frozenRows) {
-    const minTop = r.top + r.height - el.clientHeight;
+  const range = clampRange(layout, box);
+  if (!range) return;
+  const r = boxRect(layout, range);
+  if (range.row >= layout.frozenRows) {
     const maxTop = r.top - HEADER_H - layout.frozenH;
+    const minTop = Math.min(r.top + r.height - el.clientHeight, maxTop);
     if (el.scrollTop > maxTop) el.scrollTop = maxTop;
     else if (el.scrollTop < minTop) el.scrollTop = minTop;
   }
-  if (box.col >= layout.frozenCols) {
-    const minLeft = r.left + r.width - el.clientWidth;
+  if (range.col >= layout.frozenCols) {
     const maxLeft = r.left - GUTTER_W - layout.frozenW;
+    const minLeft = Math.min(r.left + r.width - el.clientWidth, maxLeft);
     if (el.scrollLeft > maxLeft) el.scrollLeft = maxLeft;
     else if (el.scrollLeft < minLeft) el.scrollLeft = minLeft;
   }

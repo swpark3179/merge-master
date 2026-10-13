@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { colSpanLabel, formatRange, parseRange, parseSheetRange, sheetPrefix, splitCellRefs } from "./a1";
+import {
+  cellRefSpans,
+  cellRefToken,
+  colSpanLabel,
+  formatRange,
+  parseRange,
+  parseSheetRange,
+  sheetPrefix,
+  splitCellRefs,
+} from "./a1";
 
 describe("parseRange / formatRange", () => {
   it("Rust CellRange::parse와 같은 결과", () => {
@@ -47,6 +56,23 @@ describe("splitCellRefs", () => {
       { ref: "'1분기 예산'!F7:H7", range: { row: 6, col: 5, rows: 1, cols: 3 }, sheet: "1분기 예산" },
     ]);
     expect(splitCellRefs("#'Bob''s'!A1")[0]).toMatchObject({ sheet: "Bob's", ref: "'Bob''s'!A1" });
+  });
+
+  it("위치와 함께 찾는다", () => {
+    const text = "근거는 #예산신청서!F2:F9 와 #h10";
+    const spans = cellRefSpans(text);
+    expect(spans.map((s) => text.slice(s.start, s.end))).toEqual(["#예산신청서!F2:F9", "#h10"]);
+    expect(spans[1]).toMatchObject({ ref: "H10", range: { row: 9, col: 7, rows: 1, cols: 1 } });
+    expect(spans[1]!.sheet).toBeUndefined();
+  });
+
+  it("채팅에 넣는 참조 글자는 시트 이름을 늘 붙인다", () => {
+    expect(cellRefToken("예산신청서", { row: 5, col: 5, rows: 3, cols: 3 })).toBe("#예산신청서!F6:H8");
+    expect(cellRefToken("1분기 예산", { row: 6, col: 5, rows: 1, cols: 1 })).toBe("#'1분기 예산'!F7");
+    // 만든 글자는 다시 같은 참조로 읽힌다.
+    expect(splitCellRefs(cellRefToken("1분기 예산", { row: 6, col: 5, rows: 1, cols: 3 }))).toEqual([
+      { ref: "'1분기 예산'!F7:H7", range: { row: 6, col: 5, rows: 1, cols: 3 }, sheet: "1분기 예산" },
+    ]);
   });
 
   it("시트 이름이 붙은 범위", () => {

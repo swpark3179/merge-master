@@ -10,6 +10,7 @@ import {
   rowSelection,
   selectForMenu,
   selectionRange,
+  trimHiddenRows,
 } from "./selection";
 
 function model(merges: SheetModel["merges"]): SheetModel {
@@ -86,5 +87,17 @@ describe("selection", () => {
     const cell = { anchor: { row: 4, col: 1 }, focus: { row: 4, col: 1 } };
     // 칸만 고른 행은 행 전체로
     expect(selectForMenu(m, cell, { kind: "row", row: 4 })).toEqual(lineSelection(m, "row", 4));
+  });
+});
+
+describe("trimHiddenRows", () => {
+  const range = { row: 2, col: 1, rows: 6, cols: 2 };
+  it("앞뒤의 숨은 행만 잘라 낸다", () => {
+    const hidden = new Set([2, 5, 7]);
+    expect(trimHiddenRows(range, (r) => hidden.has(r))).toEqual({ row: 3, col: 1, rows: 4, cols: 2 });
+    expect(trimHiddenRows(range, () => false)).toEqual(range);
+  });
+  it("모두 숨었으면 null", () => {
+    expect(trimHiddenRows(range, () => true)).toBeNull();
   });
 });

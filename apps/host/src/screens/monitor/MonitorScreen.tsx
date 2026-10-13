@@ -1,3 +1,14 @@
+import type { CellPick, ColorOf, PreviewOf, TimelineItem } from "@mm/chat";
+import {
+  buildRefPreview,
+  ChatBubble,
+  ChatComposer,
+  ChatText,
+  ChatTimeline,
+  PickHint,
+  ReactionChips,
+  useCellPick,
+} from "@mm/chat";
 import type { CellDecoration, GridHit, GridMark, GridSelection, SheetGridHandle } from "@mm/grid";
 import { filterOptions, rowsNotMatching, selectForMenu, SheetGrid, withHiddenRows, withLineSize } from "@mm/grid";
 import type {
@@ -9,7 +20,6 @@ import type {
   CellValue,
   ChatMessage,
   ChatReaction,
-  ChatReactionMark,
   ChatTo,
   CommsSnapshot,
   HighlightAudience,
@@ -25,25 +35,22 @@ import type {
 } from "@mm/shared";
 import {
   a1,
-  CHAT_REACTIONS,
-  chatEnterKey,
+  cellRefToken,
   colLetters,
   decodeFlags,
   displayValue,
   FLAG,
   FLASH_MS,
+  formatRange,
   parseDeadline,
   personColor,
-  reactionGroups,
   remainingAt,
   remainingTick,
-  scrollBehavior,
   sheetPrefix,
-  splitCellRefs,
 } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CellWrite } from "../../api";
 import { errorText, jobEvent } from "../../api";
@@ -95,6 +102,9 @@ interface Filter {
 
 const NO_FILTER: Filter = { values: {}, missingOnly: false, recentDeleted: false, person: null, column: null };
 
+/** 채팅 참조로 간 범위를 표시해 두는 시간(ms): 그리드의 `mm-ping`(900ms)이 끝난 뒤 뗀다. */
+const PING_MS = 1000;
+
 /** 시트를 받기 전 편집기에 줄 빈 시트. */
 const EMPTY_MODEL: SheetModel = {
   workbook: "",
@@ -143,23 +153,6 @@ const ORIGIN_LABEL: Record<string, string> = {
   addRow: "행 추가",
 };
 
-/** 채팅 글: `#F7`·`#인력계획!F7` 같은 셀 참조는 눌러서 그 칸으로 간다(HTML은 해석하지 않는다). */
-export function ChatText({ text, onRef }: { text: string; onRef: (r: CellRange, sheet?: string) => void }) {
-  return (
-    <>
-      {splitCellRefs(text).map((p, i) =>
-        "ref" in p ? (
-          <button key={i} className="cell-ref" onClick={() => onRef(p.range, p.sheet)}>
-            #{p.ref}
-          </button>
-        ) : (
-          <span key={i}>{p.text}</span>
-        ),
-      )}
-    </>
-  );
-}
-
 /** 다른 시트로 가서 보일 칸(시트를 바꾼 뒤 그 시트를 다 읽으면 간다). */
 interface Goto {
   sheet: number;
@@ -171,6 +164,9 @@ export function MonitorScreen(props: Props) {
   const at = Math.min(props.sheet, Math.max(0, props.sheets.length - 1));
   const [panel, setPanel] = useState<Panel>("activity");
   const [goto, setGoto] = useState<Goto | null>(null);
+  // 채팅 초안·받는 사람은 시트를 바꿔도 남긴다(시트마다 아래 화면을 새로 그린다).
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatTo, setChatTo] = useState("");
   const { onSheet } = props;
   const go = useCallback(
     (g: Goto) => {
@@ -189,6 +185,10 @@ export function MonitorScreen(props: Props) {
       goto={goto?.sheet === at ? goto.range : null}
       onGoto={go}
       onArrived={() => setGoto(null)}
+      chatDraft={chatDraft}
+      setChatDraft={setChatDraft}
+      chatTo={chatTo}
+      setChatTo={setChatTo}
     />
   );
 }
@@ -209,12 +209,20 @@ function SheetMonitor({
   goto,
   onGoto,
   onArrived,
+  chatDraft,
+  setChatDraft,
+  chatTo,
+  setChatTo,
 }: Props & {
   panel: Panel;
   setPanel: (p: Panel) => void;
   goto: CellRange | null;
   onGoto: (g: Goto) => void;
   onArrived: () => void;
+  chatDraft: string;
+  setChatDraft: (text: string) => void;
+  chatTo: string;
+  setChatTo: (name: string) => void;
 }) {
   const api = useApi();
   const job = useJobId();
@@ -224,6 +232,14 @@ function SheetMonitor({
   const [activity, setActivity] = useState<Activity | null>(null);
   const [selection, setSelection] = useState<GridSelection | null>(null);
   const [filter, setFilter] = useState<Filter>(NO_FILTER);
+  /** 채팅 참조·활동으로 간 범위: 테두리가 두 번 깜빡인다(`PING_MS` 뒤에 뗀다). */
+  const [ping, setPing] = useState<{ range: CellRange; seq: number } | null>(null);
+  const pingSeq = useRef(0);
+  useEffect(() => {
+    if (!ping) return;
+    const id = window.setTimeout(() => setPing(null), PING_MS);
+    return () => window.clearTimeout(id);
+  }, [ping]);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -390,11 +406,27 @@ function SheetMonitor({
     return i >= 0 ? personColor(i) : "#222";
   };
 
-  /** 그 시트의 칸으로 간다(다른 시트면 탭을 바꾼다, 필터에 걸려 숨었으면 필터를 지운다). */
+  /** 보고 있는 시트의 범위를 선택하고 테두리를 깜빡인다(필터에 걸려 숨은 행이 있으면 필터를 지운다). */
+  const selectRange = (r: CellRange) => {
+    if (!model) return;
+    const row = Math.max(0, r.row);
+    const col = Math.max(0, r.col);
+    const rows = Math.min(model.rows, r.row + r.rows) - row;
+    const cols = Math.min(model.cols, r.col + r.cols) - col;
+    if (rows <= 0 || cols <= 0) return;
+    for (let y = row; y < row + rows; y++)
+      if (hidden.has(y)) {
+        setFilter(NO_FILTER);
+        break;
+      }
+    const last = { row: row + rows - 1, col: col + cols - 1 };
+    requestAnimationFrame(() => grid.current?.select({ anchor: { row, col }, focus: last }));
+    setPing({ range: { row, col, rows, cols }, seq: ++pingSeq.current });
+  };
+  /** 그 시트의 범위로 간다(다른 시트면 탭을 바꾼 뒤). */
   const reveal = (s: number, r: CellRange) => {
     if (s !== sheet) return onGoto({ sheet: s, range: r });
-    if (hidden.has(r.row)) setFilter(NO_FILTER);
-    requestAnimationFrame(() => grid.current?.reveal({ row: r.row, col: r.col }));
+    selectRange(r);
   };
   /** 시트 주소 범위(채팅 #참조, 시트 이름이 없으면 보고 있는 시트) → 그 시트의 모델 좌표로 옮겨서 간다. */
   const revealSheet = (r: CellRange, name?: string) => {
@@ -408,7 +440,9 @@ function SheetMonitor({
   useEffect(() => {
     if (!ready || !goto) return;
     onArrived();
-    requestAnimationFrame(() => grid.current?.reveal({ row: goto.row, col: goto.col }));
+    selectRange(goto);
+    // selectRange는 다 읽은 지금의 모델·필터로 정해진다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, goto, onArrived]);
 
   // ------------------------------------------------------------ 그리드 장식
@@ -485,6 +519,18 @@ function SheetMonitor({
     },
     commit: commitCells,
     notify: toast,
+  });
+
+  // 채팅의 '@ 셀 선택': 보고 있는 시트에서 범위를 골라 `#시트!범위`로 넣는다(시트를 바꾸면 끝난다).
+  const pickModel = model ?? EMPTY_MODEL;
+  const pick = useCellPick({
+    start: () => selection?.anchor ?? { row: Math.min(pickModel.headerRows, pickModel.rows - 1), col: 0 },
+    move: (from, dRow, dCol) => grid.current?.moveFrom(from, dRow, dCol) ?? from,
+    describe: (r) => {
+      const at = { ...r, row: pickModel.origin.row + r.row, col: pickModel.origin.col + r.col };
+      return { token: cellRefToken(pickModel.sheet, at), sheet: sheetPrefix(pickModel.sheet), addr: formatRange(at) };
+    },
+    fromSheet: (r) => ({ ...r, row: r.row - pickModel.origin.row, col: r.col - pickModel.origin.col }),
   });
 
   // 오른쪽 클릭: 크기·행·열 추가·지우기·취소 행(1b와 같은 메뉴). 누른 곳이 선택 밖이면 그 칸·열·행을 고른다.
@@ -579,6 +625,31 @@ function SheetMonitor({
       r = await api.historyRevertBatch(b.batch, true);
     }
     setStatus(`${where(b.sheet, b.range)} 묶음을 되돌렸습니다 (${r.changed}칸)`);
+  };
+
+  /** 채팅 셀 참조 미리보기: 보고 있는 시트는 값까지, 다른 시트는 이름·주소·크기만(그 시트 데이터는 열어야 받는다). */
+  const preview: PreviewOf = (range, name) => {
+    const s = name === undefined ? sheet : sheets.findIndex((m) => m.sheet === name);
+    const m = s === sheet ? model : sheets[s];
+    if (!m) return null;
+    const live = s === sheet && model !== undefined;
+    return buildRefPreview(
+      {
+        sheet: m.sheet,
+        origin: m.origin,
+        rows: m.rows,
+        cols: m.cols,
+        text: live
+          ? (r, c) => {
+              const cell = m.cells[r * m.cols + c];
+              const nf = m.styles[cell?.s ?? 0]?.numberFormat ?? "";
+              return { text: displayValue(cell?.v, nf, columns[c]?.format), numeric: typeof cell?.v === "number" };
+            }
+          : undefined,
+        label: (c) => labels[c],
+      },
+      { ...range, row: range.row - m.origin.row, col: range.col - m.origin.col },
+    );
   };
 
   const p = progress;
@@ -773,6 +844,11 @@ function SheetMonitor({
             model={viewModel}
             decorate={decorate}
             marks={marks}
+            ranges={[
+              ...pick.ranges,
+              ...(ping ? [{ key: `ping${ping.seq}`, range: ping.range, kind: "ping" as const }] : []),
+            ]}
+            pick={pick.grid}
             cellText={cellText}
             rowMarker={(r) => {
               const o = view.rowOwner[r] ?? -1;
@@ -786,6 +862,7 @@ function SheetMonitor({
             onResize={(axis, index, size) => void onResize(axis, index, size)}
             onContextMenu={onContextMenu}
           />
+          {pick.active && <PickHint />}
           {menu && data && viewModel && (
             <GridMenu
               menu={menu}
@@ -856,9 +933,15 @@ function SheetMonitor({
             <ChatPanel
               comms={comms}
               roster={roster}
-              many={many}
               colorOf={colorOf}
+              pick={pick}
+              text={chatDraft}
+              setText={setChatDraft}
+              to={chatTo}
+              setTo={setChatTo}
               onRef={revealSheet}
+              preview={preview}
+              seen={chatSeen}
               onSeen={onChatSeen}
               onError={setError}
             />
@@ -1173,41 +1256,23 @@ const CHAT_MAX = 1000;
 function ChatPanel(props: {
   comms: CommsSnapshot | null;
   roster: string[];
-  /** 시트가 여럿이다(참조 예시에 시트 이름). */
-  many: boolean;
   colorOf: (name: string) => string;
   onRef: (r: CellRange, sheet?: string) => void;
+  preview: PreviewOf;
+  pick: CellPick;
+  /** 초안·받는 사람(시트를 바꿔도 남도록 위에서 받는다). */
+  text: string;
+  setText: (text: string) => void;
+  to: string;
+  setTo: (name: string) => void;
+  /** 채팅 탭을 열기 전에 본 마지막 글(구분선 자리). */
+  seen: number;
   onSeen: (id: number) => void;
   onError: (e: string) => void;
 }) {
   const api = useApi();
-  const { comms, roster, many, colorOf, onRef, onSeen, onError } = props;
-  const [to, setTo] = useState("");
-  const [text, setText] = useState("");
-  const list = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLTextAreaElement>(null);
-  /** Ctrl+Enter로 줄을 넣은 뒤 둘 커서 자리. */
-  const caret = useRef<number | null>(null);
+  const { comms, roster, onRef, preview, pick, text, setText, to, setTo, seen, onSeen, onError } = props;
   const messages = comms?.chat ?? [];
-  const last = messages[messages.length - 1]?.id ?? 0;
-  // 새 메시지가 오면 맨 아래로(처음 열 때는 바로, 그 뒤로는 부드럽게).
-  const scrolled = useRef(false);
-  useEffect(() => {
-    onSeen(last);
-    list.current?.scrollTo({ top: list.current.scrollHeight, behavior: scrollBehavior(!scrolled.current) });
-    scrolled.current = true;
-  }, [last, onSeen]);
-  // 입력 칸은 글에 맞춰 높아진다(CSS 최대 높이를 넘으면 스크롤).
-  useLayoutEffect(() => {
-    const el = input.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
-    if (caret.current !== null) {
-      el.setSelectionRange(caret.current, caret.current);
-      caret.current = null;
-    }
-  }, [text]);
   const send = async () => {
     if (!text.trim()) return;
     const target: ChatTo = to ? { kind: "person", name: to } : { kind: "all" };
@@ -1219,127 +1284,68 @@ function ChatPanel(props: {
     }
   };
   const react = (id: number, kind: ChatReaction) => void api.chatReact(id, kind).catch((e) => onError(errorText(e)));
+  const colorOf: ColorOf = (name, host) => (host ? "var(--ink)" : props.colorOf(name));
+  // 호스트 화면: 내 글은 호스트 글, 안 읽은 수·구분선은 참여자 글만 센다.
+  const items: TimelineItem[] = messages.map((m) => ({
+    id: m.id,
+    mine: m.host,
+    node: (
+      <ChatBubble
+        mine={m.host}
+        name={m.from}
+        color={colorOf(m.from, m.host)}
+        head={
+          <>
+            <b style={{ color: m.host ? "var(--ink)" : props.colorOf(m.from) }}>{m.host ? `${m.from} (나)` : m.from}</b>
+            {chatTarget(m)} <span className="muted">· {time(m.atMs, false)}</span>
+          </>
+        }
+        reactions={
+          <ReactionChips
+            marks={m.reactions}
+            viewer={{ host: true }}
+            canReact={!m.host}
+            onToggle={(kind) => react(m.id, kind)}
+            colorOf={colorOf}
+          />
+        }
+      >
+        <ChatText text={m.text} onRef={onRef} preview={preview} />
+      </ChatBubble>
+    ),
+  }));
   return (
     <div className="panel-body chat" aria-label="채팅">
-      <div className="chat-list" ref={list}>
-        {messages.length === 0 && <div className="muted small">아직 채팅이 없습니다.</div>}
-        {messages.map((m) => (
-          <div key={m.id} className={`chat-msg${m.host ? " mine" : ""}`}>
-            <div className="small">
-              <b style={{ color: m.host ? "#222" : colorOf(m.from) }}>{m.host ? `${m.from} (나)` : m.from}</b>
-              {chatTarget(m)} <span className="muted">· {time(m.atMs, false)}</span>
-            </div>
-            <div className="chat-text">
-              <ChatText text={m.text} onRef={onRef} />
-            </div>
-            <ChatReactions marks={m.reactions} canReact={!m.host} onToggle={(kind) => react(m.id, kind)} />
-          </div>
-        ))}
-      </div>
-      <div className="chat-input">
-        <select aria-label="받는 사람" value={to} onChange={(e) => setTo(e.target.value)}>
-          <option value="">전체</option>
-          {roster.map((n) => (
-            <option key={n} value={n}>
-              {n} (1:1)
-            </option>
-          ))}
-        </select>
-        <textarea
-          ref={input}
-          aria-label="채팅 입력"
-          placeholder={many ? "메시지 · #셀 참조(예: #F7, #인력계획!F7)" : "메시지 · #셀 참조(예: #F7)"}
-          rows={1}
-          maxLength={CHAT_MAX}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            const key = chatEnterKey(e);
-            if (!key) return;
-            e.preventDefault();
-            if (key === "send") return void send();
-            const el = e.currentTarget;
-            const next = text.slice(0, el.selectionStart) + "\n" + text.slice(el.selectionEnd);
-            if (next.length > CHAT_MAX) return;
-            caret.current = el.selectionStart + 1;
-            setText(next);
-          }}
-        />
-        <button className="small" disabled={!text.trim()} onClick={() => void send()}>
-          전송
-        </button>
-      </div>
-      <div className="muted small">Enter 보내기 · Shift+Enter 줄바꿈</div>
+      <ChatTimeline
+        items={items}
+        seen={seen}
+        onSeen={onSeen}
+        empty={<div className="muted small">아직 채팅이 없습니다.</div>}
+      />
+      <ChatComposer
+        value={text}
+        onChange={setText}
+        onSend={() => void send()}
+        maxLength={CHAT_MAX}
+        placeholder="메시지 · @로 셀 선택"
+        pick={pick}
+        options={
+          <>
+            <label className="chat-to">
+              <span className="muted small">받는 사람</span>
+              <select aria-label="받는 사람" value={to} onChange={(e) => setTo(e.target.value)}>
+                <option value="">전체</option>
+                {roster.map((n) => (
+                  <option key={n} value={n}>
+                    {n} (1:1)
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="muted small">@ 셀 선택 · Shift+Enter 줄바꿈</span>
+          </>
+        }
+      />
     </div>
-  );
-}
-
-/**
- * 채팅 한 통의 리액션: 단 것은 칩(이모지·수, 마우스를 올리면 단 사람). 참여자 글이면 칩을 눌러 내 것을 달거나 떼고,
- * 마우스를 올리면 오른쪽 위에 고르는 막대가 나온다(참여자 화면과 같다).
- */
-function ChatReactions({
-  marks,
-  canReact,
-  onToggle,
-}: {
-  marks: ChatReactionMark[] | undefined;
-  canReact: boolean;
-  onToggle: (kind: ChatReaction) => void;
-}) {
-  const groups = reactionGroups(marks, { host: true });
-  return (
-    <>
-      {groups.length > 0 && (
-        <div className="chat-reactions">
-          {groups.map((g) => {
-            const title = `${g.label}: ${g.names.join(", ")}`;
-            const body = (
-              <>
-                <span aria-hidden="true">{g.emoji}</span>
-                {g.count}
-              </>
-            );
-            return canReact ? (
-              <button
-                key={g.kind}
-                type="button"
-                className={`reaction${g.mine ? " on" : ""}`}
-                aria-label={`${g.label} ${g.count}`}
-                aria-pressed={g.mine}
-                title={title}
-                onClick={() => onToggle(g.kind)}
-              >
-                {body}
-              </button>
-            ) : (
-              <span key={g.kind} className="reaction" role="img" aria-label={`${g.label} ${g.count}`} title={title}>
-                {body}
-              </span>
-            );
-          })}
-        </div>
-      )}
-      {canReact && (
-        <div className="reaction-bar" role="group" aria-label="리액션 달기">
-          {CHAT_REACTIONS.map((r) => {
-            const on = groups.some((g) => g.kind === r.kind && g.mine);
-            return (
-              <button
-                key={r.kind}
-                type="button"
-                className={on ? "on" : undefined}
-                aria-label={r.label}
-                aria-pressed={on}
-                title={r.label}
-                onClick={() => onToggle(r.kind)}
-              >
-                {r.emoji}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </>
   );
 }

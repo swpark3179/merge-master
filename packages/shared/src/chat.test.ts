@@ -25,6 +25,16 @@ describe("채팅 리액션", () => {
     // 참여자 이름이 호스트 이름과 같아도 호스트 리액션은 내 것이 아니다.
     expect(reactionGroups([...marks], { name: "박지훈" })[0]!.mine).toBe(false);
   });
+
+  it("단 사람 목록에 호스트·나를 표시한다", () => {
+    const g = reactionGroups([...marks], { name: "최도윤" });
+    expect(g[0]!.people).toEqual([{ name: "박지훈", host: true, me: false }]);
+    expect(g[1]!.people).toEqual([
+      { name: "이서연", host: false, me: false },
+      { name: "최도윤", host: false, me: true },
+    ]);
+    expect(reactionGroups([...marks], { host: true })[0]!.people[0]!.me).toBe(true);
+  });
 });
 
 describe("채팅 입력 Enter", () => {

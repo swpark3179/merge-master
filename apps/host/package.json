@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@mm/chat": "workspace:*",
     "@mm/grid": "workspace:*",
     "@mm/shared": "workspace:*",
     "@tauri-apps/api": "^2.12.1",
