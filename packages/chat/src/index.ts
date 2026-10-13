@@ -13,3 +13,8 @@ export type { ColorOf, ReactionChipsProps } from "./ReactionChips";
 export { AT_BOTTOM_PX, firstUnread } from "./timeline";
 export type { TimelineItem } from "./timeline";
 export { HOVER_CLOSE_MS, HOVER_OPEN_MS, LONG_PRESS_MS, useHoverIntent } from "./useHoverIntent";
+export { ChatComposer, PickHint } from "./ChatComposer";
+export { deleteToken, insertToken, mirrorSegments, pickInput, pickQuery, pickTrigger } from "./composer";
+export type { PickInput, Segment } from "./composer";
+export { useCellPick } from "./useCellPick";
+export type { CellPick, CellPickTarget, PickedRef } from "./useCellPick";

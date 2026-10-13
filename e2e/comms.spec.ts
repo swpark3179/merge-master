@@ -229,3 +229,108 @@ test("셀 이력(오른쪽 클릭)에서 내 마지막 변경을 되돌리고, �
   const h = all.filter((e: { row: number; col: number }) => e.row === 21 && e.col === H);
   expect(h.map((e: { origin: string }) => e.origin).slice(-2)).toEqual(["paste", "clear"]);
 });
+
+test("채팅 @ 셀 선택: 끌기·방향키·주소로 고르고 Esc·띄어쓰기면 글자 @, 받는 쪽은 같은 범위를 고른다", async ({
+  browser,
+}) => {
+  const a = await open(browser, "김민지");
+  const b = await open(browser, "정하늘");
+  for (const p of [a, b]) await p.locator(".side-panel").getByRole("tab", { name: /^채팅/ }).click();
+  const input = a.getByLabel("채팅 입력");
+  const banner = a.locator(".chat-pick-banner");
+
+  // @를 치면 선택 모드: 안내 띠와 그리드 위 안내. 그리드를 끌어 놓으면 참조가 들어가고 초점은 입력 칸에 남는다.
+  await input.click();
+  await a.keyboard.type("근거 봐 주세요 @");
+  await expect(banner).toContainText("셀 선택 중");
+  await expect(a.locator(".chat-pick-hint")).toBeVisible();
+  await cell(a, 5, F).hover();
+  await a.mouse.down();
+  await cell(a, 7, H).hover();
+  await expect(banner).toContainText("예산신청서!F6:H8");
+  await expect(a.locator(".mmg-pick")).toHaveCount(1);
+  await a.mouse.up();
+  await expect(input).toHaveValue("근거 봐 주세요 #예산신청서!F6:H8 ");
+  await expect(input).toBeFocused();
+  await expect(banner).toHaveCount(0);
+  await expect(a.locator(".mmg-pick")).toHaveCount(0);
+
+  // 고르기로 넣은 참조는 Backspace 한 번에 통째로 지운다(앞의 띄어쓰기는 한 글자).
+  await a.keyboard.press("Backspace");
+  await a.keyboard.press("Backspace");
+  await expect(input).toHaveValue("근거 봐 주세요 ");
+  await a.keyboard.type("@");
+  await cell(a, 5, F).hover();
+  await a.mouse.down();
+  await cell(a, 7, H).hover();
+  await a.mouse.up();
+  await expect(input).toHaveValue("근거 봐 주세요 #예산신청서!F6:H8 ");
+  await a.keyboard.press("Enter");
+  await expect(input).toHaveValue("");
+
+  // 받는 쪽: 셀블럭에 머물면 미리보기, 누르면 같은 범위(F–H열, 6–8행)를 고르고 테두리가 깜빡인다.
+  const chip = b.getByLabel("채팅 내용").getByRole("button", { name: "예산신청서!F6:H8" }).last();
+  await chip.hover();
+  await expect(b.getByRole("tooltip")).toContainText("3행 × 3열 · 9칸");
+  await chip.click();
+  await expect(b.locator(".mmg-colhead.mmg-head-sel")).toHaveText(["F", "G", "H"]);
+  await expect(b.locator(".mmg-rowhead.mmg-head-sel")).toHaveText(["6", "7", "8"]);
+  await expect(b.locator(".mmg-ping")).toHaveCount(1);
+
+  // 방향키: 지금 칸(F13)에서 ↓로 옮기고 Shift+↓로 넓힌 뒤 Enter.
+  await cell(a, 12, F).click();
+  await input.click();
+  await a.keyboard.type("@");
+  await a.keyboard.press("ArrowDown");
+  await a.keyboard.press("Shift+ArrowDown");
+  await expect(banner).toContainText("예산신청서!F14:F15");
+  await a.keyboard.press("Enter");
+  await expect(input).toHaveValue("#예산신청서!F14:F15 ");
+
+  // Esc·고르기 전 띄어쓰기는 선택 모드만 끝내고 @를 글자로 남긴다. 붙여 쓴 @는 시작하지 않는다.
+  await input.fill("");
+  await a.keyboard.type("@");
+  await expect(banner).toBeVisible();
+  await a.keyboard.press("Escape");
+  await expect(banner).toHaveCount(0);
+  await expect(input).toHaveValue("@");
+  await input.fill("");
+  await a.keyboard.type("@ ");
+  await expect(banner).toHaveCount(0);
+  await expect(input).toHaveValue("@ ");
+  await input.fill("메일 kim");
+  await a.keyboard.type("@");
+  await expect(banner).toHaveCount(0);
+
+  // 주소를 치고 띄우면 참조가 된다.
+  await input.fill("");
+  await a.keyboard.type("@h20 ");
+  await expect(input).toHaveValue("#예산신청서!H20 ");
+});
+
+test("채팅 탭을 열면 새 메시지 구분선, 위로 올려 읽는 중에 온 글은 '새 메시지' 버튼", async ({ browser, request }) => {
+  const a = await open(browser, "최도윤");
+  const side = a.locator(".side-panel");
+  // 한 번 읽고 다른 탭을 보는 동안 글이 온다.
+  await request.post("/__dev/chat", { data: { to: { kind: "all" }, text: "읽은 글" } });
+  await side.getByRole("tab", { name: /^채팅/ }).click();
+  await expect(a.getByLabel("채팅 내용")).toContainText("읽은 글");
+  await side.getByRole("tab", { name: /^알림/ }).click();
+  for (let i = 1; i <= 12; i++)
+    await request.post("/__dev/chat", { data: { to: { kind: "all" }, text: `공지 ${i}\n두 번째 줄` } });
+  await side.getByRole("tab", { name: /^채팅\s*12/ }).click();
+  const divider = a.locator(".chat-divider");
+  await expect(divider).toHaveText("여기부터 새 메시지");
+  // 구분선 바로 아래가 안 읽은 첫 글이다.
+  await expect(divider.locator("xpath=..")).toContainText("공지 1");
+
+  // 맨 위로 올려 둔 채 새 글이 오면 따라 내려가지 않고 버튼에 센다. 누르면 맨 아래로.
+  const list = a.getByLabel("채팅 내용");
+  await list.evaluate((el) => (el.scrollTop = 0));
+  await request.post("/__dev/chat", { data: { to: { kind: "all" }, text: "새로 온 글" } });
+  const jump = a.getByRole("button", { name: "새 메시지 1개" });
+  await expect(jump).toBeVisible();
+  await jump.click();
+  await expect(jump).toHaveCount(0);
+  await expect.poll(() => list.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(48);
+});

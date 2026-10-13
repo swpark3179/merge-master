@@ -25,7 +25,11 @@ export function ChatTimeline({
 }) {
   const list = useRef<HTMLDivElement>(null);
   const divider = useRef<HTMLDivElement>(null);
-  const [unreadFrom] = useState(() => firstUnread(items, seen));
+  // 맨 처음 글부터 모두 새 글이면(처음 여는 사람) 구분선은 알려 주는 것이 없어 그리지 않는다.
+  const [unreadFrom] = useState(() => {
+    const id = firstUnread(items, seen);
+    return id !== null && id !== items[0]?.id ? id : null;
+  });
   /** 처음 그릴 때 이미 있던 글(이 번호까지는 나타나며 움직이지 않는다). */
   const [initialLast] = useState(() => items[items.length - 1]?.id ?? 0);
   const [below, setBelow] = useState(0);

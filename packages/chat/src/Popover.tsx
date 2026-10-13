@@ -29,8 +29,9 @@ export function Popover({
     if (!el) return;
     const place = () => {
       const a = anchor.getBoundingClientRect();
-      const r = el.getBoundingClientRect();
-      setPos(placePopover(a, r, { width: window.innerWidth, height: window.innerHeight }));
+      // 나타나는 동안 작게 시작하므로(scale) 겉보기 크기가 아니라 배치 크기로 잰다.
+      const size = { width: el.offsetWidth, height: el.offsetHeight };
+      setPos(placePopover(a, size, { width: window.innerWidth, height: window.innerHeight }));
     };
     place();
     const ro = new ResizeObserver(place);

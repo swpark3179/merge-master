@@ -1,5 +1,14 @@
-import type { ColorOf, PreviewOf, TimelineItem } from "@mm/chat";
-import { buildRefPreview, ChatBubble, ChatText, ChatTimeline, ReactionChips } from "@mm/chat";
+import type { CellPick, ColorOf, PreviewOf, TimelineItem } from "@mm/chat";
+import {
+  buildRefPreview,
+  ChatBubble,
+  ChatComposer,
+  ChatText,
+  ChatTimeline,
+  PickHint,
+  ReactionChips,
+  useCellPick,
+} from "@mm/chat";
 import type { CellDecoration, GridHit, GridMark, GridSelection, SheetGridHandle } from "@mm/grid";
 import { filterOptions, rowsNotMatching, selectForMenu, SheetGrid, withHiddenRows, withLineSize } from "@mm/grid";
 import type {
@@ -26,12 +35,13 @@ import type {
 } from "@mm/shared";
 import {
   a1,
-  chatEnterKey,
+  cellRefToken,
   colLetters,
   decodeFlags,
   displayValue,
   FLAG,
   FLASH_MS,
+  formatRange,
   parseDeadline,
   personColor,
   remainingAt,
@@ -40,7 +50,7 @@ import {
 } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CellWrite } from "../../api";
 import { errorText, jobEvent } from "../../api";
@@ -154,6 +164,9 @@ export function MonitorScreen(props: Props) {
   const at = Math.min(props.sheet, Math.max(0, props.sheets.length - 1));
   const [panel, setPanel] = useState<Panel>("activity");
   const [goto, setGoto] = useState<Goto | null>(null);
+  // 채팅 초안·받는 사람은 시트를 바꿔도 남긴다(시트마다 아래 화면을 새로 그린다).
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatTo, setChatTo] = useState("");
   const { onSheet } = props;
   const go = useCallback(
     (g: Goto) => {
@@ -172,6 +185,10 @@ export function MonitorScreen(props: Props) {
       goto={goto?.sheet === at ? goto.range : null}
       onGoto={go}
       onArrived={() => setGoto(null)}
+      chatDraft={chatDraft}
+      setChatDraft={setChatDraft}
+      chatTo={chatTo}
+      setChatTo={setChatTo}
     />
   );
 }
@@ -192,12 +209,20 @@ function SheetMonitor({
   goto,
   onGoto,
   onArrived,
+  chatDraft,
+  setChatDraft,
+  chatTo,
+  setChatTo,
 }: Props & {
   panel: Panel;
   setPanel: (p: Panel) => void;
   goto: CellRange | null;
   onGoto: (g: Goto) => void;
   onArrived: () => void;
+  chatDraft: string;
+  setChatDraft: (text: string) => void;
+  chatTo: string;
+  setChatTo: (name: string) => void;
 }) {
   const api = useApi();
   const job = useJobId();
@@ -494,6 +519,18 @@ function SheetMonitor({
     },
     commit: commitCells,
     notify: toast,
+  });
+
+  // 채팅의 '@ 셀 선택': 보고 있는 시트에서 범위를 골라 `#시트!범위`로 넣는다(시트를 바꾸면 끝난다).
+  const pickModel = model ?? EMPTY_MODEL;
+  const pick = useCellPick({
+    start: () => selection?.anchor ?? { row: Math.min(pickModel.headerRows, pickModel.rows - 1), col: 0 },
+    move: (from, dRow, dCol) => grid.current?.moveFrom(from, dRow, dCol) ?? from,
+    describe: (r) => {
+      const at = { ...r, row: pickModel.origin.row + r.row, col: pickModel.origin.col + r.col };
+      return { token: cellRefToken(pickModel.sheet, at), sheet: sheetPrefix(pickModel.sheet), addr: formatRange(at) };
+    },
+    fromSheet: (r) => ({ ...r, row: r.row - pickModel.origin.row, col: r.col - pickModel.origin.col }),
   });
 
   // 오른쪽 클릭: 크기·행·열 추가·지우기·취소 행(1b와 같은 메뉴). 누른 곳이 선택 밖이면 그 칸·열·행을 고른다.
@@ -807,7 +844,11 @@ function SheetMonitor({
             model={viewModel}
             decorate={decorate}
             marks={marks}
-            ranges={ping ? [{ key: `ping${ping.seq}`, range: ping.range, kind: "ping" }] : undefined}
+            ranges={[
+              ...pick.ranges,
+              ...(ping ? [{ key: `ping${ping.seq}`, range: ping.range, kind: "ping" as const }] : []),
+            ]}
+            pick={pick.grid}
             cellText={cellText}
             rowMarker={(r) => {
               const o = view.rowOwner[r] ?? -1;
@@ -821,6 +862,7 @@ function SheetMonitor({
             onResize={(axis, index, size) => void onResize(axis, index, size)}
             onContextMenu={onContextMenu}
           />
+          {pick.active && <PickHint />}
           {menu && data && viewModel && (
             <GridMenu
               menu={menu}
@@ -891,8 +933,12 @@ function SheetMonitor({
             <ChatPanel
               comms={comms}
               roster={roster}
-              many={many}
               colorOf={colorOf}
+              pick={pick}
+              text={chatDraft}
+              setText={setChatDraft}
+              to={chatTo}
+              setTo={setChatTo}
               onRef={revealSheet}
               preview={preview}
               seen={chatSeen}
@@ -1210,35 +1256,23 @@ const CHAT_MAX = 1000;
 function ChatPanel(props: {
   comms: CommsSnapshot | null;
   roster: string[];
-  /** 시트가 여럿이다(참조 예시에 시트 이름). */
-  many: boolean;
   colorOf: (name: string) => string;
   onRef: (r: CellRange, sheet?: string) => void;
   preview: PreviewOf;
+  pick: CellPick;
+  /** 초안·받는 사람(시트를 바꿔도 남도록 위에서 받는다). */
+  text: string;
+  setText: (text: string) => void;
+  to: string;
+  setTo: (name: string) => void;
   /** 채팅 탭을 열기 전에 본 마지막 글(구분선 자리). */
   seen: number;
   onSeen: (id: number) => void;
   onError: (e: string) => void;
 }) {
   const api = useApi();
-  const { comms, roster, many, onRef, preview, seen, onSeen, onError } = props;
-  const [to, setTo] = useState("");
-  const [text, setText] = useState("");
-  const input = useRef<HTMLTextAreaElement>(null);
-  /** Ctrl+Enter로 줄을 넣은 뒤 둘 커서 자리. */
-  const caret = useRef<number | null>(null);
+  const { comms, roster, onRef, preview, pick, text, setText, to, setTo, seen, onSeen, onError } = props;
   const messages = comms?.chat ?? [];
-  // 입력 칸은 글에 맞춰 높아진다(CSS 최대 높이를 넘으면 스크롤).
-  useLayoutEffect(() => {
-    const el = input.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
-    if (caret.current !== null) {
-      el.setSelectionRange(caret.current, caret.current);
-      caret.current = null;
-    }
-  }, [text]);
   const send = async () => {
     if (!text.trim()) return;
     const target: ChatTo = to ? { kind: "person", name: to } : { kind: "all" };
@@ -1288,40 +1322,30 @@ function ChatPanel(props: {
         onSeen={onSeen}
         empty={<div className="muted small">아직 채팅이 없습니다.</div>}
       />
-      <div className="chat-input">
-        <select aria-label="받는 사람" value={to} onChange={(e) => setTo(e.target.value)}>
-          <option value="">전체</option>
-          {roster.map((n) => (
-            <option key={n} value={n}>
-              {n} (1:1)
-            </option>
-          ))}
-        </select>
-        <textarea
-          ref={input}
-          aria-label="채팅 입력"
-          placeholder={many ? "메시지 · #셀 참조(예: #F7, #인력계획!F7)" : "메시지 · #셀 참조(예: #F7)"}
-          rows={1}
-          maxLength={CHAT_MAX}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            const key = chatEnterKey(e);
-            if (!key) return;
-            e.preventDefault();
-            if (key === "send") return void send();
-            const el = e.currentTarget;
-            const next = text.slice(0, el.selectionStart) + "\n" + text.slice(el.selectionEnd);
-            if (next.length > CHAT_MAX) return;
-            caret.current = el.selectionStart + 1;
-            setText(next);
-          }}
-        />
-        <button className="small" disabled={!text.trim()} onClick={() => void send()}>
-          전송
-        </button>
-      </div>
-      <div className="muted small">Enter 보내기 · Shift+Enter 줄바꿈</div>
+      <ChatComposer
+        value={text}
+        onChange={setText}
+        onSend={() => void send()}
+        maxLength={CHAT_MAX}
+        placeholder="메시지 · @로 셀 선택"
+        pick={pick}
+        options={
+          <>
+            <label className="chat-to">
+              <span className="muted small">받는 사람</span>
+              <select aria-label="받는 사람" value={to} onChange={(e) => setTo(e.target.value)}>
+                <option value="">전체</option>
+                {roster.map((n) => (
+                  <option key={n} value={n}>
+                    {n} (1:1)
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="muted small">@ 셀 선택 · Shift+Enter 줄바꿈</span>
+          </>
+        }
+      />
     </div>
   );
 }

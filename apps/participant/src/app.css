@@ -90,6 +90,7 @@ button:active:not(:disabled) {
 }
 
 .grid-host {
+  position: relative; /* 채팅 '@ 셀 선택' 안내를 위에 띄운다 */
   flex: 1;
   min-height: 0;
   display: flex;

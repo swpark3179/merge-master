@@ -422,11 +422,11 @@ export function SheetGrid({
   const onMouseDown = (e: MouseEvent) => {
     if (e.button !== 0 || startResize(e)) return;
     const picking = pick != null;
-    if (!picking && !onSelectionChange) return;
+    // 고르는 중에는 포커스를 채팅 입력 칸에 둔다(그리드·편집기로 옮기지 않는다, 스크롤 막대를 눌러도).
+    if (picking) e.preventDefault();
+    else if (!onSelectionChange) return;
     const el = hit(e);
     if (!el) return;
-    // 고르는 중에는 포커스를 채팅 입력 칸에 둔다(그리드·편집기로 옮기지 않는다).
-    if (picking) e.preventDefault();
     const shift = !picking && e.shiftKey && selection != null;
     let d: Drag | null = null;
     let s: GridSelection | null = null;

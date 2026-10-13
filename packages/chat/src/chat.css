@@ -147,8 +147,9 @@ button.chat-jump:hover:not(:disabled) {
   white-space: pre-wrap;
 }
 
-/* 셀블럭 칩: 누르면 그 범위로 간다 */
-button.chat-ref {
+/* 셀블럭 칩: 누르면 그 범위로 간다(안내 띠의 미리보기는 누를 수 없는 같은 모양) */
+button.chat-ref,
+.chat-ref-static {
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -183,7 +184,8 @@ button.chat-ref:active:not(:disabled) {
   transform: scale(0.96);
 }
 
-button.chat-ref .sheet {
+button.chat-ref .sheet,
+.chat-ref-static .sheet {
   color: var(--ink-2);
 }
 
@@ -514,4 +516,215 @@ button.chat-ref .sheet {
 .chat-preview-note {
   font-size: 11px;
   color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ 입력 칸 */
+.chat-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chat-compose-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+/* 글에 맞춰 높아지는 칸: 거울(같은 글자, 투명)이 높이를 정하고 textarea가 그 위에 겹친다 */
+.chat-field {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  background: #fff;
+  transition:
+    border-color var(--dur-fast),
+    box-shadow var(--dur-fast);
+}
+
+.chat-field:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.chat-field.picking {
+  border-style: dashed;
+  border-color: var(--accent);
+}
+
+.chat-mirror,
+.chat-field textarea {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 31px;
+  margin: 0;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 0;
+  font: inherit;
+  line-height: 1.45;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.chat-mirror {
+  color: transparent;
+  pointer-events: none;
+}
+
+.chat-field textarea {
+  display: block;
+  height: 100%;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: var(--ink);
+  outline: none;
+  box-shadow: none;
+}
+
+.chat-field textarea::placeholder {
+  color: var(--muted);
+}
+
+/* 빈 칸의 안내 글은 한 줄 */
+.chat-field textarea:placeholder-shown {
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chat-mirror .ref {
+  border-radius: 3px;
+  background: var(--accent-tint);
+  box-shadow: 0 0 0 1px var(--accent-line);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  animation: mm-fade-in var(--dur-base) var(--ease-out);
+}
+
+.chat-mirror .at {
+  border-radius: 3px;
+  background: var(--accent-ring);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+/* @가 끝에 있을 때 고르는 중인 주소(글에는 아직 없다) */
+.chat-mirror .ghost {
+  margin-left: 2px;
+  border-radius: 3px;
+  background: var(--chip);
+  color: var(--ink-2);
+}
+
+button.chat-send {
+  flex: none;
+  height: 34px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.chat-send:hover:not(:disabled) {
+  border: 0;
+  background: var(--accent-hover);
+}
+
+button.chat-send:disabled {
+  background: var(--line);
+  color: var(--muted);
+  opacity: 1;
+  cursor: default;
+}
+
+/* 선택 모드 안내 띠: 입력 칸 위로 떠오른다 */
+.chat-pick-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  animation: mm-rise var(--dur-base) var(--ease-out);
+}
+
+.chat-pick-banner .row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  color: var(--accent);
+}
+
+.chat-pick-banner b {
+  color: var(--accent-ink);
+}
+
+.chat-pick-banner .count {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chat-pick-banner .keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.chat-pick-banner kbd {
+  display: inline-block;
+  padding: 0 5px;
+  border: 1px solid var(--accent-line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: #fff;
+  color: var(--ink);
+  font:
+    11px/16px ui-monospace,
+    Consolas,
+    Menlo,
+    monospace;
+}
+
+/* 고르는 중 그리드 위 안내 */
+.chat-pick-hint-wrap {
+  position: absolute;
+  z-index: 8;
+  top: 6px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.chat-pick-hint {
+  padding: 3px 12px;
+  border-radius: 14px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(34, 102, 196, 0.3);
+  animation: mm-drop var(--dur-base) var(--ease-out);
 }

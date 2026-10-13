@@ -130,6 +130,7 @@
 }
 
 .mon-grid {
+  position: relative; /* 채팅 '@ 셀 선택' 안내를 위에 띄운다 */
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -286,38 +287,16 @@ button.cell-ref:hover:not(:disabled) {
   text-decoration: underline;
 }
 
-.chat-input {
+/* 채팅 받는 사람(전체·1:1) */
+.chat-to {
   display: flex;
-  align-items: flex-end;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
 }
 
-.chat-input select {
-  width: 96px;
-  height: 36px;
-}
-
-.chat-input > button {
-  margin-bottom: 4px;
-}
-
-/* .panel-body textarea(공지 입력)의 크기 조절·여백을 덮는다: 한 줄 높이에서 글에 맞춰 늘어난다 */
-.panel-body .chat-input textarea {
-  flex: 1;
-  min-width: 0;
-  min-height: 36px;
-  max-height: 120px;
-  padding: 7px 10px;
-  line-height: 1.4;
-  resize: none;
-  overflow-y: auto;
-}
-
-/* 빈 칸의 안내 글은 한 줄(줄바꿈되면 칸이 높아진다) */
-.panel-body .chat-input textarea:placeholder-shown {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+.chat-to select {
+  height: 28px;
+  max-width: 150px;
 }
 
 .steps .badge {

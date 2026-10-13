@@ -1,3 +1,4 @@
+import { PickHint, useCellPick } from "@mm/chat";
 import type {
   CellDecoration,
   EditorState,
@@ -26,6 +27,7 @@ import {
 import type { Axis, CellRange, CellRef, HAlign, SheetModel, StylePatch } from "@mm/shared";
 import {
   a1,
+  cellRefToken,
   colLetters,
   displayValue,
   editText,
@@ -372,6 +374,20 @@ export function Workspace({ s }: { s: SessionState }) {
     },
     [leave, s, active],
   );
+
+  /** 채팅의 '@ 셀 선택': 지금 시트에서 범위를 골라 `#시트!범위`로 넣는다(시트 탭을 바꿔도 이어진다). */
+  const pick = useCellPick({
+    start: () => selection?.anchor ?? { row: Math.min(model.headerRows, model.rows - 1), col: 0 },
+    move: (from, dRow, dCol) => grid.current?.moveFrom(from, dRow, dCol) ?? from,
+    describe: (r) => {
+      const at = { ...r, row: model.origin.row + r.row, col: model.origin.col + r.col };
+      return { token: cellRefToken(model.sheet, at), sheet: sheetPrefix(model.sheet), addr: formatRange(at) };
+    },
+    fromSheet: (r) => ({ ...r, row: r.row - model.origin.row, col: r.col - model.origin.col }),
+    onBegin: () => {
+      if (editorRef.current) leave();
+    },
+  });
 
   // 활성 칸이 입력 가능하면 투명 편집기에, 아니면 그리드에 포커스(그리드 안에서 움직일 때만).
   const overlayOn = mode === "grid" && at !== null && (editable || editor !== null);
@@ -774,7 +790,7 @@ export function Workspace({ s }: { s: SessionState }) {
     });
   }
 
-  const gridRanges: GridRange[] = [];
+  const gridRanges: GridRange[] = [...pick.ranges];
   if (ping && ping.sheet === active) gridRanges.push({ key: `ping${ping.seq}`, range: ping.range, kind: "ping" });
 
   /** 입력할 수 없는 칸에 쓰려 하면 잠깐 내 담당 칸을 깜빡인다(두 번 깜빡이는 동안만 둔다). */
@@ -814,6 +830,7 @@ export function Workspace({ s }: { s: SessionState }) {
     setFormRow(null);
     s.setActive(to);
     s.cursor(back?.selection?.anchor ?? null);
+    pick.reset();
   };
 
   const othersRows = useMemo(() => new Set(model.hiddenRows), [model]);
@@ -1280,7 +1297,10 @@ export function Workspace({ s }: { s: SessionState }) {
               ref={gridHost}
               // 칸을 누르면 브라우저가 그리드에 준 포커스를 바로 편집기로 옮긴다(곧바로 입력해도 첫 글자를 받는다).
               onClick={() => {
-                if (overlayOn && !editorRef.current) input.current?.focus({ preventScroll: true });
+                // 채팅에 넣을 범위를 골랐으면 초점은 채팅 입력 칸에 그대로 둔다.
+                const now = document.activeElement;
+                const here = !now || now === document.body || gridHost.current?.contains(now);
+                if (overlayOn && !editorRef.current && here) input.current?.focus({ preventScroll: true });
               }}
               onCopy={(e) => onCopy(e, false)}
               onCut={(e) => onCopy(e, true)}
@@ -1293,6 +1313,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 decorate={decorate}
                 marks={marks}
                 ranges={gridRanges}
+                pick={pick.grid}
                 rowMarker={rowMarker}
                 cellText={cellText}
                 selection={selection}
@@ -1317,6 +1338,7 @@ export function Workspace({ s }: { s: SessionState }) {
                   ) : undefined
                 }
               />
+              {pick.active && <PickHint />}
             </div>
             {sideOpen && (
               <SidePanel
@@ -1340,6 +1362,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 onRef={revealRef}
                 onChatSeen={onChatSeen}
                 chatSeen={chatSeen}
+                pick={pick}
               />
             )}
           </div>
@@ -1355,7 +1378,7 @@ export function Workspace({ s }: { s: SessionState }) {
         />
       )}
 
-      {s.sheets.length > 1 && <SheetTabs s={s} onSelect={switchSheet} />}
+      {s.sheets.length > 1 && <SheetTabs s={s} onSelect={switchSheet} keepFocus={pick.active} />}
       {menu && mode === "grid" && headerMenu(menu)}
 
       <footer className="status">
@@ -1448,7 +1471,16 @@ function ConnectionBar({ connected, waiting }: { connected: boolean; waiting: nu
 }
 
 /** 엑셀처럼 그리드 아래의 시트 탭: 시트 이름, 내가 아직 채우지 않은 필수 칸 수, 확인하지 않은 강조. */
-function SheetTabs({ s, onSelect }: { s: SessionState; onSelect: (sheet: number) => void }) {
+function SheetTabs({
+  s,
+  onSelect,
+  keepFocus,
+}: {
+  s: SessionState;
+  onSelect: (sheet: number) => void;
+  /** 채팅에 넣을 범위를 고르는 중: 탭을 눌러도 초점을 채팅 입력 칸에 둔다(다른 시트에서 이어 고른다). */
+  keepFocus?: boolean;
+}) {
   return (
     <div className="sheet-tabs" role="tablist" aria-label="시트">
       {s.sheets.map((x, i) => {
@@ -1463,6 +1495,7 @@ function SheetTabs({ s, onSelect }: { s: SessionState; onSelect: (sheet: number)
             title={[x.model.sheet, left > 0 && `내 필수 미입력 ${left}칸`, alert && "확인하지 않은 강조 있음"]
               .filter(Boolean)
               .join(" · ")}
+            onMouseDown={(e) => keepFocus && e.preventDefault()}
             onClick={() => onSelect(i)}
           >
             {alert && <span className="dot" aria-hidden />}

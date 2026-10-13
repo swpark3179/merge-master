@@ -1,9 +1,9 @@
-import type { ColorOf, PreviewOf, TimelineItem } from "@mm/chat";
-import { buildRefPreview, ChatBubble, ChatText, ChatTimeline, ReactionChips } from "@mm/chat";
+import type { CellPick, ColorOf, PreviewOf, TimelineItem } from "@mm/chat";
+import { buildRefPreview, ChatBubble, ChatComposer, ChatText, ChatTimeline, ReactionChips } from "@mm/chat";
 import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
-import { a1, chatEnterKey, displayValue, personColor, sheetPrefix } from "@mm/shared";
+import { a1, displayValue, personColor, sheetPrefix } from "@mm/shared";
 import type { KeyboardEvent, PointerEvent } from "react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { CellDetail } from "./CellDetail";
 import { sameValue } from "./edits";
@@ -65,6 +65,8 @@ interface Props {
   onChatSeen: (id: number) => void;
   /** 채팅 탭을 열기 전에 본 마지막 글(구분선 자리). */
   chatSeen: number;
+  /** 채팅의 '@ 셀 선택'(그리드와 함께 쓴다). */
+  pick: CellPick;
 }
 
 /** 1f 오른쪽 사이드바: 셀 내용(고른 칸의 위치·내용 보기·고치기), 알림(강조된 셀·공지), 채팅(전체·취합을 연 사람에게), 셀 이력. */
@@ -181,6 +183,7 @@ export function SidePanel(props: Props) {
           onRef={onRef}
           seen={props.chatSeen}
           onSeen={onChatSeen}
+          pick={props.pick}
         />
       )}
       {tab === "history" && <CellHistory s={s} at={at} addr={addr} labels={labels} canEdit={canEdit} />}
@@ -244,6 +247,7 @@ function Chat({
   onRef,
   seen,
   onSeen,
+  pick,
 }: {
   s: SessionState;
   me: string;
@@ -252,24 +256,11 @@ function Chat({
   onRef: (r: CellRange, sheet?: string) => void;
   seen: number;
   onSeen: (id: number) => void;
+  pick: CellPick;
 }) {
   const w = s.welcome!;
   const [toHost, setToHost] = useState(false);
   const [text, setText] = useState("");
-  const input = useRef<HTMLTextAreaElement>(null);
-  /** Ctrl+Enter로 줄을 넣은 뒤 둘 커서 자리. */
-  const caret = useRef<number | null>(null);
-  // 입력 칸은 글에 맞춰 높아진다(CSS 최대 높이를 넘으면 스크롤).
-  useLayoutEffect(() => {
-    const el = input.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
-    if (caret.current !== null) {
-      el.setSelectionRange(caret.current, caret.current);
-      caret.current = null;
-    }
-  }, [text]);
   const send = () => {
     const to: ChatTo = toHost ? { kind: "host" } : { kind: "all" };
     if (!text.trim()) return;
@@ -342,38 +333,23 @@ function Chat({
         onSeen={onSeen}
         empty={<div className="muted small">아직 채팅이 없습니다. {host} 님에게 물어볼 것이 있으면 적어 주세요.</div>}
       />
-      <div className="chat-opts">
-        <label className="check small">
-          <input type="checkbox" checked={toHost} onChange={(e) => setToHost(e.target.checked)} />
-          {host} 님에게만
-        </label>
-        <span className="muted small">Shift+Enter 줄바꿈</span>
-      </div>
-      <div className="chat-input">
-        <textarea
-          ref={input}
-          aria-label="채팅 입력"
-          placeholder="메시지 · #셀 참조(예: #F7)"
-          rows={1}
-          maxLength={CHAT_MAX}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => {
-            const key = chatEnterKey(e);
-            if (!key) return;
-            e.preventDefault();
-            if (key === "send") return send();
-            const el = e.currentTarget;
-            const next = text.slice(0, el.selectionStart) + "\n" + text.slice(el.selectionEnd);
-            if (next.length > CHAT_MAX) return;
-            caret.current = el.selectionStart + 1;
-            setText(next);
-          }}
-        />
-        <button className="small" disabled={!text.trim()} onClick={send}>
-          전송
-        </button>
-      </div>
+      <ChatComposer
+        value={text}
+        onChange={setText}
+        onSend={send}
+        maxLength={CHAT_MAX}
+        placeholder="메시지 · @로 셀 선택"
+        pick={pick}
+        options={
+          <>
+            <label className="check small">
+              <input type="checkbox" checked={toHost} onChange={(e) => setToHost(e.target.checked)} />
+              {host} 님에게만
+            </label>
+            <span className="muted small">@ 셀 선택 · Shift+Enter 줄바꿈</span>
+          </>
+        }
+      />
     </div>
   );
 }
