@@ -69,20 +69,46 @@ export function parseSheetRange(text: string): { sheet?: string; range: CellRang
 /** `ref`는 보이는 그대로(시트 이름 포함), `range`는 시트 주소, `sheet`는 적었으면 그 시트 이름. */
 export type TextPart = { text: string } | { ref: string; range: CellRange; sheet?: string };
 
-/** 채팅 글의 `#F7`, `#F7:H7`, `#인력계획!F7`, `#'1분기 예산'!F7` 셀 참조를 나눈다(시트 주소). 누르면 그 칸으로 간다. */
-export function splitCellRefs(text: string): TextPart[] {
-  const out: TextPart[] = [];
+/** 글 안의 셀 참조 하나: 글자 위치(`start`부터 `end` 앞까지, `#` 포함)와 `TextPart`의 참조 내용. */
+export interface CellRefSpan {
+  start: number;
+  end: number;
+  ref: string;
+  range: CellRange;
+  sheet?: string;
+}
+
+/** 채팅 글의 셀 참조를 위치와 함께 찾는다(`splitCellRefs`와 같은 규칙). */
+export function cellRefSpans(text: string): CellRefSpan[] {
+  const out: CellRefSpan[] = [];
   const re = /#(?:'((?:[^']|'')+)'!|([\p{L}\p{N}_.]+)!)?([A-Za-z]{1,3}\d{1,7}(?::[A-Za-z]{1,3}\d{1,7})?)/gu;
-  let last = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const range = parseRange(m[3]!);
     if (!range) continue;
     const sheet = m[1] !== undefined ? m[1].replace(/''/g, "'") : m[2];
-    if (m.index > last) out.push({ text: text.slice(last, m.index) });
     const addr = m[3]!.toUpperCase();
-    out.push(sheet !== undefined ? { ref: `${sheetPrefix(sheet)}${addr}`, range, sheet } : { ref: addr, range });
-    last = m.index + m[0].length;
+    const at = { start: m.index, end: m.index + m[0].length };
+    out.push(
+      sheet !== undefined ? { ...at, ref: `${sheetPrefix(sheet)}${addr}`, range, sheet } : { ...at, ref: addr, range },
+    );
+  }
+  return out;
+}
+
+/** 채팅 글의 `#F7`, `#F7:H7`, `#인력계획!F7`, `#'1분기 예산'!F7` 셀 참조를 나눈다(시트 주소). 누르면 그 칸으로 간다. */
+export function splitCellRefs(text: string): TextPart[] {
+  const out: TextPart[] = [];
+  let last = 0;
+  for (const { start, end, ...ref } of cellRefSpans(text)) {
+    if (start > last) out.push({ text: text.slice(last, start) });
+    out.push(ref);
+    last = end;
   }
   if (last < text.length) out.push({ text: text.slice(last) });
   return out;
+}
+
+/** 채팅에 넣을 셀 참조 글자: 시트 이름을 늘 붙인다(`#인력계획!F7:H7`, `#'1분기 예산'!F7`). `range`는 시트 주소. */
+export function cellRefToken(sheet: string, range: CellRange): string {
+  return `#${sheetPrefix(sheet)}${formatRange(range)}`;
 }

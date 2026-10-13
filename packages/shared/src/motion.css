@@ -85,6 +85,66 @@
   }
 }
 
+/* 새로 생긴 리액션 칩: 작게 나타나 한 번 튀었다가 제 크기로 */
+@keyframes mm-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+/* 바뀐 숫자: 아래에서 올라온다 */
+@keyframes mm-count {
+  from {
+    opacity: 0;
+    transform: translateY(70%);
+  }
+}
+
+/* 팝오버·미리보기 카드 */
+@keyframes mm-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+}
+
+/* 채팅에 넣을 범위를 고르는 동안 흐르는 점선(가로·세로 변). 고르는 동안만 반복한다. */
+@keyframes mm-ants-x {
+  to {
+    transform: translateX(-8px);
+  }
+}
+
+@keyframes mm-ants-y {
+  to {
+    transform: translateY(-8px);
+  }
+}
+
+/* 채팅의 셀 참조로 간 범위: 테두리가 두 번 깜빡이고 사라진다(동작 줄이기면 잠깐 그대로 보인다) */
+@keyframes mm-ping {
+  0% {
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  42% {
+    opacity: 0.15;
+  }
+  66% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 /*
  * 동작 줄이기: 전환과 애니메이션을 끈다(플래시처럼 꼭 알려야 하는 것은 각자 정적인 표시로 바꾼다).
  * transition-duration만 줄이면 모든 요소의 기본 transition-property(all)가 살아나 너비 등이 한 프레임 늦게 바뀌므로

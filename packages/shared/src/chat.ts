@@ -20,17 +20,26 @@ export interface ReactionGroup {
   count: number;
   /** 단 사람(단 순서). */
   names: string[];
+  /** 단 사람(단 순서): 호스트인지, 나인지. 누가 달았는지 목록에 쓴다. */
+  people: ReactionPerson[];
   /** 내가 달았다. */
   mine: boolean;
 }
 
+export interface ReactionPerson {
+  name: string;
+  host: boolean;
+  me: boolean;
+}
+
 /** 채팅 한 통의 리액션을 종류별로 모은다(종류 순서, 아무도 달지 않은 종류는 빼고). */
 export function reactionGroups(marks: readonly ChatReactionMark[] | undefined, me: ReactionViewer): ReactionGroup[] {
+  const isMe = (m: ChatReactionMark) => ("host" in me ? m.host : !m.host && m.by === me.name);
   return CHAT_REACTIONS.flatMap((r) => {
     const of = (marks ?? []).filter((m) => m.kind === r.kind);
     if (of.length === 0) return [];
-    const mine = of.some((m) => ("host" in me ? m.host : !m.host && m.by === me.name));
-    return [{ ...r, count: of.length, names: of.map((m) => m.by), mine }];
+    const people = of.map((m) => ({ name: m.by, host: m.host, me: isMe(m) }));
+    return [{ ...r, count: of.length, names: of.map((m) => m.by), people, mine: people.some((p) => p.me) }];
   });
 }
 
