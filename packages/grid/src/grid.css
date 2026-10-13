@@ -152,6 +152,73 @@
   border-radius: 0 3px 3px 3px;
 }
 
+/* 채팅에 넣을 범위를 고르는 중: 옅은 틴트 + 네 변을 따라 흐르는 점선(고르는 동안만 반복, 동작 줄이기면 멈춘 점선). */
+.mmg-pick,
+.mmg-ping {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.mmg-pick {
+  overflow: hidden;
+  background: var(--accent-sel);
+}
+
+.mmg-pick > span {
+  position: absolute;
+  display: block;
+}
+
+.mmg-pick > .t,
+.mmg-pick > .b {
+  left: 0;
+  width: calc(100% + 16px);
+  height: 2px;
+  background: repeating-linear-gradient(90deg, var(--accent) 0 4px, transparent 4px 8px);
+  animation: mm-ants-x 600ms linear infinite;
+}
+
+.mmg-pick > .t {
+  top: 0;
+  animation-direction: reverse;
+}
+
+.mmg-pick > .b {
+  bottom: 0;
+}
+
+.mmg-pick > .l,
+.mmg-pick > .r {
+  top: 0;
+  width: 2px;
+  height: calc(100% + 16px);
+  background: repeating-linear-gradient(180deg, var(--accent) 0 4px, transparent 4px 8px);
+  animation: mm-ants-y 600ms linear infinite;
+}
+
+.mmg-pick > .l {
+  left: 0;
+}
+
+.mmg-pick > .r {
+  right: 0;
+  animation-direction: reverse;
+}
+
+.mmg-picking .mmg-cell {
+  cursor: cell;
+}
+
+/* 채팅 참조로 간 범위: 테두리가 두 번 깜빡이고 사라진다. 동작 줄이기면 쓰는 쪽이 뗄 때까지 그대로 보인다. */
+.mmg-ping {
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    0 0 0 3px var(--accent-ring);
+  animation: mm-ping 900ms var(--ease-out) forwards;
+}
+
 .mmg-colhead,
 .mmg-rowhead {
   cursor: pointer;

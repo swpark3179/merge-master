@@ -121,3 +121,13 @@ export function selectForMenu(
   const whole = r && r.col === 0 && r.cols === model.cols;
   return whole && hit.row >= r.row && hit.row < r.row + r.rows ? sel! : lineSelection(model, "row", hit.row);
 }
+
+/** 앞뒤의 숨은 행을 잘라 낸 범위(가운데 숨은 행은 그대로 둔다). 모두 숨었으면 `null`. */
+export function trimHiddenRows(range: CellRange, hidden: (row: number) => boolean): CellRange | null {
+  let first = range.row;
+  let last = range.row + range.rows - 1;
+  while (first <= last && hidden(first)) first++;
+  while (last >= first && hidden(last)) last--;
+  if (first > last) return null;
+  return { ...range, row: first, rows: last - first + 1 };
+}
