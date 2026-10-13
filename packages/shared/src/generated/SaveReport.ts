@@ -23,9 +23,13 @@ styled: number, merges: number,
  */
 resized: number, 
 /**
- * 표 아래에 끼워 넣은 행 수(참여자가 추가한 행).
+ * 표 아래에 끼워 넣은 행 수(앱에서 추가한 행).
  */
 inserted: number, 
+/**
+ * 표 오른쪽에 끼워 넣은 열 수(앱에서 추가한 열).
+ */
+insertedCols: number, 
 /**
  * 더한 '변경 이력' 시트 이름.
  */

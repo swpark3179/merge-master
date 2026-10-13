@@ -132,6 +132,47 @@ impl CellRange {
     pub fn cells(&self) -> impl Iterator<Item = CellRef> + '_ {
         (self.row..=self.last_row()).flat_map(move |r| (self.col..=self.last_col()).map(move |c| CellRef::new(r, c)))
     }
+
+    /// 행 `from`부터 `count`개를 지운 뒤의 범위: 지운 행보다 아래면 위로 당기고, 걸치면 줄인다. 모두 지워지면 `None`.
+    pub fn without_rows(&self, from: u32, count: u32) -> Option<Self> {
+        let (row, rows) = shrink_span(self.row, self.rows, from, count)?;
+        Some(Self { row, rows, ..*self })
+    }
+
+    /// 열 `from`부터 `count`개를 지운 뒤의 범위([`without_rows`](Self::without_rows)와 같은 규칙).
+    pub fn without_cols(&self, from: u32, count: u32) -> Option<Self> {
+        let (col, cols) = shrink_span(self.col, self.cols, from, count)?;
+        Some(Self { col, cols, ..*self })
+    }
+}
+
+/// `start`부터 `len`개인 줄 묶음에서 `from`부터 `count`개를 지운 뒤의 (시작, 개수). 다 지워지면 `None`.
+fn shrink_span(start: u32, len: u32, from: u32, count: u32) -> Option<(u32, u32)> {
+    let (end, cut_end) = (start + len, from.saturating_add(count));
+    let overlap = end.min(cut_end).saturating_sub(start.max(from));
+    let len = len - overlap;
+    if len == 0 {
+        return None;
+    }
+    let start = if start >= cut_end {
+        start - count
+    } else if start >= from {
+        from
+    } else {
+        start
+    };
+    Some((start, len))
+}
+
+/// 줄 `from`부터 `count`개를 지운 뒤 줄 `i`의 새 번호. 지워진 줄이면 `None`.
+pub fn shift_after_removal(i: u32, from: u32, count: u32) -> Option<u32> {
+    if i < from {
+        Some(i)
+    } else if i >= from.saturating_add(count) {
+        Some(i - count)
+    } else {
+        None
+    }
 }
 
 impl fmt::Display for CellRange {
@@ -327,6 +368,22 @@ fn shift_ref(token: &str, delta: i64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ranges_shrink_and_move_when_lines_are_removed() {
+        let r = CellRange::new(2, 0, 3, 2); // 행 2..=4
+        assert_eq!(r.without_rows(0, 1), Some(CellRange::new(1, 0, 3, 2)), "위가 지워지면 당긴다");
+        assert_eq!(r.without_rows(3, 1), Some(CellRange::new(2, 0, 2, 2)), "가운데가 지워지면 줄인다");
+        assert_eq!(r.without_rows(1, 2), Some(CellRange::new(1, 0, 2, 2)), "앞쪽이 걸치면 지운 자리부터");
+        assert_eq!(r.without_rows(4, 5), Some(CellRange::new(2, 0, 2, 2)));
+        assert_eq!(r.without_rows(5, 1), Some(r), "아래는 그대로");
+        assert_eq!(r.without_rows(2, 3), None);
+        assert_eq!(CellRange::new(0, 3, 4, 1).without_cols(3, 1), None);
+        assert_eq!(CellRange::new(0, 5, 4, 2).without_cols(3, 1), Some(CellRange::new(0, 4, 4, 2)));
+        assert_eq!(shift_after_removal(1, 2, 2), Some(1));
+        assert_eq!(shift_after_removal(3, 2, 2), None);
+        assert_eq!(shift_after_removal(4, 2, 2), Some(2));
+    }
 
     #[test]
     fn formulas_shift_relative_rows_only() {

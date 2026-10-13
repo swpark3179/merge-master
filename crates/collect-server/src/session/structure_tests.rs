@@ -1,0 +1,248 @@
+//! 표 구조 바꾸기 단위 테스트: 행·열 붙이기, 앱에서 붙인 행·열 지우기(누가·어느 행), 구조 판, 취소 행, 마감 동작.
+
+use collect_core::config::DeadlineAction;
+use collect_core::structure::StructureEdit;
+
+use super::tests::{Client, connect, fixture, host, host_get, join};
+use super::*;
+use crate::protocol::CellEdit;
+
+const F: u32 = 5; // 신청 금액(숫자, 필수)
+const H: u32 = 7; // 산출 근거(글자)
+
+fn setup(names: &[&str], f: impl FnOnce(&mut CollectConfig)) -> (State, Vec<Client>) {
+    let mut init = fixture();
+    f(&mut init.sheets[0].1);
+    let mut st = State::new(init);
+    let mut clients = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let c = connect(&mut st, i as u64 + 1);
+        join(&mut st, &c, name, None);
+        clients.push(c);
+    }
+    for c in &mut clients {
+        c.take();
+    }
+    (st, clients)
+}
+
+fn client(st: &mut State, c: &Client, msg: ClientMsg) {
+    st.handle(Command::Client { conn: c.conn, msg });
+}
+
+fn set(st: &mut State, c: &Client, batch: &str, row: u32, col: u32, v: CellValue, layout: Option<u32>) {
+    let cells = vec![CellEdit { row, col, value: v, base: 0 }];
+    client(st, c, ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: None, layout });
+}
+
+fn errors(msgs: &[ServerMsg]) -> Vec<String> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMsg::Error { message } => Some(message.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn rejected(msgs: &[ServerMsg]) -> Vec<String> {
+    msgs.iter()
+        .find_map(|m| match m {
+            ServerMsg::Applied { rejected, .. } => Some(rejected.iter().map(|r| r.reason.clone()).collect()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("applied가 와야 함: {msgs:?}"))
+}
+
+fn value(st: &State, row: u32, col: u32) -> CellValue {
+    st.sheets[0].model.cell(CellRef::new(row, col)).unwrap().v.clone()
+}
+
+fn text(s: &str) -> CellValue {
+    CellValue::Text(s.into())
+}
+
+#[tokio::test]
+async fn participants_delete_only_rows_they_added() {
+    let (mut st, mut c) = setup(&["정하늘", "최도윤"], |cfg| {
+        cfg.permissions.add_rows = true;
+    });
+    let rows = st.sheets[0].model.rows;
+    client(&mut st, &c[0], ClientMsg::AddRows { sheet: 0, count: 2 });
+    client(&mut st, &c[1], ClientMsg::AddRows { sheet: 0, count: 1 });
+    assert_eq!(st.sheets[0].model.rows, rows + 3);
+    let adders: Vec<&str> = st.sheets[0].model.added_rows.iter().map(|a| a.by.as_str()).collect();
+    assert_eq!(adders, ["정하늘", "정하늘", "최도윤"]);
+    set(&mut st, &c[1], "b1", rows + 2, H, text("최도윤 행"), Some(0));
+    c[0].take();
+    c[1].take();
+
+    let delete = |from, count, layout| ClientMsg::DeleteRows { sheet: 0, from, count, layout };
+    client(&mut st, &c[0], delete(rows, 1, Some(0)));
+    assert!(errors(&c[0].take())[0].contains("행을 지울 수 없습니다"), "권한 '행 삭제'가 꺼져 있다");
+    host(&mut st, |s| {
+        s.sheets[0].config.permissions.delete_rows = true;
+        s.changed();
+    });
+    c[0].take();
+    client(&mut st, &c[0], delete(rows + 1, 2, Some(0)));
+    assert!(errors(&c[0].take())[0].contains("내가 추가한 행만"));
+    client(&mut st, &c[0], delete(rows - 1, 1, Some(0)));
+    assert!(errors(&c[0].take())[0].contains("엑셀에서 불러온 행"));
+
+    let mut feed = st.host_feed.subscribe();
+    client(&mut st, &c[0], delete(rows, 2, Some(0)));
+    assert_eq!(st.sheets[0].model.rows, rows + 1);
+    assert_eq!(st.sheets[0].model.layout, 1);
+    assert_eq!(value(&st, rows, H), text("최도윤 행"), "아래 행이 당겨진다");
+    assert_eq!(st.sheets[0].model.added_rows.len(), 1);
+    assert_eq!(st.rt[0].versions.len(), st.sheets[0].model.cells.len());
+    assert_eq!(st.rt[0].versions[(rows * st.sheets[0].model.cols + H) as usize], 1, "버전도 따라간다");
+    let msgs = c[1].take();
+    assert!(msgs.iter().any(|m| matches!(m, ServerMsg::Welcome(w) if w.sheets[0].model.layout == 1)));
+    assert!(
+        msgs.iter()
+            .any(|m| matches!(m, ServerMsg::RowsDeleted { by, from, count, .. } if by == "정하늘" && *from == rows && *count == 2))
+    );
+    assert!(matches!(feed.try_recv(), Ok(HostEvent::Reset)));
+    // 지운 행에 남긴 기록(담당자 칸 이름)은 '지움'으로 남고, 남의 행 기록은 새 좌표로 옮겨진다.
+    assert!(st.log.iter().filter(|e| e.user == "정하늘").all(|e| e.gone));
+    assert!(st.log.iter().any(|e| e.user == "최도윤" && e.row == rows && e.col == H && !e.gone));
+    let key = st.sheets[0].config.assignment.key_col.unwrap();
+    assert_eq!(st.rt[0].access.row_owner(rows), st.rt[0].access.person("최도윤"));
+    assert_eq!(value(&st, rows, key), text("최도윤"));
+
+    // 지우기 전 판으로 보낸 편집(오프라인 대기열)은 좌표가 밀렸을 수 있어 받지 않는다.
+    set(&mut st, &c[1], "late", rows, H, text("늦게"), Some(0));
+    assert!(rejected(&c[1].take())[0].contains("표 구조가 바뀌어"));
+    assert_eq!(value(&st, rows, H), text("최도윤 행"));
+    set(&mut st, &c[1], "now", rows, H, text("지금"), Some(1));
+    assert!(rejected(&c[1].take()).is_empty());
+}
+
+#[tokio::test]
+async fn host_deletes_only_unassigned_added_rows_and_cols() {
+    let (mut st, mut c) = setup(&["정하늘"], |cfg| cfg.permissions.add_rows = true);
+    let (rows, cols) = (st.sheets[0].model.rows, st.sheets[0].model.cols);
+    client(&mut st, &c[0], ClientMsg::AddRows { sheet: 0, count: 1 });
+    let r = host_get(&mut st, |s| s.structure(0, StructureEdit::AddRows { count: 2 }));
+    assert_eq!(r, Ok(()));
+    assert_eq!(st.sheets[0].model.rows, rows + 3);
+    assert!(st.rt[0].access.row_owner(rows + 1).is_none(), "호스트가 붙인 행은 담당자 없음");
+
+    let del = |from, count| move |s: &mut Shared<'_>| s.structure(0, StructureEdit::DeleteRows { from, count });
+    assert!(host_get(&mut st, del(rows, 1)).unwrap_err().contains("담당자(정하늘)"));
+    assert!(host_get(&mut st, del(1, 1)).unwrap_err().contains("엑셀에서 불러온 행"));
+    assert_eq!(host_get(&mut st, del(rows + 1, 2)), Ok(()));
+    assert_eq!(st.sheets[0].model.rows, rows + 1);
+
+    // 열: 붙인 열은 입력 열이고 행 담당자가 입력한다. 행 배정 기준 열·불러온 열은 지우지 않는다.
+    set(&mut st, &c[0], "before", rows, F, CellValue::Number(5.0), None);
+    let ver = st.rt[0].versions[(rows * cols + F) as usize];
+    assert_eq!(host_get(&mut st, |s| s.structure(0, StructureEdit::AddCols { count: 2 })), Ok(()));
+    assert_eq!(st.sheets[0].model.cols, cols + 2);
+    assert_eq!(st.sheets[0].config.columns.len() as u32, cols + 2);
+    assert_eq!(st.rt[0].versions[(rows * (cols + 2) + F) as usize], ver, "버전이 새 열 수로 옮겨진다");
+    c[0].take();
+    let layout = st.sheets[0].model.layout;
+    set(&mut st, &c[0], "new col", rows, cols, text("비고"), Some(layout));
+    assert!(rejected(&c[0].take()).is_empty());
+    let key = st.sheets[0].config.assignment.key_col.unwrap();
+    let del_col =
+        move |from, count| move |s: &mut Shared<'_>| s.structure(0, StructureEdit::DeleteCols { from, count });
+    assert!(host_get(&mut st, del_col(key, 1)).unwrap_err().contains("엑셀에서 불러온 열"));
+    assert_eq!(host_get(&mut st, del_col(cols, 1)), Ok(()));
+    assert_eq!(st.sheets[0].model.cols, cols + 1);
+    assert!(st.log.iter().any(|e| e.batch == "new col" && e.gone));
+    // 스냅샷은 지금 시트 모양으로 옮겨져 복원할 수 있다.
+    let n = host_get(&mut st, |s| {
+        let id = s.snapshots()[0].id;
+        s.restore(id, "호스트")
+    });
+    assert!(n.is_ok(), "{n:?}");
+}
+
+#[tokio::test]
+async fn cancelled_rows_drop_required_cells_and_only_editors_can_cancel() {
+    let (mut st, mut c) = setup(&["이서연", "최도윤"], |_| {});
+    let access = &st.rt[0].access;
+    let mine = access.rows_of(access.person("이서연").unwrap())[0];
+    let theirs = access.rows_of(access.person("최도윤").unwrap())[0];
+    let required = st.rt[0].progress.required;
+    let cancel = |from, on| ClientMsg::CancelRows { sheet: 0, from, count: 1, on, layout: Some(0) };
+    client(&mut st, &c[0], cancel(theirs, true));
+    assert!(errors(&c[0].take())[0].contains("내가 입력할 수 있는 행만"));
+    client(&mut st, &c[0], cancel(mine, true));
+    assert_eq!(st.sheets[0].model.cancelled_rows, [mine]);
+    assert_eq!(st.rt[0].progress.required, required - 1, "취소 행의 필수 칸은 세지 않는다");
+    let w = c[1].welcome();
+    assert_eq!(w.sheets[0].model.cancelled_rows, [mine], "모두에게 보인다");
+    client(&mut st, &c[0], cancel(mine, false));
+    assert!(st.sheets[0].model.cancelled_rows.is_empty());
+    assert_eq!(st.rt[0].progress.required, required);
+    // 호스트는 어느 데이터 행이든.
+    assert_eq!(
+        host_get(&mut st, move |s| s.structure(0, StructureEdit::CancelRows { from: theirs, count: 1, on: true })),
+        Ok(())
+    );
+    assert_eq!(st.sheets[0].model.cancelled_rows, [theirs]);
+    assert!(host_get(&mut st, |s| s.structure(0, StructureEdit::CancelRows { from: 0, count: 1, on: true })).is_err());
+}
+
+#[tokio::test]
+async fn assignment_and_host_clock_reach_participants() {
+    let (mut st, mut c) = setup(&["이서연"], |cfg| cfg.deadline = Some("2999-01-02T03:04".into()));
+    host(&mut st, |s| s.changed());
+    let w = c[0].welcome();
+    assert!(w.sheets[0].assigned, "행 배정 기준 열이 있다");
+    assert!((w.server_now - edit::now_ms()).abs() < 5_000);
+    let at = chrono::NaiveDate::from_ymd_opt(2999, 1, 2).unwrap().and_hms_opt(3, 4, 0).unwrap();
+    use chrono::TimeZone;
+    assert_eq!(w.session.deadline_at, chrono::Local.from_local_datetime(&at).earliest().map(|t| t.timestamp_millis()));
+    host(&mut st, |s| {
+        s.sheets[0].config.assignment.key_col = None;
+        s.sheets[0].config.assignment.extra_people = vec!["이서연".into()]; // 명단에서 빠지지 않게
+        s.changed();
+    });
+    assert!(!c[0].welcome().sheets[0].assigned);
+    client(&mut st, &c[0], ClientMsg::Ping);
+    assert!(matches!(&c[0].take()[..], [ServerMsg::Pong { now }] if (*now - edit::now_ms()).abs() < 5_000));
+}
+
+#[tokio::test]
+async fn moving_the_deadline_into_the_past_tells_participants_at_once() {
+    let (mut st, mut c) = setup(&["이서연"], |_| {});
+    host(&mut st, |s| {
+        s.sheets[0].config.deadline = Some("2000-01-01T09:00".into());
+        s.changed();
+    });
+    let msgs = c[0].take();
+    let i = msgs.iter().position(|m| matches!(m, ServerMsg::ReadOnly { read_only: true, .. }));
+    let j = msgs.iter().position(|m| matches!(m, ServerMsg::Welcome(_)));
+    assert!(i.is_some() && i < j, "읽기 전용을 알린 뒤 새 시트: {msgs:?}");
+}
+
+#[tokio::test]
+async fn stop_sharing_at_the_deadline_fires_once_per_deadline() {
+    let (mut st, mut c) = setup(&["이서연"], |cfg| cfg.permissions.deadline_action = DeadlineAction::StopSharing);
+    let mut feed = st.host_feed.subscribe();
+    host(&mut st, |s| {
+        s.sheets[0].config.deadline = Some("2000-01-01T09:00".into());
+        s.changed();
+    });
+    while feed.try_recv().is_ok() {}
+    assert!(!st.read_only, "공유 닫기면 읽기 전용으로 바꾸지 않는다");
+    st.handle(Command::DeadlineTick);
+    assert_eq!(feed.try_recv(), Ok(HostEvent::DeadlineClose));
+    assert_eq!(st.host_meta.get(META_DEADLINE_FIRED).map(String::as_str), Some("2000-01-01T09:00"));
+    st.handle(Command::DeadlineTick);
+    assert!(feed.try_recv().is_err(), "같은 마감으로는 한 번만");
+    // 호스트가 마감을 바꾸면 다시 닫을 수 있다.
+    host(&mut st, |s| {
+        s.sheets[0].config.deadline = Some("2000-01-02T09:00".into());
+        s.changed();
+    });
+    while feed.try_recv().is_ok() {}
+    st.handle(Command::DeadlineTick);
+    assert_eq!(feed.try_recv(), Ok(HostEvent::DeadlineClose));
+    c[0].take();
+}

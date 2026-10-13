@@ -29,6 +29,11 @@ export interface Batch {
   cells: CellEdit[];
   /** 히스토리·활동 피드 표시용(붙여넣기·범위 지우기·실행 취소·내 변경 되돌리기). */
   origin?: BatchOrigin;
+  /**
+   * 묶음을 만들 때 본 시트의 구조 판(`model.layout`). 그 뒤 앱에서 붙인 행·열을 지워 좌표가 밀렸으면 서버가 받지 않는다.
+   * 옛 대기열에는 없다(검사하지 않는다).
+   */
+  layout?: number;
 }
 
 export interface CellChange {
@@ -108,15 +113,15 @@ export class EditState {
 
   /** 입장·재접속·설정 변경으로 새 시트를 받았다. 아직 답을 못 받은 내 입력은 그 위에 다시 그린다. */
   load(welcome: SheetView) {
-    // 호스트가 다른 시트로 다시 불러왔으면 되돌리기 기록은 의미가 없다. 표 아래에 행이 붙은 것(행만 늘어남)은 같은
-    // 시트라 좌표가 그대로이므로 기록을 남긴다.
-    const grown =
+    // 호스트가 다른 시트로 다시 불러왔거나 앱에서 붙인 행·열을 지웠으면(구조 판이 바뀜) 좌표가 달라져 되돌리기 기록은
+    // 의미가 없다. 표 아래·오른쪽에 행·열이 붙은 것(늘어나기만 함)은 같은 시트라 좌표가 그대로이므로 기록을 남긴다.
+    const same =
       this.model &&
-      this.model.cols === welcome.model.cols &&
-      welcome.model.rows > this.model.rows &&
       this.model.workbook === welcome.model.workbook &&
-      this.model.sheet === welcome.model.sheet;
-    if (this.model && !grown && (this.model.rows !== welcome.model.rows || this.model.cols !== welcome.model.cols)) {
+      this.model.sheet === welcome.model.sheet &&
+      (this.model.layout ?? 0) === (welcome.model.layout ?? 0);
+    const grown = same && welcome.model.rows >= this.model.rows && welcome.model.cols >= this.model.cols;
+    if (this.model && !grown) {
       this.undoStack = [];
       this.redoStack = [];
     }
@@ -124,7 +129,10 @@ export class EditState {
     this.versions = new Map(welcome.versions);
     this.locks = new Map(welcome.locks.map((l) => [this.index(l.at.row, l.at.col), l.by]));
     this.pending.clear();
+    const layout = this.model.layout ?? 0;
     for (const b of this.outbox) {
+      // 구조가 바뀌기 전에 만든 묶음은 서버가 받지 않는다(밀린 칸에 그리지 않는다).
+      if (b.layout !== undefined && b.layout !== layout) continue;
       for (const c of b.cells) {
         const cell = this.model.cells[this.index(c.row, c.col)];
         if (!cell) continue;
@@ -161,7 +169,10 @@ export class EditState {
       this.pending.set(i, batch);
     }
     if (cells.length === 0) return null;
-    const b: Batch = origin ? { batch, sheet: this.sheet, cells, origin } : { batch, sheet: this.sheet, cells };
+    const layout = this.model.layout ?? 0;
+    const b: Batch = origin
+      ? { batch, sheet: this.sheet, cells, origin, layout }
+      : { batch, sheet: this.sheet, cells, layout };
     this.outbox.push(b);
     if (record === "undo") {
       this.undoStack.push({ batch, cells: undo });

@@ -31,6 +31,8 @@ pub const META_JOB: &str = "job";
 pub const META_ENDED: &str = "ended";
 /// 7단계 '버리고 새로 시작'(되살리지 않는다).
 pub const META_DISCARDED: &str = "discarded";
+/// 마감 동작 '공유 닫기'를 한 마감 시각(앱을 다시 켜거나 다시 공유해도 같은 마감으로는 다시 닫지 않는다).
+pub const META_DEADLINE_FIRED: &str = "deadlineFired";
 
 /// 서비스 상태(메타 `server`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,7 +187,10 @@ impl State {
             self.people.insert(name, person);
         }
         for e in &r.log {
-            if let Some((slot, rt)) = self.sheets.get(e.sheet as usize).zip(self.rt.get_mut(e.sheet as usize)) {
+            // 지운 행·열의 기록은 지금 칸이 아니다(이미 반영한 묶음으로만 센다).
+            if let Some((slot, rt)) =
+                self.sheets.get(e.sheet as usize).zip(self.rt.get_mut(e.sheet as usize)).filter(|_| !e.gone)
+            {
                 let i = (e.row * slot.model.cols.max(1) + e.col) as usize;
                 if let Some(v) = rt.versions.get_mut(i) {
                     *v += 1;
@@ -244,7 +249,7 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     let comms: CommsData = blob(&saved.blobs, BLOB_COMMS).map(|(_, c)| c).unwrap_or_default();
     let tokens: BTreeMap<String, String> = blob(&saved.blobs, BLOB_PEOPLE).map(|(_, t)| t).unwrap_or_default();
     // 시트를 남긴 뒤의 기록을 그 시트에 되짚는다.
-    for e in saved.changes.iter().filter(|e| e.seq > sheet_seq) {
+    for e in saved.changes.iter().filter(|e| e.seq > sheet_seq && !e.gone) {
         if let Some(cell) = models.get_mut(e.sheet as usize).and_then(|m| m.cell_mut(CellRef::new(e.row, e.col))) {
             cell.v = e.new.clone();
         }
@@ -255,8 +260,10 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     let changes = saved.changes.len();
     let store = Store::open(path).map_err(|e| e.to_string())?;
     // 호스트가 남긴 메타 중 다음 기록 파일(다시 확정)로 옮겨 갈 것.
-    let host_meta =
-        [META_SERVER, META_JOB].into_iter().filter_map(|k| Some((k.to_string(), meta.get(k)?.clone()))).collect();
+    let host_meta = [META_SERVER, META_JOB, META_DEADLINE_FIRED]
+        .into_iter()
+        .filter_map(|k| Some((k.to_string(), meta.get(k)?.clone())))
+        .collect();
     let restore =
         Restore { log: saved.changes, snapshots: saved.snapshots, baselines, comms, closed, host_meta, tokens };
     let mut sheets = meta_sheets(&meta);

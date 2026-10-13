@@ -63,6 +63,9 @@ fn sheet(people: &[String]) -> (SheetModel, CollectConfig) {
         validations: vec![],
         hidden_rows: vec![],
         hidden_cols: vec![],
+        added_rows: Vec::new(),
+        cancelled_rows: Vec::new(),
+        layout: 0,
     };
     let mut config = CollectConfig::suggest(&model);
     config.assignment.key_col = Some(0);
@@ -222,7 +225,13 @@ async fn thirty_people_editing_at_once() {
                             }
                         }
                     }
-                    let msg = ClientMsg::SetCells { sheet: 0, batch: format!("{k}-{seq}"), cells, origin: None };
+                    let msg = ClientMsg::SetCells {
+                        sheet: 0,
+                        batch: format!("{k}-{seq}"),
+                        cells,
+                        origin: None,
+                        layout: None,
+                    };
                     tx.send(text(&msg)).await.unwrap();
                     next_edit += EDIT_EVERY;
                 }

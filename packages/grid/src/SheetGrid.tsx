@@ -44,6 +44,10 @@ export interface GridMark {
   lock?: boolean;
 }
 
+/** 오른쪽 클릭한 곳: 칸(병합이면 그 칸 좌표), 열 머리글, 행 머리글. */
+export type GridHit =
+  { kind: "cell"; row: number; col: number } | { kind: "col"; col: number } | { kind: "row"; row: number };
+
 /** 바깥에서 그리드를 움직일 때(편집을 확정하고 다음 칸으로 등). */
 export interface SheetGridHandle {
   focus(): void;
@@ -76,6 +80,13 @@ export interface SheetGridProps {
    * 그리드는 크기를 직접 바꾸지 않는다(쓰는 쪽이 `model`을 바꿔 다시 그린다).
    */
   onResize?: (axis: "col" | "row", index: number, sizePt: number) => void;
+  /**
+   * 칸·머리글을 오른쪽 클릭했다. 쓰는 쪽이 메뉴를 띄우려면 `e.preventDefault()`로 브라우저 메뉴를 막는다. 선택은 바꾸지
+   * 않는다(필요하면 쓰는 쪽이 고른다).
+   */
+  onContextMenu?: (hit: GridHit, e: MouseEvent) => void;
+  /** 보이는 마지막 행 번호칸 바로 아래에 그릴 것(예: 행 추가 단추). 행 번호 띠와 함께 가로로는 고정된다. */
+  rowFooter?: ReactNode;
   /** 위·아래로 더 그려 둘 행 수. */
   overscan?: number;
   className?: string;
@@ -99,7 +110,7 @@ function baseCss(s: CellStyle | undefined): CSSProperties {
     fontSize: s.fontSize ? `${s.fontSize * PT_TO_PX}px` : undefined,
     fontWeight: s.bold ? 700 : undefined,
     fontStyle: s.italic ? "italic" : undefined,
-    textDecoration: s.underline ? "underline" : undefined,
+    textDecoration: [s.underline && "underline", s.strike && "line-through"].filter(Boolean).join(" ") || undefined,
     color: s.color ? rgbHex(s.color) : undefined,
     // background 단축 속성은 장식 클래스의 background-image(빗금)까지 지우므로 색만 지정한다.
     backgroundColor: s.fill !== undefined ? rgbHex(s.fill) : undefined,
@@ -145,6 +156,9 @@ const MIN_RESIZE_PX = 4;
 /** 이름표 높이(grid.css .peer-tag의 line-height). 고정 머리 바로 아래 칸이면 이름표를 칸 아래로 보낸다. */
 const TAG_H = 16;
 
+/** 행 번호 아래 자리(`rowFooter`) 높이. */
+const FOOTER_H = 26;
+
 export function SheetGrid({
   model,
   handle,
@@ -158,12 +172,15 @@ export function SheetGrid({
   onKey,
   onCellDoubleClick,
   onResize,
+  onContextMenu,
+  rowFooter,
   overscan = 6,
   className,
   style,
 }: SheetGridProps) {
   const layout = useMemo(() => buildLayout(model), [model]);
   const styleCss = useMemo(() => model.styles.map(baseCss), [model]);
+  const cancelled = useMemo(() => new Set(model.cancelledRows ?? []), [model]);
   const scroller = useRef<HTMLDivElement>(null);
   const [vp, setVp] = useState<Viewport>({ top: 0, left: 0, width: 800, height: 600 });
   const frame = useRef(0);
@@ -207,6 +224,7 @@ export function SheetGrid({
 
   const totalW = GUTTER_W + layout.colX[layout.cols]!;
   const totalH = HEADER_H + layout.rowY[layout.rows]!;
+  const contentH = totalH + (rowFooter ? FOOTER_H : 0);
   const cornerW = GUTTER_W + layout.frozenW;
   const cornerH = HEADER_H + layout.frozenH;
 
@@ -247,7 +265,7 @@ export function SheetGrid({
       borderRight: borderCss(s?.borders.right ?? right?.borders.left),
       ...deco?.style,
     };
-    const cls = `mmg-cell${deco?.className ? ` ${deco.className}` : ""}`;
+    const cls = `mmg-cell${cancelled.has(r) ? " mmg-cancelled" : ""}${deco?.className ? ` ${deco.className}` : ""}`;
     return (
       <div key={`${r}:${c}`} className={cls} data-r={r} data-c={c} style={css}>
         <span className="mmg-text">
@@ -289,10 +307,11 @@ export function SheetGrid({
       const after = r > 0 && isHidden(layout.rowY, r - 1) ? " mmg-after-hidden" : "";
       const on = sel && r >= sel.row && r < sel.row + sel.rows ? " mmg-head-sel" : "";
       const marker = rowMarker?.(r);
+      const gone = cancelled.has(r) ? " mmg-cancelled-head" : "";
       out.push(
         <div
           key={`g${r}`}
-          className={`mmg-rowhead${after}${on}`}
+          className={`mmg-rowhead${after}${on}${gone}`}
           data-row-head={r}
           style={{ top: HEADER_H + y, height: layout.rowY[r + 1]! - y }}
         >
@@ -447,6 +466,16 @@ export function SheetGrid({
     scrollIntoView(scroller.current, layout, cellBox(layout, at.row, at.col));
   };
 
+  const onContext = (e: MouseEvent) => {
+    if (!onContextMenu) return;
+    const el = hit(e);
+    if (!el) return;
+    if (el.dataset.r !== undefined)
+      onContextMenu({ kind: "cell", row: Number(el.dataset.r), col: Number(el.dataset.c) }, e);
+    else if (el.dataset.colHead !== undefined) onContextMenu({ kind: "col", col: Number(el.dataset.colHead) }, e);
+    else if (el.dataset.rowHead !== undefined) onContextMenu({ kind: "row", row: Number(el.dataset.rowHead) }, e);
+  };
+
   const onDoubleClick = (e: MouseEvent) => {
     const el = (e.target as HTMLElement).closest<HTMLElement>("[data-r]");
     if (el && onCellDoubleClick) onCellDoubleClick(Number(el.dataset.r), Number(el.dataset.c));
@@ -502,8 +531,9 @@ export function SheetGrid({
       onMouseOver={onMouseOver}
       onKeyDown={onKeyDown}
       onDoubleClick={onDoubleClick}
+      onContextMenu={onContext}
     >
-      <div className="mmg-content" style={{ width: totalW, height: totalH }}>
+      <div className="mmg-content" style={{ width: totalW, height: contentH }}>
         <div className="mmg-band mmg-corner" style={{ width: cornerW, height: cornerH, marginBottom: -cornerH }}>
           <div className="mmg-colhead mmg-origin" style={{ left: 0, width: GUTTER_W }} />
           {colHeads(0, fc - 1)}
@@ -516,8 +546,20 @@ export function SheetGrid({
           {renderBlock(0, fr - 1, colsSpan.first, colsSpan.last)}
           {layers.top}
         </div>
-        <div className="mmg-band mmg-left" style={{ width: cornerW, height: totalH, marginBottom: -totalH }}>
+        <div className="mmg-band mmg-left" style={{ width: cornerW, height: contentH, marginBottom: -contentH }}>
           {rowHeads(rowsSpan.first, rowsSpan.last)}
+          {rowFooter && (
+            // 그리드가 이 안의 클릭·키를 칸 선택·이동으로 받지 않게 한다.
+            <div
+              className="mmg-rowfoot"
+              style={{ top: totalH, height: FOOTER_H }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+            >
+              {rowFooter}
+            </div>
+          )}
           {renderBlock(rowsSpan.first, rowsSpan.last, 0, fc - 1)}
           {layers.left}
         </div>

@@ -32,4 +32,8 @@ rowOwner: Array<number>,
 /**
  * 이 시트에서 내 필수 진행률.
  */
-progress: PersonProgress, };
+progress: PersonProgress, 
+/**
+ * 호스트가 담당자를 배정했다(행 배정 기준 열이나 범위 배정). 아니면 '내 담당만' 필터를 보이지 않는다.
+ */
+assigned: boolean, };

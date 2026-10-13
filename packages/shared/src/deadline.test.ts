@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { dday, formatDeadline, parseDeadline, remaining } from "./deadline";
+import { dday, formatDeadline, parseDeadline, remaining, remainingAt, remainingTick } from "./deadline";
 
 describe("마감 표시", () => {
   it("로컬 시각 해석·표시", () => {
@@ -27,5 +27,25 @@ describe("remaining", () => {
     expect(remaining("2026-10-08T15:12", now)).toBe("12분");
     expect(remaining("2026-10-08T14:00", now)).toBe("마감 지남");
     expect(remaining(undefined, now)).toBe("");
+  });
+});
+
+describe("remainingAt", () => {
+  const due = new Date(2026, 9, 8, 18, 0).getTime();
+  it("분은 올려 센다(마감 시각 전에는 '마감 지남'이 아니다)", () => {
+    expect(remainingAt(due, due - 90_000)).toBe("2분");
+    expect(remainingAt(due, due - 3 * 3_600_000 - 1_000)).toBe("3시간 1분");
+    expect(remainingAt(due, due - 3 * 3_600_000)).toBe("3시간");
+    expect(remainingAt(due, due - 40_000)).toBe("40초");
+    expect(remainingAt(due, due - 1)).toBe("1초");
+    expect(remainingAt(due, due)).toBe("마감 지남");
+    expect(remainingAt(due, due + 5_000)).toBe("마감 지남");
+    expect(remainingAt(undefined, due)).toBe("");
+  });
+
+  it("2분 안쪽은 1초마다 다시 그린다", () => {
+    expect(remainingTick(due, due - 100_000)).toBe(1_000);
+    expect(remainingTick(due, due - 10 * 60_000)).toBe(15_000);
+    expect(remainingTick(null, due)).toBe(15_000);
   });
 });

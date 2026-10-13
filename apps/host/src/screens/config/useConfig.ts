@@ -1,6 +1,6 @@
 import type { GridSelection } from "@mm/grid";
 import { selectionRange, buildLayout, withLineSize } from "@mm/grid";
-import type { CellRange, ConfigEdit, ConfigView, FormatEdit, HostEvent, SheetModel } from "@mm/shared";
+import type { CellRange, ConfigEdit, ConfigView, FormatEdit, HostEvent, SheetModel, StructureEdit } from "@mm/shared";
 import { decodeFlags } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -61,18 +61,19 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
   }, [refresh]);
 
   // 공유 중 참여자 입력·되돌리기·크기 조절도 이 화면 시트에 반영한다(옛 값 위에 고쳐 쓰지 않게). `reset`은 대개 이 화면의
-  // 동작이 결과(시트·설정 보기)를 직접 돌려받으므로, 참여자가 행을 추가해 시트 크기가 바뀐 때만 다시 읽는다.
-  const rows = useRef(initial.rows);
-  rows.current = model.rows;
+  // 동작이 결과(시트·설정 보기)를 직접 돌려받으므로, 참여자가 표 구조를 바꾼 때(행 추가·삭제, 취소 행)만 다시 읽는다.
+  const shape = useRef(shapeOf(initial));
+  shape.current = shapeOf(model);
   useEffect(() => {
     const off = listen<HostEvent>(jobEvent("sheet-changes", job), (e) => {
       const ev = e.payload;
+      if (ev.type === "deadlineClose") return;
       if (ev.type !== "reset" && ev.sheet !== sheet) return; // 다른 시트의 변경
       if (ev.type === "reset") {
         void api
           .monitorGet(sheet)
           .then((d) => {
-            if (d.model.rows === rows.current) return;
+            if (shapeOf(d.model) === shape.current) return;
             setModel(d.model);
             refresh();
           })
@@ -128,6 +129,19 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
     [run, sheet, viewer],
   );
 
+  /** 표 구조 바꾸기(오른쪽 클릭 메뉴). 행·열을 지웠으면 선택을 푼다(좌표가 당겨졌다). 됐으면 `true`. */
+  const structure = useCallback(
+    async (edit: StructureEdit) => {
+      const r = await run(() => api.sheetStructure(sheet, edit, viewer));
+      if (!r) return false;
+      setModel(r.model);
+      setView(r.view);
+      if (edit.op === "deleteRows" || edit.op === "deleteCols") setSelection(null);
+      return true;
+    },
+    [run, sheet, viewer],
+  );
+
   /** 호스트가 칸 내용을 바꾼다: 바로 그리고, 세션에 보낸 뒤 설정 보기(범례·명단·열 이름)를 새로 읽는다. */
   const setCells = useCallback(
     async (cells: CellWrite[]) => {
@@ -171,6 +185,7 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
     layout,
     apply,
     format,
+    structure,
     setCells,
     setError,
     busy,
@@ -179,3 +194,8 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
 }
 
 export type ConfigState = ReturnType<typeof useConfig>;
+
+/** 표 구조(행·열 수·구조 판·취소 행·추가한 행): 바뀌었으면 시트를 다시 읽는다. */
+function shapeOf(m: SheetModel): string {
+  return `${m.rows}x${m.cols}:${m.layout ?? 0}:${(m.cancelledRows ?? []).join(",")}:${m.addedRows?.length ?? 0}`;
+}

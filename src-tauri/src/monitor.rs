@@ -9,7 +9,7 @@ use collect_core::{CellRange, SheetModel};
 use collect_server::protocol::ChatTo;
 use collect_server::{CommsSnapshot, HighlightAudience, NoticeTarget, SessionHandle};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::broadcast::error::RecvError;
 use ts_rs::TS;
 
@@ -29,12 +29,24 @@ pub struct MonitorData {
 }
 
 /// 그 업무의 셀 변경(`sheet-changes:{업무}`)과 소통(`comms:{업무}`)을 웹뷰에 보낸다. 세션이 끝나면 함께 끝난다.
+/// 마감 동작이 '공유 닫기'인 업무는 마감 시각이 되면(`DeadlineClose`) 이 업무의 공유를 닫는다.
 pub(crate) fn forward_events(app: &AppHandle, job: &str, session: &SessionHandle) {
     let mut feed = session.host_events();
-    let (app2, changes) = (app.clone(), event("sheet-changes", job));
+    let (app2, changes, id) = (app.clone(), event("sheet-changes", job), job.to_string());
     tauri::async_runtime::spawn(async move {
         loop {
             match feed.recv().await {
+                Ok(collect_server::HostEvent::DeadlineClose) => {
+                    let state = app2.state::<AppState>();
+                    if let Ok(job) = state.job(&id)
+                        && job.published()
+                        && let Err(e) =
+                            crate::service::unpublish_as(&app2, &state, &job, collect_server::Gone::Deadline).await
+                    {
+                        tracing::error!("마감 시각에 공유를 닫지 못했습니다: {e}");
+                    }
+                    let _ = app2.emit(&changes, collect_server::HostEvent::DeadlineClose);
+                }
                 Ok(ev) => {
                     let _ = app2.emit(&changes, ev);
                 }

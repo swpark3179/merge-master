@@ -1,4 +1,4 @@
-import type { CellRange, CellRef } from "@mm/shared";
+import type { CellRange, CellRef, SheetModel } from "@mm/shared";
 
 import type { GridLayout } from "./layout";
 
@@ -77,4 +77,47 @@ export function countCells(layout: GridLayout, range: CellRange): number {
     }
   }
   return n;
+}
+
+/** 머리글을 누른 것과 같은 선택: 열은 데이터 행 전체(데이터 행이 없으면 모든 행), 행은 모든 열. */
+export function lineSelection(
+  model: Pick<SheetModel, "rows" | "cols" | "headerRows">,
+  axis: "col" | "row",
+  from: number,
+  to: number = from,
+): GridSelection {
+  if (axis === "col") {
+    const top = model.headerRows < model.rows ? model.headerRows : 0;
+    return { anchor: { row: top, col: from }, focus: { row: model.rows - 1, col: to } };
+  }
+  return { anchor: { row: from, col: 0 }, focus: { row: to, col: model.cols - 1 } };
+}
+
+/** 오른쪽 클릭한 곳: 칸, 열 머리글, 행 머리글(그리드의 `GridHit`과 같은 모양). */
+export type LineHit =
+  { kind: "cell"; row: number; col: number } | { kind: "col"; col: number } | { kind: "row"; row: number };
+
+/**
+ * 오른쪽 클릭 메뉴가 다룰 선택(Excel처럼): 누른 곳이 지금 선택 안이면 그대로, 밖이면 그 칸·열·행 하나를 고른다.
+ * 선택 범위는 병합을 넓히지 않은 사각형(`anchor`~`focus`)으로 본다.
+ */
+export function selectForMenu(
+  model: Pick<SheetModel, "rows" | "cols" | "headerRows">,
+  sel: GridSelection | null,
+  hit: LineHit,
+): GridSelection {
+  const r = sel && {
+    row: Math.min(sel.anchor.row, sel.focus.row),
+    col: Math.min(sel.anchor.col, sel.focus.col),
+    rows: Math.abs(sel.anchor.row - sel.focus.row) + 1,
+    cols: Math.abs(sel.anchor.col - sel.focus.col) + 1,
+  };
+  if (hit.kind === "cell")
+    return r && containsCell(r, hit.row, hit.col) ? sel! : cellSelection({ row: hit.row, col: hit.col });
+  if (hit.kind === "col") {
+    const whole = r && r.row <= model.headerRows && r.row + r.rows >= model.rows;
+    return whole && hit.col >= r.col && hit.col < r.col + r.cols ? sel! : lineSelection(model, "col", hit.col);
+  }
+  const whole = r && r.col === 0 && r.cols === model.cols;
+  return whole && hit.row >= r.row && hit.row < r.row + r.rows ? sel! : lineSelection(model, "row", hit.row);
 }

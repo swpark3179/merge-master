@@ -259,11 +259,18 @@ test("행 단위 폼(1g): 형식별 입력·자동 저장·이력·다음 미입
 test("조회조건·내 담당만·필수 미입력만 필터", async ({ browser }) => {
   const a = await open(browser, "최도윤");
   await expect(a.getByTestId("row-count")).toContainText("행 · 내 담당");
-  await a.getByLabel("부서 조회조건").selectOption("재무팀");
+  // 조회조건 콤보는 펼치면 검색 칸이 있다(항목이 많아도 찾기 쉽게).
+  await a.getByRole("combobox", { name: "부서 조회조건" }).click();
+  await a.getByLabel("부서 검색").fill("재무");
+  await expect(a.getByRole("option")).toHaveText(["재무팀"]);
+  await a.getByRole("option", { name: "재무팀" }).click();
+  await expect(a.getByRole("combobox", { name: "부서 조회조건" })).toHaveText(/재무팀/);
   await expect(a.getByTestId("row-count")).toContainText("표시");
   const shown = await a.locator(".mmg-left .mmg-rowhead").count();
   expect(shown).toBeLessThan(40);
   await a.getByRole("button", { name: "필터 지우기" }).click();
+  // 담당자 없는 행도 '내 담당'에 든다는 것을 이름에서 알린다.
+  await expect(a.locator(".filter-bar")).toContainText("내 담당만 (담당자 없는 행 포함)");
   await a.getByLabel("내 담당만").check();
   await expect(a.getByTestId("row-count")).toContainText("표시 170행");
   await a.getByLabel("필수 미입력만").check();
@@ -278,9 +285,62 @@ test("서식 정책: 배경색만 허용하면 채우기만 쓸 수 있다", asy
   await expect(a.getByRole("button", { name: "굵게" })).toBeDisabled();
   await cell(a, 19, H).click();
   await a.getByLabel("채우기", { exact: true }).click();
-  await a.getByRole("button", { name: "노랑" }).click();
+  await a.getByRole("button", { name: "노랑", exact: true }).click();
   await expect(cell(a, 19, H)).toHaveCSS("background-color", "rgb(255, 243, 176)");
+  // 새 색(빨강·진한 노랑·진한 파랑).
+  await a.getByLabel("채우기", { exact: true }).click();
+  await a.getByRole("button", { name: "진한 노랑", exact: true }).click();
+  await expect(cell(a, 19, H)).toHaveCSS("background-color", "rgb(255, 255, 0)");
+  // 글자색·맞춤은 '허용'일 때만.
+  await expect(a.getByRole("button", { name: "가운데 맞춤" })).toBeDisabled();
   await request.post("/__dev/config", { data: { format: "none" } });
+});
+
+test("서식 허용이면 글자색·맞춤도 바꾼다", async ({ browser, request }) => {
+  const a = await open(browser, "정하늘");
+  const b = await open(browser, "최도윤");
+  expect((await request.post("/__dev/config", { data: { format: "all" } })).ok()).toBe(true);
+  try {
+    await expect(a.getByRole("button", { name: "가운데 맞춤" })).toBeEnabled();
+    await cell(a, 20, H).click();
+    await a.getByLabel("글자색", { exact: true }).click();
+    await a.getByRole("button", { name: "글자 빨강" }).click();
+    await expect(cell(a, 20, H)).toHaveCSS("color", "rgb(234, 42, 42)");
+    await a.getByRole("button", { name: "가운데 맞춤" }).click();
+    await expect(cell(a, 20, H)).toHaveCSS("justify-content", "center");
+    await expect(a.getByRole("button", { name: "가운데 맞춤" })).toHaveAttribute("aria-pressed", "true");
+    await expect(cell(b, 20, H)).toHaveCSS("justify-content", "center"); // 모두에게 보인다(남의 행이라 글자는 회색)
+    // 다시 누르면 일반 맞춤.
+    await a.getByRole("button", { name: "가운데 맞춤" }).click();
+    await expect(cell(a, 20, H)).not.toHaveCSS("justify-content", "center");
+  } finally {
+    await request.post("/__dev/config", { data: { format: "none" } });
+  }
+});
+
+test("취소 행: 상단 토글로 행 전체를 취소 표시하면 모두에게 보이고 필수 칸에서 빠진다", async ({ browser }) => {
+  const a = await open(browser, "오세린");
+  const b = await open(browser, "최도윤");
+  const required = async () => (await a.locator(".mine-progress b").textContent())!.split("/")[1]!.trim();
+  const before = await required();
+  await cell(a, 29, H).click();
+  const toggle = a.getByRole("button", { name: "취소 행" });
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+  await toggle.click();
+  await expect(cell(a, 29, F)).toHaveClass(/mmg-cancelled/);
+  await expect(cell(b, 29, F)).toHaveClass(/mmg-cancelled/);
+  await expect(cell(b, 29, 3)).toHaveClass(/mmg-cancelled/); // 보이는 열 전체(잠금 열 D도)
+  await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(required).not.toBe(before);
+  // 남의 행은 표시할 수 없다.
+  await cell(b, 29, H).click();
+  await b.getByRole("button", { name: "취소 행" }).click();
+  await expect(b.locator(".toast").last()).toContainText("내가 입력할 수 있는 행만");
+  // 다시 누르면 풀린다.
+  await cell(a, 29, H).click();
+  await toggle.click();
+  await expect(cell(b, 29, F)).not.toHaveClass(/mmg-cancelled/);
+  await expect.poll(required).toBe(before);
 });
 
 test("마감까지 남은 시간이 오른쪽 위에 보이고, 지나면 읽기 전용이 된다", async ({ browser, request }) => {
@@ -293,6 +353,10 @@ test("마감까지 남은 시간이 오른쪽 위에 보이고, 지나면 읽기
   expect((await request.post(`${hidden}/__dev/config`, { data: { deadline: local } })).ok()).toBe(true);
   const left = a.locator(".top .deadline-left");
   await expect(left).toContainText("2일 3시간 남음");
+  // 남은 시간은 호스트 PC 시각 기준: 이 기기 시계가 틀려도(1시간 빠름) 같게 보인다.
+  await a.clock.install({ time: Date.now() + 3_600_000 });
+  await a.reload();
+  await expect(left).toContainText("2일 3시간 남음");
   await expect(left).toContainText(`마감 ${at.getMonth() + 1}/${at.getDate()}`);
   await expect(left).not.toHaveClass(/urgent/);
   expect((await request.post(`${hidden}/__dev/config`, { data: { deadline: "2000-01-01T09:00" } })).ok()).toBe(true);
@@ -301,10 +365,27 @@ test("마감까지 남은 시간이 오른쪽 위에 보이고, 지나면 읽기
   await expect(a.locator(".readonly-bar")).toContainText("마감 시각이 지났습니다 — 읽기 전용입니다");
   await cell(a, 12, F).click();
   await a.keyboard.type("1");
-  await expect(a.locator(".toast")).toContainText("마감되어 입력할 수 없습니다");
+  await expect(a.locator(".toast", { hasText: "마감 시각이 지났습니다. 이제 입력할 수 없습니다" })).toBeVisible();
+  await expect(a.locator(".toast", { hasText: "마감되어 입력할 수 없습니다" })).toBeVisible();
   await request.post(`${hidden}/__dev/config`, { data: { deadline: "" } });
   await expect(a.locator(".readonly-bar")).toHaveCount(0);
   await expect(left).toHaveCount(0);
+});
+
+test("마감 동작이 '공유 닫기'면 마감 시각에 이 업무의 공유가 닫힌다", async ({ browser, request }) => {
+  const hidden = "http://127.0.0.1:8098";
+  const a = await open(browser, "이서연", `${hidden}/q4`);
+  const config = (data: object) => request.post(`${hidden}/__dev/config`, { data });
+  expect((await config({ deadlineAction: "stopSharing", deadline: "2000-01-02T09:00" })).ok()).toBe(true);
+  try {
+    await expect(a.getByText("마감 시각이 지나 공유가 닫혔습니다")).toBeVisible();
+    await expect(a.locator(".readonly-bar")).toHaveCount(0); // 읽기 전용으로 바꾸지는 않는다
+  } finally {
+    // 다시 공개하면 이어서 받는다(같은 마감으로는 다시 닫지 않는다).
+    expect((await request.post(`${hidden}/__dev/publish?s=q4`)).ok()).toBe(true);
+    await expect(a.locator(".status")).toContainText("실시간 동기화");
+    await config({ deadline: "", deadlineAction: "readOnly" });
+  }
 });
 
 test("호스트가 취합을 마감하면 사유와 함께 읽기 전용이 되고, 다시 열 수 있다", async ({ browser, request }) => {
@@ -387,6 +468,15 @@ test("크기 조절: 호스트가 허용하면 참여자가 머리글 경계를 
     await a.mouse.up();
     await expect.poll(() => width(a)).toBeGreaterThan(before + 40);
     await expect.poll(() => width(b)).toBeGreaterThan(before + 40);
+    // 머리글을 오른쪽 클릭해 값으로도 바꾼다(pt).
+    await colHead(a, "H").click({ button: "right" });
+    const menu = a.getByRole("menu", { name: "열 메뉴" });
+    await expect(menu).toBeVisible();
+    await menu.getByLabel("열 너비(pt)").fill("90");
+    await menu.getByLabel("열 너비(pt)").press("Enter");
+    await expect.poll(() => width(b)).toBe(120); // 90pt = 120px
+    await a.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
   } finally {
     await request.post("/__dev/config", { data: { resize: false } });
   }
@@ -397,20 +487,24 @@ test("크기 조절: 호스트가 허용하면 참여자가 머리글 경계를 
 test("행 추가: 표 아래에 붙인 행은 모두에게 보이고 추가한 사람의 행이 된다", async ({ browser, request }) => {
   const a = await open(browser, "한지우");
   const b = await open(browser, "최도윤");
-  await expect(a.getByRole("button", { name: "+ 행 추가" })).toHaveCount(0);
-  expect((await request.post("/__dev/config", { data: { addRows: true } })).ok()).toBe(true);
+  const addRow = (page: Page) => page.getByRole("button", { name: "행 추가", exact: true });
+  await expect(addRow(a)).toHaveCount(0);
+  expect((await request.post("/__dev/config", { data: { addRows: true, deleteRows: true } })).ok()).toBe(true);
   try {
     const count = async (page: Page) =>
       Number((await page.getByTestId("row-count").textContent())!.split("행")[0]!.replace(/,/g, ""));
-    await expect(a.getByRole("button", { name: "+ 행 추가" })).toBeVisible();
+    // 행 추가는 보이는 마지막 행 번호칸 바로 아래의 ＋.
+    await expect(addRow(a)).toBeVisible();
+    await expect(addRow(a).locator("xpath=..")).toHaveClass(/mmg-rowfoot/);
     const before = await count(a);
     const row = 2 + before; // 머리글 2행 + 데이터 행
-    await a.getByRole("button", { name: "+ 행 추가" }).click();
+    await addRow(a).click();
     await expect(a.locator(".toast", { hasText: "행을 추가했습니다" })).toBeVisible();
     await expect.poll(() => count(a)).toBe(before + 1);
     await expect.poll(() => count(b)).toBe(before + 1);
-    // 새 행으로 가 있다: 입력할 첫 칸(A)이 골라져 있고, 담당자 칸(C)에 내 이름.
+    // 새 행으로 가 있다: 입력할 첫 칸(A)이 골라져 있고(바로 입력할 수 있게 편집기에 포커스), 담당자 칸(C)에 내 이름.
     await expect(a.locator(".cell-detail .addr")).toHaveText(`A${row + 1}`);
+    await expect(a.getByLabel("셀 입력")).toBeFocused();
     await expect(text(a, row, 2)).toHaveText("한지우");
     await a.keyboard.type("연구");
     await a.keyboard.press("Tab");
@@ -429,7 +523,22 @@ test("행 추가: 표 아래에 붙인 행은 모두에게 보이고 추가한 �
     await cell(b, row, H).click();
     await b.keyboard.type("x");
     await expect(b.locator(".toast").last()).toContainText("이 칸은 입력할 수 없습니다");
+    // 행 번호 오른쪽 클릭: 내가 추가한 행은 지울 수 있고(값이 있으면 확인), 남의 행·불러온 행은 지울 수 없다.
+    const rowHead = (page: Page, r: number) => page.locator(`.mmg-rowhead[data-row-head="${r}"]`);
+    await rowHead(b, row).click({ button: "right" });
+    await expect(b.getByRole("menuitem", { name: "행 삭제" })).toBeDisabled();
+    await b.keyboard.press("Escape");
+    await rowHead(a, row - 1).click({ button: "right" }); // 엑셀에서 불러온 마지막 행
+    await expect(a.getByRole("menuitem", { name: "행 삭제" })).toBeDisabled();
+    await a.keyboard.press("Escape");
+    await rowHead(a, row).click({ button: "right" });
+    await a.getByRole("menuitem", { name: "행 삭제" }).click();
+    await expect(a.getByRole("menu")).toContainText("값이 있는 칸");
+    await a.getByRole("menu").getByRole("button", { name: "행 삭제" }).click();
+    await expect.poll(() => count(a)).toBe(before);
+    await expect.poll(() => count(b)).toBe(before);
+    await expect(b.locator(".toast").last()).toContainText("한지우 님이");
   } finally {
-    await request.post("/__dev/config", { data: { addRows: false } });
+    await request.post("/__dev/config", { data: { addRows: false, deleteRows: false } });
   }
 });

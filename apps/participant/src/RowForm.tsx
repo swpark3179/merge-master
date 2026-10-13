@@ -12,6 +12,8 @@ interface Props {
   row: number | null;
   onRow: (row: number) => void;
   onShowInGrid: (row: number) => void;
+  /** 표 맨 아래에 행을 붙인다(참여자 권한 '행 추가'일 때만 준다). */
+  onAddRow?: () => void;
 }
 
 function clock(ms: number): string {
@@ -20,7 +22,7 @@ function clock(ms: number): string {
 }
 
 /** 1g 행 단위 입력 폼: 내 담당 행 목록 · 읽기 전용 요약 띠 · 형식별 입력 · 칸 이탈 시 자동 저장 · 같은 비목 비교. */
-export function RowForm({ s, myRows, row, onRow, onShowInGrid }: Props) {
+export function RowForm({ s, myRows, row, onRow, onShowInGrid, onAddRow }: Props) {
   const w = s.welcome!;
   const sheet = s.sheet!;
   const model = sheet.model;
@@ -165,6 +167,11 @@ export function RowForm({ s, myRows, row, onRow, onShowInGrid }: Props) {
           })}
           {listed.length > 300 && <li className="muted small">⋮ {listed.length - 300}행 더 (검색으로 찾기)</li>}
         </ul>
+        {onAddRow && (
+          <button className="ghost small row-add" disabled={s.readOnly} onClick={onAddRow} title="표 맨 아래에 행 추가">
+            ＋ 행 추가
+          </button>
+        )}
       </aside>
 
       <section className="row-main" aria-label={`${sheetRow}행 입력`}>

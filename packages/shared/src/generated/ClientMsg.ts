@@ -7,4 +7,12 @@ import type { CellRef } from "./CellRef";
 import type { ChatTo } from "./ChatTo";
 import type { StylePatch } from "./StylePatch";
 
-export type ClientMsg = { "type": "join", name: string, token?: string, protocol: number, } | { "type": "switchDevice", name: string, } | { "type": "cursor", sheet: number, at?: CellRef, } | { "type": "ping" } | { "type": "lock", sheet: number, at: CellRef, } | { "type": "unlock", sheet: number, at: CellRef, } | { "type": "setCells", sheet: number, batch: string, cells: Array<CellEdit>, origin?: BatchOrigin, } | { "type": "rowHistory", sheet: number, row: number, } | { "type": "format", sheet: number, range: CellRange, patch: StylePatch, } | { "type": "ackNotice", id: number, } | { "type": "ackHighlight", id: number, } | { "type": "chat", to: ChatTo, text: string, } | { "type": "addRows", sheet: number, count: number, } | { "type": "resize", sheet: number, axis: Axis, from: number, count: number, size: number, };
+export type ClientMsg = { "type": "join", name: string, token?: string, protocol: number, } | { "type": "switchDevice", name: string, } | { "type": "cursor", sheet: number, at?: CellRef, } | { "type": "ping" } | { "type": "lock", sheet: number, at: CellRef, 
+/**
+ * 클라이언트가 본 시트의 구조 판(`model.layout`). 다르면 거절한다(없으면 검사하지 않는다).
+ */
+layout?: number, } | { "type": "unlock", sheet: number, at: CellRef, } | { "type": "setCells", sheet: number, batch: string, cells: Array<CellEdit>, origin?: BatchOrigin, 
+/**
+ * 묶음을 만들 때 본 시트의 구조 판. 그 뒤 앱에서 붙인 행·열을 지워 좌표가 밀렸으면 묶음 전체를 거절한다.
+ */
+layout?: number, } | { "type": "rowHistory", sheet: number, row: number, } | { "type": "format", sheet: number, range: CellRange, patch: StylePatch, layout?: number, } | { "type": "ackNotice", id: number, } | { "type": "ackHighlight", id: number, } | { "type": "chat", to: ChatTo, text: string, } | { "type": "addRows", sheet: number, count: number, } | { "type": "deleteRows", sheet: number, from: number, count: number, layout?: number, } | { "type": "cancelRows", sheet: number, from: number, count: number, on: boolean, layout?: number, } | { "type": "resize", sheet: number, axis: Axis, from: number, count: number, size: number, };

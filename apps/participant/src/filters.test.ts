@@ -2,7 +2,16 @@ import type { SheetModel } from "@mm/shared";
 import { FLAG } from "@mm/shared";
 import { describe, expect, it } from "vitest";
 
-import { effectiveColumn, filteredOut, filterOptions, missingOf, myRowsOf, NO_FILTER, withHiddenRows } from "./filters";
+import {
+  effectiveColumn,
+  filteredOut,
+  filterOptions,
+  matchOptions,
+  missingOf,
+  myRowsOf,
+  NO_FILTER,
+  withHiddenRows,
+} from "./filters";
 
 // 머리글 1행 + 데이터 4행, A열 '본부'는 A2:A3 병합, B열 입력(필수).
 function sheet(): SheetModel {
@@ -67,5 +76,15 @@ describe("filters", () => {
     expect(v.hiddenRows).toEqual([2]);
     expect(v.cells).toBe(m.cells); // 값은 같은 배열(입력이 바로 보인다)
     expect(withHiddenRows(m, new Set())).toBe(m);
+  });
+});
+
+describe("조회조건 검색", () => {
+  const items = ["경영지원본부", "재무팀", "IT운영팀", "인사팀"];
+  it("부분 일치, 대소문자·공백 무시, 나온 순서", () => {
+    expect(matchOptions(items, "팀")).toEqual(["재무팀", "IT운영팀", "인사팀"]);
+    expect(matchOptions(items, " it ")).toEqual(["IT운영팀"]);
+    expect(matchOptions(items, "")).toEqual(items);
+    expect(matchOptions(items, "없음")).toEqual([]);
   });
 });

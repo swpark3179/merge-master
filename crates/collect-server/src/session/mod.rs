@@ -15,12 +15,13 @@ mod edit;
 pub mod files;
 mod persist;
 mod snapshots;
+mod structure;
 
 pub use comms::CommsData;
 pub use comms::{CommsSnapshot, HighlightAudience, HighlightSummary, NoticeSummary, NoticeTarget};
 pub use persist::{
-    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_DISCARDED, META_ENDED, META_JOB,
-    META_SERVER, META_SHEETS, Recovered, Restore, ServerMeta, meta_sheets, recover,
+    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_DEADLINE_FIRED, META_DISCARDED,
+    META_ENDED, META_JOB, META_SERVER, META_SHEETS, Recovered, Restore, ServerMeta, meta_sheets, recover,
 };
 pub use snapshots::AUTO_SNAPSHOT;
 
@@ -30,12 +31,13 @@ use std::time::Duration;
 
 use collect_core::a1::sheet_prefix;
 use collect_core::access::{Access, ProgressStats, Viewer, union_roster};
-use collect_core::config::{CollectConfig, OthersRows, SessionCommon};
+use collect_core::config::{CollectConfig, DeadlineAction, OthersRows, SessionCommon};
 use collect_core::detect::{TableGuess, column_labels};
 use collect_core::edit::{ConfigEdit, EditReach};
 use collect_core::format::Axis;
 use collect_core::history::BatchOrigin;
 use collect_core::project::project_with;
+use collect_core::structure::{Actor, StructureEdit, check_add, check_delete_cols, check_delete_rows};
 use collect_core::view::{ConfigView, config_view_with, encode_flags};
 use collect_core::{CellRange, CellRef, CellStyle, CellValue, SheetCell, SheetModel};
 use collect_store::{SnapshotKind, SnapshotMeta, Store};
@@ -57,6 +59,8 @@ pub const LOCK_GRACE: Duration = Duration::from_secs(30);
 /// 편집 잠금을 이보다 오래 잡고 있으면 풀어 준다(편집기를 열어 둔 채 자리를 비운 경우).
 pub const LOCK_MAX: Duration = Duration::from_secs(600);
 const TICK: Duration = Duration::from_secs(5);
+/// 마감 시각 점검 주기(호스트 PC 시계로 마감 시각이 지나는 순간을 1초 안에 잡는다).
+const DEADLINE_TICK: Duration = Duration::from_secs(1);
 const MAX_NAME_CHARS: usize = 20;
 /// 재접속 토큰·묶음 ID의 최대 길이(이보다 길면 버린다).
 const MAX_TOKEN_CHARS: usize = 64;
@@ -141,6 +145,8 @@ pub enum HostEvent {
         size: f32,
     },
     Reset,
+    /// 마감 시각이 되었고 마감 동작이 '공유 닫기'다(같은 마감 시각으로는 한 번만). 호스트 앱이 이 업무의 공유를 닫는다.
+    DeadlineClose,
 }
 
 const HOST_FEED_CAPACITY: usize = 1024;
@@ -226,16 +232,47 @@ pub struct RecalcRequest {
 /// 호스트가 `with` 안에서 요청한 일(작업이 끝난 뒤 순서대로 한다). `Resized`는 호스트가 바꾼 열 너비·행 높이(시트에는
 /// 이미 반영): 참여자·호스트 화면에 알리고 시트를 남긴다.
 enum Action {
-    Set { user: String, origin: BatchOrigin, sheet: usize, cells: Vec<(CellRef, CellValue)> },
-    Snapshot { kind: SnapshotKind, label: String },
+    Set {
+        user: String,
+        origin: BatchOrigin,
+        sheet: usize,
+        cells: Vec<(CellRef, CellValue)>,
+    },
+    Snapshot {
+        kind: SnapshotKind,
+        label: String,
+    },
     Close(bool),
-    Notice { text: String, important: bool, target: NoticeTarget },
-    Highlight { sheet: usize, range: CellRange, note: String, audience: HighlightAudience },
+    Notice {
+        text: String,
+        important: bool,
+        target: NoticeTarget,
+    },
+    Highlight {
+        sheet: usize,
+        range: CellRange,
+        note: String,
+        audience: HighlightAudience,
+    },
     ClearHighlight(u32),
-    Chat { to: ChatTo, text: String },
+    Chat {
+        to: ChatTo,
+        text: String,
+    },
     Store(Store),
     Meta(String, String),
-    Resized { sheet: usize, axis: Axis, from: u32, count: u32, size: f32 },
+    Resized {
+        sheet: usize,
+        axis: Axis,
+        from: u32,
+        count: u32,
+        size: f32,
+    },
+    /// 검사를 마친 표 구조 바꾸기([`Shared::structure`]).
+    Structure {
+        sheet: usize,
+        edit: StructureEdit,
+    },
 }
 
 const NO_SHEET: &str = "없는 시트입니다";
@@ -275,6 +312,32 @@ impl Shared<'_> {
         Ok(size)
     }
 
+    /// 호스트가 표 구조를 바꾼다(1b·1d 오른쪽 클릭 메뉴): 행·열 붙이기, 앱에서 붙인 행·열 지우기, 행 취소 표시.
+    /// 여기서 검사하고(지울 수 없는 행·열이면 이유), 작업이 끝난 뒤 시트·설정·편집 상태·기록을 함께 바꾸고 모두에게
+    /// 새 시트를 보낸다. 같은 작업 안에서 여러 번 부르면 앞의 것이 반영되기 전 시트로 검사하므로 한 번씩 부른다.
+    pub fn structure(&mut self, sheet: usize, edit: StructureEdit) -> Result<(), String> {
+        let slot = self.slot(sheet)?;
+        let rt = &self.rt[sheet];
+        match edit {
+            StructureEdit::AddRows { .. } | StructureEdit::AddCols { .. } => {
+                check_add(&slot.model, &slot.baseline, edit)?;
+            }
+            StructureEdit::DeleteRows { from, count } => {
+                check_delete_rows(&slot.model, slot.baseline.rows, &slot.config, &rt.access, from, count, Actor::Host)?;
+            }
+            StructureEdit::DeleteCols { from, count } => {
+                check_delete_cols(&slot.model, slot.baseline.cols, &slot.config, from, count)?;
+            }
+            StructureEdit::CancelRows { from, count, .. } => {
+                if count == 0 || from.saturating_add(count) > slot.model.rows || from < slot.model.header_rows {
+                    return Err("데이터 행만 취소 표시할 수 있습니다".into());
+                }
+            }
+        }
+        self.actions.push(Action::Structure { sheet, edit });
+        Ok(())
+    }
+
     /// 다른 시트(들)로 바꿨다(다시 불러와 확정): 작업이 끝나면 셀 버전·잠금·이력을 새로 시작한다.
     pub fn replace(&mut self, sheets: Vec<(SheetModel, CollectConfig)>) {
         assert!(!sheets.is_empty(), "시트가 하나 이상 있어야 합니다");
@@ -294,7 +357,10 @@ impl Shared<'_> {
     /// 1b·1d 화면이 그릴 설정 보기(합집합 명단 기준). `viewer`를 주면 그 참여자 시점.
     pub fn view(&self, sheet: usize, viewer: Option<&str>) -> Result<ConfigView, String> {
         let s = self.slot(sheet)?;
-        config_view_with(&s.model, &s.config, viewer, &self.roster()).map_err(|e| e.to_string())
+        let mut view = config_view_with(&s.model, &s.config, viewer, &self.roster()).map_err(|e| e.to_string())?;
+        view.baseline_rows = s.baseline.rows;
+        view.baseline_cols = s.baseline.cols;
+        Ok(view)
     }
 
     /// 1b 설정 편집. 공통 설정(제목·안내·마감, 직접 넣은 명단)은 첫 시트에 하고 다른 시트에 옮겨 적는다
@@ -313,8 +379,8 @@ impl Shared<'_> {
             EditReach::SheetAndCommon => {
                 let s = &mut self.sheets[sheet];
                 s.config.apply(&s.model, edit).map_err(|e| e.to_string())?;
-                let lock = s.config.permissions.lock_after_deadline;
-                self.sheets[0].config.permissions.lock_after_deadline = lock;
+                let action = s.config.permissions.deadline_action;
+                self.sheets[0].config.permissions.deadline_action = action;
             }
         }
         sync_common(self.sheets);
@@ -446,18 +512,43 @@ type Completion = Box<dyn FnOnce() + Send>;
 type HostJob = Box<dyn for<'a> FnOnce(&mut Shared<'a>) -> Completion + Send>;
 
 pub(crate) enum Command {
-    Connect { conn: ConnId, ip: IpAddr, outbox: mpsc::UnboundedSender<Outgoing> },
-    Client { conn: ConnId, msg: ClientMsg },
-    Disconnect { conn: ConnId },
-    Approve { name: String, range: Option<(u32, CellRange)>, note: String, reply: oneshot::Sender<Result<(), String>> },
-    Reject { name: String, reply: oneshot::Sender<Result<(), String>> },
-    Kick { name: String, reply: oneshot::Sender<Result<(), String>> },
-    Unlock { name: String, reply: oneshot::Sender<Result<(), String>> },
+    Connect {
+        conn: ConnId,
+        ip: IpAddr,
+        outbox: mpsc::UnboundedSender<Outgoing>,
+    },
+    Client {
+        conn: ConnId,
+        msg: ClientMsg,
+    },
+    Disconnect {
+        conn: ConnId,
+    },
+    Approve {
+        name: String,
+        range: Option<(u32, CellRange)>,
+        note: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Reject {
+        name: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Kick {
+        name: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Unlock {
+        name: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     With(HostJob),
     SetIpNames(IpNames),
     SetRecalc(Option<mpsc::UnboundedSender<RecalcRequest>>),
     Formulas(Vec<(u32, CellRef, CellValue)>),
     Tick,
+    /// 마감 시각 점검(1초마다).
+    DeadlineTick,
 }
 
 /// 세션에 명령을 보내는 손잡이(복제 가능). 마지막 손잡이가 사라지면 액터도 끝난다.
@@ -493,18 +584,22 @@ impl SessionHandle {
         let host_feed = state.host_feed.clone();
 
         // 주기 점검(자리 비움·잠금 만료·마감). 약한 참조라 손잡이가 모두 사라지면 함께 끝난다.
-        let weak = tx.downgrade();
-        tokio::spawn(async move {
-            let mut every = tokio::time::interval(TICK);
-            every.tick().await;
-            loop {
+        let ticks: [(Duration, fn() -> Command); 2] =
+            [(TICK, || Command::Tick), (DEADLINE_TICK, || Command::DeadlineTick)];
+        for (period, cmd) in ticks {
+            let weak = tx.downgrade();
+            tokio::spawn(async move {
+                let mut every = tokio::time::interval(period);
                 every.tick().await;
-                match weak.upgrade() {
-                    Some(tx) if tx.send(Command::Tick).is_ok() => {}
-                    _ => break,
+                loop {
+                    every.tick().await;
+                    match weak.upgrade() {
+                        Some(tx) if tx.send(cmd()).is_ok() => {}
+                        _ => break,
+                    }
                 }
-            }
-        });
+            });
+        }
 
         tokio::spawn(async move {
             let mut comms_rev = state.comms.rev;
@@ -676,8 +771,10 @@ struct SheetRt {
     locks: HashMap<usize, Lock>,
     /// 칸마다 마지막으로 바꾼 사람(충돌 판정: 내가 연달아 바꾼 것은 충돌이 아니다).
     writer: HashMap<usize, String>,
-    /// 계산 사본에 있는 행 수(재계산을 켤 때의 시트). 그 뒤 붙인 행은 사본에 없어 저장할 때 계산한다.
+    /// 계산 사본에 있는 행·열 수(재계산을 켤 때의 기준 시트 — 사본은 원본을 복사한 것이다). 앱에서 붙인 행·열은 사본에
+    /// 없어 저장할 때 계산한다.
     recalc_rows: u32,
+    recalc_cols: u32,
     /// 사람마다 이 시트의 배정 요약(1c 접속자 표).
     assignment: Vec<String>,
 }
@@ -694,6 +791,7 @@ impl SheetRt {
             locks: HashMap::new(),
             writer: HashMap::new(),
             recalc_rows: 0,
+            recalc_cols: 0,
             assignment: Vec::new(),
         }
     }
@@ -712,6 +810,8 @@ struct State {
     /// 어느 시트에든 수식이 있다(수식은 다른 시트를 볼 수 있어, 어느 시트를 고쳐도 다시 계산한다).
     any_formulas: bool,
     deadline: Option<chrono::NaiveDateTime>,
+    /// 마감 동작 '공유 닫기'를 한 마감 시각(같은 마감으로는 한 번만 닫는다 — 메타 [`META_DEADLINE_FIRED`]).
+    deadline_fired: Option<String>,
     /// 호스트가 취합을 마감했다(저장 뒤 '읽기 전용으로 전환' 등).
     closed: bool,
     /// 마감 시각이 지났거나 호스트가 마감했다.
@@ -769,6 +869,7 @@ impl State {
             roster: Vec::new(),
             any_formulas: false,
             deadline: None,
+            deadline_fired: None,
             closed: false,
             read_only: false,
             conns: HashMap::new(),
@@ -791,6 +892,7 @@ impl State {
         match restore {
             Some(r) => {
                 s.restore(r);
+                s.deadline_fired = s.host_meta.get(META_DEADLINE_FIRED).cloned();
                 s.recompile();
                 s.persist_sheet();
             }
@@ -847,16 +949,17 @@ impl State {
             Command::SetRecalc(tx) => {
                 self.recalc = tx;
                 for (rt, slot) in self.rt.iter_mut().zip(&self.sheets) {
-                    rt.recalc_rows = slot.model.rows;
+                    rt.recalc_rows = slot.baseline.rows;
+                    rt.recalc_cols = slot.baseline.cols;
                 }
             }
             Command::Formulas(values) => self.formulas(values),
             Command::Tick => {
                 self.expire_locks();
-                self.check_deadline();
                 self.refresh_presence();
                 self.auto_snapshot();
             }
+            Command::DeadlineTick => self.check_deadline(),
         }
         self.persist(false);
         None
@@ -869,19 +972,27 @@ impl State {
             ClientMsg::Cursor { sheet, at } => self.cursor(conn, sheet, at),
             ClientMsg::Ping => {
                 self.touch(conn);
-                self.send(conn, ServerMsg::Pong);
+                self.send(conn, ServerMsg::Pong { now: edit::now_ms() });
             }
-            ClientMsg::Lock { sheet, at } => self.lock(conn, sheet, at),
+            ClientMsg::Lock { sheet, at, layout } => self.lock(conn, sheet, at, layout),
             ClientMsg::Unlock { sheet, at } => self.unlock(conn, sheet, at),
-            ClientMsg::SetCells { sheet, batch, cells, origin } => {
-                self.set_cells(conn, sheet, batch, cells, origin.unwrap_or_default())
+            ClientMsg::SetCells { sheet, batch, cells, origin, layout } => {
+                self.set_cells(conn, sheet, batch, cells, origin.unwrap_or_default(), layout)
             }
             ClientMsg::RowHistory { sheet, row } => self.row_history(conn, sheet, row),
-            ClientMsg::Format { sheet, range, patch } => self.format(conn, sheet, range, patch),
+            ClientMsg::Format { sheet, range, patch, layout } => self.format(conn, sheet, range, patch, layout),
             ClientMsg::AckNotice { id } => self.ack_notice(conn, id),
             ClientMsg::AckHighlight { id } => self.ack_highlight(conn, id),
             ClientMsg::Chat { to, text } => self.chat(conn, to, text),
-            ClientMsg::AddRows { sheet, count } => self.add_rows(conn, sheet, count),
+            ClientMsg::AddRows { sheet, count } => {
+                self.participant_structure(conn, sheet, StructureEdit::AddRows { count }, None)
+            }
+            ClientMsg::DeleteRows { sheet, from, count, layout } => {
+                self.participant_structure(conn, sheet, StructureEdit::DeleteRows { from, count }, layout)
+            }
+            ClientMsg::CancelRows { sheet, from, count, on, layout } => {
+                self.participant_structure(conn, sheet, StructureEdit::CancelRows { from, count, on }, layout)
+            }
             ClientMsg::Resize { sheet, axis, from, count, size } => self.resize(conn, sheet, axis, from, count, size),
         }
     }
@@ -1253,6 +1364,10 @@ impl State {
                     let by = self.host_name();
                     self.resized(sheet, &by, axis, from, count, size);
                 }
+                Action::Structure { sheet, edit } => {
+                    let by = self.host_name();
+                    self.apply_structure(sheet, edit, &by, None);
+                }
             }
         }
         if replaced || new_store {
@@ -1303,7 +1418,8 @@ impl State {
         }
         self.any_formulas = self.rt.iter().any(|rt| rt.has_formulas);
         self.deadline = parse_deadline(self.sheets[0].config.deadline.as_deref());
-        self.read_only = self.closed || self.deadline_passed();
+        // 마감을 지난 시각으로 옮겼거나 마감 동작을 바꿨으면 바로 알린다(편집 잠금도 푼다).
+        self.update_read_only();
         // 더는 편집할 수 없는 칸의 잠금은 푼다.
         for (slot, rt) in self.sheets.iter().zip(self.rt.iter_mut()) {
             let cols = slot.model.cols;
@@ -1346,13 +1462,43 @@ impl State {
         self.refresh_presence();
     }
 
-    fn deadline_passed(&self) -> bool {
-        self.sheets[0].config.permissions.lock_after_deadline
-            && self.deadline.is_some_and(|d| chrono::Local::now().naive_local() >= d)
+    fn deadline_action(&self) -> DeadlineAction {
+        self.sheets[0].config.permissions.deadline_action
     }
 
+    /// 마감 시각이 지났다(호스트 PC의 현지 시각으로 잰다).
+    fn deadline_reached(&self) -> bool {
+        self.deadline.is_some_and(|d| chrono::Local::now().naive_local() >= d)
+    }
+
+    /// 마감 시각이 지나 읽기 전용이다(마감 동작이 '읽기 전용으로 전환'일 때만).
+    fn deadline_passed(&self) -> bool {
+        self.deadline_action() == DeadlineAction::ReadOnly && self.deadline_reached()
+    }
+
+    /// 1초마다: 읽기 전용을 바꾸고, 마감 동작이 '공유 닫기'면 마감 시각이 지나는 순간 한 번 호스트 앱에 알린다.
     fn check_deadline(&mut self) {
         self.update_read_only();
+        if self.deadline_action() != DeadlineAction::StopSharing || !self.deadline_reached() {
+            return;
+        }
+        let Some(deadline) = self.sheets[0].config.deadline.clone() else { return };
+        if self.deadline_fired.as_deref() == Some(deadline.as_str()) {
+            return;
+        }
+        self.deadline_fired = Some(deadline.clone());
+        if let Some(store) = &self.store {
+            store.meta(META_DEADLINE_FIRED, &deadline);
+        }
+        self.host_meta.insert(META_DEADLINE_FIRED.to_string(), deadline);
+        self.feed(HostEvent::DeadlineClose);
+    }
+
+    /// 마감 시각(유닉스 ms, 호스트 PC 시간대).
+    fn deadline_at(&self) -> Option<i64> {
+        use chrono::TimeZone;
+        let d = self.deadline?;
+        chrono::Local.from_local_datetime(&d).earliest().map(|t| t.timestamp_millis())
     }
 
     /// 마감 시각·호스트 마감에 따라 읽기 전용을 바꾸고, 바뀌었으면 모두에게 알린다(잡힌 편집 잠금은 푼다).
@@ -1426,6 +1572,7 @@ impl State {
             permissions: slot.config.permissions,
             row_owner,
             progress: rt.progress.by_person.get(p).cloned().unwrap_or_default(),
+            assigned: slot.config.has_assignment(),
         }
     }
 
@@ -1438,6 +1585,7 @@ impl State {
             token,
             color: p as i32,
             session: self.info(),
+            server_now: edit::now_ms(),
             roster: self.roster.clone(),
             sheets: (0..self.sheets.len()).map(|i| self.sheet_view(i, name, p)).collect(),
             presence: self.presence(),
@@ -1485,7 +1633,8 @@ impl State {
             description: config.description.clone(),
             requester: config.requester.clone(),
             deadline: config.deadline.clone(),
-            lock_after_deadline: config.permissions.lock_after_deadline,
+            deadline_at: self.deadline_at(),
+            deadline_action: config.permissions.deadline_action,
             read_only: self.read_only,
             closed: self.closed,
             online: self.people.values().filter(|p| p.conn.is_some()).count() as u32,
@@ -1627,3 +1776,6 @@ mod persist_tests;
 
 #[cfg(test)]
 mod sheets_tests;
+
+#[cfg(test)]
+mod structure_tests;

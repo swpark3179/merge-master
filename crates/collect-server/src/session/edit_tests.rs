@@ -26,12 +26,15 @@ fn cell(row: u32, col: u32, value: CellValue, base: u32) -> CellEdit {
 fn set(st: &mut State, c: &Client, batch: &str, cells: Vec<CellEdit>) {
     st.handle(Command::Client {
         conn: c.conn,
-        msg: ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: None },
+        msg: ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: None, layout: None },
     });
 }
 
 fn lock(st: &mut State, c: &Client, row: u32, col: u32) {
-    st.handle(Command::Client { conn: c.conn, msg: ClientMsg::Lock { sheet: 0, at: CellRef::new(row, col) } });
+    st.handle(Command::Client {
+        conn: c.conn,
+        msg: ClientMsg::Lock { sheet: 0, at: CellRef::new(row, col), layout: None },
+    });
 }
 
 /// 그 사람이 맡은 첫 데이터 행.
@@ -332,23 +335,23 @@ async fn deadline_makes_session_read_only() {
     lock(&mut st, &c[0], r, F);
     assert!(!lock_result(&c[0].take()).0);
 
-    // '마감 후 자동 읽기 전용'을 끄면 다시 입력할 수 있다.
+    // 마감 동작을 '공유 닫기'로 바꾸면 읽기 전용이 풀린다(공유는 호스트 앱이 닫는다).
     host(&mut st, |s| {
-        s.sheets[0].config.permissions.lock_after_deadline = false;
+        s.sheets[0].config.permissions.deadline_action = collect_core::config::DeadlineAction::StopSharing;
         s.changed();
     });
     assert!(!st.read_only);
 
     // 시간이 지나 마감되면 주기 점검이 알린다.
     host(&mut st, |s| {
-        s.sheets[0].config.permissions.lock_after_deadline = true;
+        s.sheets[0].config.permissions.deadline_action = collect_core::config::DeadlineAction::ReadOnly;
         s.sheets[0].config.deadline = Some("2999-01-01".into());
         s.changed();
     });
     c[0].take();
     assert!(!st.read_only);
     st.deadline = chrono::NaiveDate::from_ymd_opt(2000, 1, 1).and_then(|d| d.and_hms_opt(0, 0, 0));
-    st.handle(Command::Tick);
+    st.handle(Command::DeadlineTick);
     assert!(c[0].take().iter().any(|m| matches!(m, ServerMsg::ReadOnly { read_only: true, .. })));
 }
 
@@ -406,7 +409,10 @@ async fn format_follows_policy() {
     let fill = StylePatch { fill: Some(FillPatch::Color { rgb: 0xFFF3B0 }), ..Default::default() };
     let bold = StylePatch { bold: Some(true), ..Default::default() };
     let format = |st: &mut State, c: &Client, range: CellRange, patch: &StylePatch| {
-        st.handle(Command::Client { conn: c.conn, msg: ClientMsg::Format { sheet: 0, range, patch: patch.clone() } });
+        st.handle(Command::Client {
+            conn: c.conn,
+            msg: ClientMsg::Format { sheet: 0, range, patch: patch.clone(), layout: None },
+        });
     };
 
     format(&mut st, &c[0], mine, &fill);
@@ -559,11 +565,11 @@ async fn participants_add_rows_when_allowed() {
     assert_eq!(applied(&b.take()).2.len(), 1);
     // 예외는 한 벌(입력 가능 + 기준 칸 입력 금지)이고, 이어서 추가하면 범위가 늘어난다.
     let added: Vec<_> =
-        st.sheets[0].config.exceptions.iter().filter(|e| e.note == super::edit::ADDED_ROWS_NOTE).collect();
+        st.sheets[0].config.exceptions.iter().filter(|e| e.note == super::structure::ADDED_ROWS_NOTE).collect();
     assert_eq!(added.len(), 2);
     add_rows(&mut st, &a, 1);
     let added: Vec<_> =
-        st.sheets[0].config.exceptions.iter().filter(|e| e.note == super::edit::ADDED_ROWS_NOTE).collect();
+        st.sheets[0].config.exceptions.iter().filter(|e| e.note == super::structure::ADDED_ROWS_NOTE).collect();
     assert_eq!(added.len(), 2);
     assert_eq!(added[0].range, CellRange::new(r0, 0, 3, st.sheets[0].model.cols));
     a.take();
@@ -590,15 +596,15 @@ async fn added_rows_without_key_column_are_open_to_everyone_and_capped() {
     join(&mut st, &b, "나", None);
     a.take();
     add_rows(&mut st, &a, 500); // 한 번에 MAX_ADD_ROWS까지만
-    let r0 = st.sheets[0].model.rows - super::edit::MAX_ADD_ROWS;
-    assert_eq!(st.sheets[0].baseline.rows + super::edit::MAX_ADD_ROWS, st.sheets[0].model.rows);
+    let r0 = st.sheets[0].model.rows - collect_core::structure::MAX_ADD;
+    assert_eq!(st.sheets[0].baseline.rows + collect_core::structure::MAX_ADD, st.sheets[0].model.rows);
     b.take();
     set(&mut st, &b, "x", vec![cell(r0, F, text("5"), 0)]);
     assert!(applied(&b.take()).2.is_empty(), "담당자 없는 새 행은 누구나");
-    for _ in 0..(super::edit::MAX_ADDED_ROWS / super::edit::MAX_ADD_ROWS) {
-        add_rows(&mut st, &a, super::edit::MAX_ADD_ROWS);
+    for _ in 0..(collect_core::structure::MAX_ADDED_ROWS / collect_core::structure::MAX_ADD) {
+        add_rows(&mut st, &a, collect_core::structure::MAX_ADD);
     }
-    assert_eq!(st.sheets[0].model.rows - st.sheets[0].baseline.rows, super::edit::MAX_ADDED_ROWS);
+    assert_eq!(st.sheets[0].model.rows - st.sheets[0].baseline.rows, collect_core::structure::MAX_ADDED_ROWS);
     assert!(a.take().iter().any(|m| matches!(m, ServerMsg::Error { message } if message.contains("까지 추가"))));
 }
 

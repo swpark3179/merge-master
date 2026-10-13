@@ -11,7 +11,7 @@
 
 use std::path::Path;
 
-use collect_core::export::{ExportPlan, HistoryTable, RowInsert, ValueBlock};
+use collect_core::export::{ColInsert, ExportPlan, HistoryTable, RowInsert, ValueBlock};
 use collect_core::{CellRange, CellRef, CellStyle, CellValue, HAlign, SheetCell};
 use serde::Serialize;
 use ts_rs::TS;
@@ -57,8 +57,10 @@ pub struct SaveReport {
     pub merges: u32,
     /// 크기(열 너비·행 높이)를 바꾼 열·행 수.
     pub resized: u32,
-    /// 표 아래에 끼워 넣은 행 수(참여자가 추가한 행).
+    /// 표 아래에 끼워 넣은 행 수(앱에서 추가한 행).
     pub inserted: u32,
+    /// 표 오른쪽에 끼워 넣은 열 수(앱에서 추가한 열).
+    pub inserted_cols: u32,
     /// 더한 '변경 이력' 시트 이름.
     #[ts(optional)]
     pub history_sheet: Option<String>,
@@ -139,16 +141,32 @@ fn apply_sizes(t: &Target, plan: &ExportPlan) -> Result<()> {
         t.range(CellRange::new(row, 0, 1, 1))?.obj("EntireRow")?.put("RowHeight", Var::f64(f64::from(pt)))?;
     }
     for &(col, pt) in &plan.col_widths {
-        let column = t.range(CellRange::new(0, col, 1, 1))?.obj("EntireColumn")?;
-        let want = f64::from(pt);
-        for _ in 0..3 {
-            let width = column.get("Width")?.as_f64().unwrap_or(0.0);
-            let chars = column.get("ColumnWidth")?.as_f64().unwrap_or(0.0);
-            if width <= 0.0 || chars <= 0.0 || (width - want).abs() < 0.75 {
-                break;
-            }
-            column.put("ColumnWidth", Var::f64((chars * want / width).clamp(0.1, 255.0)))?;
+        set_col_width(t, col, pt)?;
+    }
+    Ok(())
+}
+
+/// 열 너비(pt): `ColumnWidth`(글자 단위)를 지금 `Width`와의 비로 바꿔 쓰고 맞을 때까지 몇 번 고친다.
+fn set_col_width(t: &Target, col: u32, pt: f32) -> Result<()> {
+    let column = t.range(CellRange::new(0, col, 1, 1))?.obj("EntireColumn")?;
+    let want = f64::from(pt);
+    for _ in 0..3 {
+        let width = column.get("Width")?.as_f64().unwrap_or(0.0);
+        let chars = column.get("ColumnWidth")?.as_f64().unwrap_or(0.0);
+        if width <= 0.0 || chars <= 0.0 || (width - want).abs() < 0.75 {
+            break;
         }
+        column.put("ColumnWidth", Var::f64((chars * want / width).clamp(0.1, 255.0)))?;
+    }
+    Ok(())
+}
+
+/// 표 오른쪽(`at`)에 열을 끼워 넣고 너비를 맞춘다(서식은 왼쪽 열을 따른다).
+fn insert_cols(t: &Target, ins: &ColInsert) -> Result<()> {
+    // Insert(Shift, CopyOrigin)의 기본값: 오른쪽으로 밀고, 서식은 왼쪽 열을 따른다.
+    t.range(CellRange::new(0, ins.at, 1, ins.count))?.obj("EntireColumn")?.call("Insert", vec![])?;
+    for (k, w) in ins.widths.iter().enumerate() {
+        set_col_width(t, ins.at + k as u32, *w)?;
     }
     Ok(())
 }
@@ -190,6 +208,7 @@ fn apply_style(rng: &Dispatch, range: CellRange, s: &CellStyle) -> Result<()> {
     font.put("Bold", Var::bool(s.bold))?;
     font.put("Italic", Var::bool(s.italic))?;
     font.put("Underline", Var::i32(if s.underline { XL_UNDERLINE_SINGLE } else { XL_NONE }))?;
+    font.put("Strikethrough", Var::bool(s.strike))?;
     font.put("Color", Var::f64(rgb_to_bgr(s.color)))?;
     let interior = rng.obj("Interior")?;
     match s.fill {
@@ -278,6 +297,11 @@ fn add_history(book: &Dispatch, table: &HistoryTable) -> Result<String> {
 /// 계획 하나를 그 시트에 쓴다(저장은 하지 않는다. '변경 이력' 시트는 [`apply_all`]이 한 번 더한다).
 fn apply_sheet(ws: &Dispatch, plan: &ExportPlan, report: &mut SaveReport) -> Result<()> {
     let t = Target { ws, origin: plan.origin };
+    // 열을 먼저 끼워 넣는다(행을 끼우면 새 행이 새 열까지 위 행 서식을 따른다).
+    if let Some(ins) = &plan.col_insert {
+        insert_cols(&t, ins)?;
+        report.inserted_cols += ins.count;
+    }
     if let Some(ins) = &plan.insert {
         insert_rows(&t, ins)?;
         report.inserted += ins.count;

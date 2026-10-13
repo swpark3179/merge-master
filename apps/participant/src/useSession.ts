@@ -28,7 +28,7 @@ import { loadOutbox, outboxKey, saveOutbox, splitBySheet } from "./outbox";
 import { storageSlug } from "./slug";
 
 /** 서버 `protocol::PROTOCOL_VERSION`과 같아야 한다. */
-const PROTOCOL = 6;
+const PROTOCOL = 7;
 const RETRY_MS = [500, 1000, 2000, 4000, 8000];
 const PING_MS = 20_000;
 const CURSOR_MS = 100;
@@ -41,8 +41,8 @@ export type Phase =
   | { kind: "dup"; name: string }
   | { kind: "in" }
   | { kind: "kicked"; reason: KickReason }
-  /** 호스트가 서비스를 중지함(다시 열리면 자동으로 붙는다). */
-  | { kind: "closed" }
+  /** 호스트가 서비스를 중지함(다시 열리면 자동으로 붙는다). `deadline`: 마감 시각이 되어 공유가 닫혔다. */
+  | { kind: "closed"; deadline?: boolean }
   /** 호스트가 이 업무를 끝냈다(다시 붙지 않는다). */
   | { kind: "ended" };
 
@@ -143,6 +143,11 @@ export function useSession(slug: string) {
   const [lockEvent, setLockEvent] = useState<LockEvent | null>(null);
   /** 표 아래에 행이 붙었다(내가 추가했으면 그 행으로 간다). */
   const [rowsAdded, setRowsAdded] = useState<{ seq: number; by: string; sheet: number; range: CellRange } | null>(null);
+  /**
+   * 호스트 PC 시계 − 이 기기 시계(ms). 마감까지 남은 시간은 호스트 시각으로 센다(`welcome.serverNow`·`pong.now`로
+   * 맞춘다 — 기기 시계가 틀리거나 시간대가 달라도 호스트와 같게 보인다).
+   */
+  const [clockOffset, setClockOffset] = useState(0);
   const [, setRev] = useState(0);
 
   const ws = useRef<WebSocket | null>(null);
@@ -216,6 +221,7 @@ export function useSession(slug: string) {
         origin: b.origin,
         sheet: st.sheet,
         sheetName: st.model.sheet,
+        layout: b.layout,
       })),
     );
     saving.current = saving.current.then(() => saveOutbox(outboxKey(name), batches));
@@ -284,9 +290,17 @@ export function useSession(slug: string) {
           });
           edits.current = next;
           welcomeName.current = msg.name;
+          setClockOffset(msg.serverNow - Date.now());
           for (const st of next)
             for (const b of st.outbox)
-              send({ type: "setCells", sheet: b.sheet, batch: b.batch, cells: b.cells, origin: b.origin });
+              send({
+                type: "setCells",
+                sheet: b.sheet,
+                batch: b.batch,
+                cells: b.cells,
+                origin: b.origin,
+                layout: b.layout,
+              });
           // 보던 시트를 이어서 본다(처음이면 지난번에 보던 시트). 그 시트가 없어졌으면 첫 시트.
           const keep = same ? before[activeRef.current]?.model.sheet : load("sheet");
           const shown = Math.max(0, names.indexOf(keep ?? ""));
@@ -415,7 +429,8 @@ export function useSession(slug: string) {
             setMissing(true);
             setPhase({ kind: "ended" });
           } else {
-            setPhase((p) => (p.kind === "in" || p.kind === "pending" ? { kind: "closed" } : p));
+            const deadline = msg.deadline;
+            setPhase((p) => (p.kind === "in" || p.kind === "pending" ? { kind: "closed", deadline } : p));
           }
           break;
         case "notice":
@@ -443,11 +458,22 @@ export function useSession(slug: string) {
         case "rowsAdded":
           setRowsAdded({ seq: ++rowsSeq.current, by: msg.by, sheet: msg.sheet, range: msg.range });
           break;
+        case "rowsDeleted": {
+          // 새 시트(welcome)는 먼저 왔다. 지운 사람이 내가 아니면 알린다(아래 행이 당겨졌다).
+          const st = sheetOf(msg.sheet);
+          if (st && msg.by !== welcomeName.current) {
+            const first = st.model.origin.row + msg.from + 1;
+            const rows = msg.count > 1 ? `${first}~${first + msg.count - 1}행` : `${first}행`;
+            notify(`${msg.by} 님이 ${place(msg.sheet)}${rows}을 지웠습니다. 아래 행이 위로 당겨졌습니다`, "info");
+          }
+          break;
+        }
         case "resized":
           sheetOf(msg.sheet)?.resized(msg.axis, msg.from, msg.count, msg.size);
           refresh();
           break;
         case "pong":
+          setClockOffset(msg.now - Date.now());
           break;
         case "error":
           notify(msg.message, "error");
@@ -584,7 +610,7 @@ export function useSession(slug: string) {
   const ship = useCallback(
     (b: Batch | null) => {
       if (!b) return false;
-      send({ type: "setCells", sheet: b.sheet, batch: b.batch, cells: b.cells, origin: b.origin });
+      send({ type: "setCells", sheet: b.sheet, batch: b.batch, cells: b.cells, origin: b.origin, layout: b.layout });
       persist();
       refresh();
       return true;
@@ -603,11 +629,17 @@ export function useSession(slug: string) {
   /** 지금 시트에서 내 마지막 변경을 되돌린다(되돌리기는 시트마다). */
   const undo = useCallback(() => ship(current()?.undo() ?? null), [ship]);
   const redo = useCallback(() => ship(current()?.redo() ?? null), [ship]);
-  const lock = useCallback((at: CellRef) => send({ type: "lock", sheet: activeRef.current, at }), [send]);
+  /** 지금 시트의 구조 판(편집·잠금·서식에 실어 보낸다). */
+  const layout = () => current()?.model.layout ?? 0;
+  const lock = useCallback(
+    (at: CellRef) => send({ type: "lock", sheet: activeRef.current, at, layout: layout() }),
+    [send],
+  );
   const unlock = useCallback((at: CellRef) => send({ type: "unlock", sheet: activeRef.current, at }), [send]);
   const rowHistory = useCallback((row: number) => send({ type: "rowHistory", sheet: activeRef.current, row }), [send]);
   const format = useCallback(
-    (range: CellRange, patch: StylePatch) => send({ type: "format", sheet: activeRef.current, range, patch }),
+    (range: CellRange, patch: StylePatch) =>
+      send({ type: "format", sheet: activeRef.current, range, patch, layout: layout() }),
     [send],
   );
   /** 보는 시트를 바꾼다(편집기는 먼저 닫아야 한다 — 확정·취소는 지금 시트로 간다). */
@@ -635,6 +667,18 @@ export function useSession(slug: string) {
   const sendChat = useCallback((to: ChatTo, text: string) => send({ type: "chat", to, text }), [send]);
   /** 지금 시트 표 아래에 빈 행을 붙인다(그 시트의 참여자 권한 '행 추가'). 결과는 새 시트(`welcome`) + `rowsAdded`. */
   const addRows = useCallback((count = 1) => send({ type: "addRows", sheet: activeRef.current, count }), [send]);
+  /** 내가 추가한 행을 지운다(그 시트의 참여자 권한 '행 삭제'). 결과는 새 시트(`welcome`, 구조 판이 오른다) + `rowsDeleted`. */
+  const deleteRows = useCallback(
+    (from: number, count: number) =>
+      send({ type: "deleteRows", sheet: activeRef.current, from, count, layout: layout() }),
+    [send],
+  );
+  /** 행을 취소 표시하거나(`on`) 푼다(내가 입력할 수 있는 칸이 있는 행). 결과는 모두에게 새 시트. */
+  const cancelRows = useCallback(
+    (from: number, count: number, on: boolean) =>
+      send({ type: "cancelRows", sheet: activeRef.current, from, count, on, layout: layout() }),
+    [send],
+  );
   /** 지금 시트의 열 너비·행 높이를 바꾼다(그 시트의 참여자 권한 '크기 조절'). 결과는 모두에게 `resized`. */
   const resize = useCallback(
     (axis: Axis, from: number, count: number, size: number) =>
@@ -705,7 +749,11 @@ export function useSession(slug: string) {
     ackHighlight,
     sendChat,
     addRows,
+    deleteRows,
+    cancelRows,
     resize,
+    /** 호스트 PC 시계 − 이 기기 시계(ms). */
+    clockOffset,
     notify,
     dismiss,
     savedName: knownName.current ?? load("name"),

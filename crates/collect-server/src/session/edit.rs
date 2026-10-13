@@ -3,7 +3,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use collect_core::access::{Viewer, flag};
-use collect_core::config::{CellException, ExceptionKind, FormatPolicy};
+use collect_core::config::FormatPolicy;
 use collect_core::format::{Axis, FormatEdit, StylePatch, apply_format, resize};
 use collect_core::validate::normalize;
 use collect_core::{CellRange, CellRef, CellValue};
@@ -19,17 +19,10 @@ use crate::protocol::{CellEdit, CellUpdate, ChangeEntry, Rejection, ServerMsg, S
 pub const MAX_BATCH: usize = 20_000;
 /// 행 이력으로 돌려주는 최대 항목 수(최근 것부터).
 const MAX_ROW_HISTORY: usize = 200;
-/// 한 번에 추가하는 최대 행 수.
-pub const MAX_ADD_ROWS: u32 = 20;
-/// 엑셀에 저장하기 전까지(기준 시트보다) 참여자가 추가할 수 있는 행 수.
-pub const MAX_ADDED_ROWS: u32 = 1_000;
-/// 행을 추가해도 넘지 않는 시트 크기(칸).
-const MAX_SHEET_CELLS: u64 = 1_000_000;
-/// 참여자가 추가한 행에 거는 셀 예외의 메모(호스트 1b '셀 예외'에 보인다).
-pub const ADDED_ROWS_NOTE: &str = "참여자가 추가한 행";
-
-const READ_ONLY: &str = "마감되어 입력할 수 없습니다";
+pub(super) const READ_ONLY: &str = "마감되어 입력할 수 없습니다";
 const NOT_YOURS: &str = "입력할 수 없는 칸입니다";
+/// 클라이언트가 본 뒤 앱에서 붙인 행·열을 지워 칸 좌표가 밀렸다.
+pub(super) const STALE_LAYOUT: &str = "표 구조가 바뀌어 반영하지 못했습니다. 바뀐 표에서 다시 입력해 주세요";
 
 pub(super) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
@@ -49,6 +42,11 @@ impl State {
         at.row < m.rows && at.col < m.cols
     }
 
+    /// 클라이언트가 본 구조 판이 지금과 다르다(없으면 옛 화면이라 검사하지 않는다).
+    pub(super) fn stale_layout(&self, sheet: usize, layout: Option<u32>) -> bool {
+        layout.is_some_and(|l| l != self.sheets[sheet].model.layout)
+    }
+
     /// 그 칸이 보이는 사람에게만 보낸다(`except` 빼고).
     fn send_where_visible(&self, sheet: usize, at: CellRef, msg: &ServerMsg, except: Option<ConnId>) {
         for (id, p) in self.attached() {
@@ -60,7 +58,7 @@ impl State {
 
     // ------------------------------------------------------------ 잠금
 
-    pub(super) fn lock(&mut self, conn: ConnId, sheet: u32, at: CellRef) {
+    pub(super) fn lock(&mut self, conn: ConnId, sheet: u32, at: CellRef, layout: Option<u32>) {
         let Some((name, p)) = self.person_of(conn) else { return };
         self.touch(conn);
         let refuse = |by: Option<String>, reason: Option<&str>| ServerMsg::LockResult {
@@ -74,6 +72,9 @@ impl State {
             return self.send(conn, refuse(None, Some(READ_ONLY)));
         }
         let Some(si) = self.sheet_index(sheet) else { return self.send(conn, refuse(None, Some(NOT_YOURS))) };
+        if self.stale_layout(si, layout) {
+            return self.send(conn, refuse(None, Some(STALE_LAYOUT)));
+        }
         if !self.in_bounds(si, at) || !self.rt[si].access.can_edit(Viewer::Person(p), at) {
             return self.send(conn, refuse(None, Some(NOT_YOURS)));
         }
@@ -175,6 +176,7 @@ impl State {
         batch: String,
         cells: Vec<CellEdit>,
         origin: BatchOrigin,
+        layout: Option<u32>,
     ) {
         // 참여자는 복원·'Excel 값 유지'를 할 수 없다(표시만 바뀌는 값이라 일반 입력으로 본다).
         let origin = match origin {
@@ -193,6 +195,20 @@ impl State {
         let Some(si) = self.sheet_index(sheet) else {
             return self.send(conn, ServerMsg::Error { message: super::NO_SHEET.into() });
         };
+        // 묶음을 만든 뒤 앱에서 붙인 행·열을 지웠다: 좌표가 밀렸을 수 있어 묶음 전체를 받지 않는다(반영하지 않았으니
+        // 같은 묶음으로 다시 보내도 된다). 거절 칸은 그 좌표의 지금 값으로 돌려준다.
+        if self.stale_layout(si, layout) {
+            let rejected = cells
+                .iter()
+                .map(|e| CellRef::new(e.row, e.col))
+                .filter(|&at| self.in_bounds(si, at))
+                .map(|at| {
+                    let u = self.update_of(si, at);
+                    Rejection { row: at.row, col: at.col, reason: STALE_LAYOUT.into(), value: u.value, ver: u.ver }
+                })
+                .collect();
+            return self.send(conn, ServerMsg::Applied { sheet, batch, cells: vec![], conflicts: vec![], rejected });
+        }
         // 다시 연결한 뒤 같은 묶음을 또 보냈다(오프라인 대기열): 이미 반영했으니 지금 값만 돌려준다.
         let key = super::persist::applied_key(&name, &batch);
         if !self.applied.insert(key) {
@@ -273,6 +289,7 @@ impl State {
                 col: at.col,
                 old: old.clone(),
                 new: value.clone(),
+                gone: false,
             });
             self.next_seq += 1;
             self.count_progress(si, at, &old, &value, &mut touched_people);
@@ -302,16 +319,16 @@ impl State {
     }
 
     /// 바뀐 입력 칸을 수식 재계산에 넘긴다(어느 시트에든 수식이 있고 재계산을 맡은 곳이 있을 때 — 수식은 다른 시트를
-    /// 볼 수 있다). 계산 사본에 없는 행(재계산을 켠 뒤 추가한 행)은 빼고 넘긴다.
+    /// 볼 수 있다). 계산 사본에 없는 행·열(앱에서 붙인 것)은 빼고 넘긴다.
     fn request_recalc(&mut self, sheet: usize, changed: Vec<CellUpdate>) {
-        let rows = self.rt[sheet].recalc_rows;
+        let (rows, cols) = (self.rt[sheet].recalc_rows, self.rt[sheet].recalc_cols);
         if self.any_formulas
             && !changed.is_empty()
             && let Some(tx) = &self.recalc
         {
             let writes: Vec<(u32, CellRef, CellValue)> = changed
                 .into_iter()
-                .filter(|u| u.row < rows)
+                .filter(|u| u.row < rows && u.col < cols)
                 .map(|u| (sheet as u32, CellRef::new(u.row, u.col), u.value))
                 .collect();
             if writes.is_empty() {
@@ -363,6 +380,7 @@ impl State {
                 col: at.col,
                 old: old.clone(),
                 new: value.clone(),
+                gone: false,
             });
             self.next_seq += 1;
             self.count_progress(sheet, at, &old, &value, &mut touched);
@@ -443,101 +461,6 @@ impl State {
         }
     }
 
-    // ------------------------------------------------------------ 행 추가
-
-    /// 그 시트 표 아래에 빈 행을 붙인다(그 시트의 참여자 권한 '행 추가'). 행 배정 기준 열이 있으면 그 칸에 추가한 사람
-    /// 이름을 넣어 그 사람의 행으로 두고, 없으면 담당자 없는 행(누구나 입력)이다. 새 행은 잠금 열이어도 수식 칸 말고는
-    /// 입력할 수 있다(셀 예외 — 새 비목·설명을 적을 수 있게). 행 배정 기준 칸만 잠근다. 모두에게 새 시트를 보낸다.
-    pub(super) fn add_rows(&mut self, conn: ConnId, sheet: u32, count: u32) {
-        let Some((name, _)) = self.person_of(conn) else { return };
-        self.touch(conn);
-        let error = |s: &State, message: String| s.send(conn, ServerMsg::Error { message });
-        let Some(si) = self.sheet_index(sheet) else { return error(self, super::NO_SHEET.into()) };
-        let slot = &self.sheets[si];
-        if !slot.config.permissions.add_rows {
-            return error(self, "이 시트에서는 행을 추가할 수 없습니다".into());
-        }
-        if self.read_only {
-            return error(self, READ_ONLY.into());
-        }
-        let count = count.clamp(1, MAX_ADD_ROWS);
-        let added = slot.model.rows.saturating_sub(slot.baseline.rows);
-        if added + count > MAX_ADDED_ROWS {
-            return error(self, format!("저장하기 전까지 한 시트에 행은 {MAX_ADDED_ROWS}개까지 추가할 수 있습니다"));
-        }
-        if u64::from(slot.model.rows + count) * u64::from(slot.model.cols) > MAX_SHEET_CELLS {
-            return error(self, "시트가 너무 커서 행을 더 추가할 수 없습니다".into());
-        }
-        let range = self.sheets[si].model.append_rows(count);
-        let cells = self.sheets[si].model.cells.len();
-        self.rt[si].versions.resize(cells, 0);
-        self.open_added_rows(si, range);
-
-        let at_ms = now_ms();
-        let logged = self.log.len();
-        let batch = format!("rows-{}", self.next_seq);
-        let cols = self.sheets[si].model.cols;
-        if let Some(key) = self.sheets[si].config.assignment.key_col.filter(|&k| k < cols) {
-            let value = CellValue::Text(name.clone());
-            for row in range.row..=range.last_row() {
-                let at = CellRef::new(row, key);
-                let Some(cell) = self.sheets[si].model.cell_mut(at).filter(|c| c.f.is_none()) else { continue };
-                cell.v = value.clone();
-                let i = self.idx(si, at);
-                self.rt[si].versions[i] += 1;
-                self.rt[si].writer.insert(i, name.clone());
-                self.log.push(ChangeEntry {
-                    seq: self.next_seq,
-                    at_ms,
-                    user: name.clone(),
-                    batch: batch.clone(),
-                    origin: BatchOrigin::AddRow,
-                    kind: ChangeKind::Input,
-                    sheet,
-                    row,
-                    col: key,
-                    old: CellValue::Empty,
-                    new: value.clone(),
-                });
-                self.next_seq += 1;
-            }
-        }
-        if let Some(store) = &self.store {
-            store.append(&self.log[logged..]);
-        }
-        self.recompile();
-        self.resync();
-        self.feed(HostEvent::Reset);
-        self.persist_sheet();
-        self.persist(true); // 셀 예외(설정)도 남긴다
-        self.broadcast(&ServerMsg::RowsAdded { by: name, sheet, range }, None);
-    }
-
-    /// 추가한 행을 입력 칸으로 여는 셀 예외(입력 가능 + 행 배정 기준 칸은 입력 금지). 바로 위에 이어지는 같은 예외가
-    /// 있으면 그 범위를 늘린다(행을 여러 번 추가해도 예외는 늘지 않는다).
-    fn open_added_rows(&mut self, sheet: usize, range: CellRange) {
-        let slot = &mut self.sheets[sheet];
-        let key = slot.config.assignment.key_col.filter(|&k| k < slot.model.cols);
-        let mut add = |kind: ExceptionKind, r: CellRange| {
-            let list = &mut slot.config.exceptions;
-            let prev = list.iter_mut().rev().find(|e| {
-                e.kind == kind
-                    && e.note == ADDED_ROWS_NOTE
-                    && e.range.col == r.col
-                    && e.range.cols == r.cols
-                    && e.range.last_row() + 1 == r.row
-            });
-            match prev {
-                Some(e) => e.range.rows += r.rows,
-                None => list.push(CellException { range: r, kind, note: ADDED_ROWS_NOTE.into() }),
-            }
-        };
-        add(ExceptionKind::Input, range);
-        if let Some(key) = key {
-            add(ExceptionKind::Locked, CellRange::new(range.row, key, range.rows, 1));
-        }
-    }
-
     // ------------------------------------------------------------ 이력·서식·수식
 
     pub(super) fn row_history(&mut self, conn: ConnId, sheet: u32, row: u32) {
@@ -547,13 +470,26 @@ impl State {
         if !visible {
             return self.send(conn, ServerMsg::History { sheet, row, entries: vec![] });
         }
-        let mut entries: Vec<ChangeEntry> =
-            self.log.iter().rev().filter(|e| e.sheet == sheet && e.row == row).take(MAX_ROW_HISTORY).cloned().collect();
+        let mut entries: Vec<ChangeEntry> = self
+            .log
+            .iter()
+            .rev()
+            .filter(|e| e.sheet == sheet && e.row == row && !e.gone)
+            .take(MAX_ROW_HISTORY)
+            .cloned()
+            .collect();
         entries.reverse();
         self.send(conn, ServerMsg::History { sheet, row, entries });
     }
 
-    pub(super) fn format(&mut self, conn: ConnId, sheet: u32, range: CellRange, patch: StylePatch) {
+    pub(super) fn format(
+        &mut self,
+        conn: ConnId,
+        sheet: u32,
+        range: CellRange,
+        patch: StylePatch,
+        layout: Option<u32>,
+    ) {
         let Some((_, p)) = self.person_of(conn) else { return };
         self.touch(conn);
         let error = |s: &State, message: &str| s.send(conn, ServerMsg::Error { message: message.into() });
@@ -569,9 +505,14 @@ impl State {
         if self.read_only {
             return error(self, READ_ONLY);
         }
+        if self.stale_layout(si, layout) {
+            return error(self, STALE_LAYOUT);
+        }
         let bounds = self.sheets[si].model.bounds();
         let Some(range) = range.intersect(&bounds) else { return };
-        if range.cells().any(|at| !self.rt[si].access.can_edit(Viewer::Person(p), at)) {
+        // 병합에 덮인 칸(값이 없다)은 병합 머리 칸을 따른다.
+        let access = &self.rt[si].access;
+        if range.cells().any(|at| access.flags(at) & flag::COVERED == 0 && !access.can_edit(Viewer::Person(p), at)) {
             return error(self, "내가 입력할 수 있는 칸만 서식을 바꿀 수 있습니다");
         }
         // 테두리 없애기는 범위 바깥 이웃 칸도 고칠 수 있어 한 칸 넓혀 비교한다.

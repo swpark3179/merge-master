@@ -15,6 +15,10 @@ export type Welcome = { protocol: number, name: string,
  */
 token: string, color: number, session: SessionInfo, 
 /**
+ * 보낼 때의 호스트 PC 시각(유닉스 ms). 참여자는 자기 시계와의 차이를 잡아 마감까지 남은 시간을 호스트 기준으로 센다.
+ */
+serverNow: number, 
+/**
  * 명단(모든 시트 명단의 합집합, 순서 = 색).
  */
 roster: Array<string>, 

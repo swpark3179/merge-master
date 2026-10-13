@@ -228,6 +228,9 @@ impl Session {
             validations: Vec::new(),
             hidden_rows: Vec::new(),
             hidden_cols: Vec::new(),
+            added_rows: Vec::new(),
+            cancelled_rows: Vec::new(),
+            layout: 0,
         };
 
         if items.merges {
@@ -479,6 +482,7 @@ fn probe_style(rng: &Dispatch, block: CellRange, probe: &Probe) -> Result<Option
         style.bold = known!(font.get("Bold")?).as_bool().unwrap_or(false);
         style.italic = known!(font.get("Italic")?).as_bool().unwrap_or(false);
         style.underline = known!(font.get("Underline")?).as_i32().unwrap_or(XL_NONE) != XL_NONE;
+        style.strike = known!(font.get("Strikethrough")?).as_bool().unwrap_or(false);
         style.color = bgr_to_rgb(known!(font.get("Color")?).as_f64());
     }
 

@@ -1,5 +1,6 @@
 // 생성 파일 — scripts/gen-types-index.mjs
 export type { Activity } from "./Activity";
+export type { AddedRow } from "./AddedRow";
 export type { AfterSave } from "./AfterSave";
 export type { AssigneeCandidate } from "./AssigneeCandidate";
 export type { Assignment } from "./Assignment";
@@ -34,6 +35,7 @@ export type { CommsSnapshot } from "./CommsSnapshot";
 export type { ConfigEdit } from "./ConfigEdit";
 export type { ConfigView } from "./ConfigView";
 export type { Conflict } from "./Conflict";
+export type { DeadlineAction } from "./DeadlineAction";
 export type { DiffCell } from "./DiffCell";
 export type { DiffSheet } from "./DiffSheet";
 export type { ExcelStatus } from "./ExcelStatus";
@@ -115,6 +117,7 @@ export type { SnapshotKind } from "./SnapshotKind";
 export type { SnapshotMeta } from "./SnapshotMeta";
 export type { SnapshotView } from "./SnapshotView";
 export type { SourceStatus } from "./SourceStatus";
+export type { StructureEdit } from "./StructureEdit";
 export type { StyleChange } from "./StyleChange";
 export type { StylePatch } from "./StylePatch";
 export type { TableGuess } from "./TableGuess";

@@ -79,8 +79,9 @@ fn save_copy_and_save_into_round_trip() {
             col: 5,
             old: CellValue::Empty,
             new: CellValue::Number(9800.0),
+            gone: false,
         }];
-        let options = ExportOptions { mark: Some(0xFFF3B0), styles: true, history: true };
+        let options = ExportOptions { mark: Some(0xFFF3B0), styles: true, history: true, cancelled: true };
         let p = plan(&baseline, &current, &[], &history, options, 540, &HashSet::new());
         assert_eq!(p.cells.len(), 5);
 

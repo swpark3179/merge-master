@@ -1,5 +1,5 @@
-import type { CellDecoration, GridMark, GridSelection, SheetGridHandle } from "@mm/grid";
-import { filterOptions, rowsNotMatching, SheetGrid, withHiddenRows, withLineSize } from "@mm/grid";
+import type { CellDecoration, GridHit, GridMark, GridSelection, SheetGridHandle } from "@mm/grid";
+import { filterOptions, rowsNotMatching, selectForMenu, SheetGrid, withHiddenRows, withLineSize } from "@mm/grid";
 import type {
   Activity,
   Axis,
@@ -19,6 +19,7 @@ import type {
   RangeAssignment,
   SheetCell,
   SheetModel,
+  StructureEdit,
 } from "@mm/shared";
 import {
   a1,
@@ -27,20 +28,24 @@ import {
   displayValue,
   FLAG,
   FLASH_MS,
+  parseDeadline,
   personColor,
-  remaining,
+  remainingAt,
+  remainingTick,
   scrollBehavior,
   sheetPrefix,
   splitCellRefs,
 } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CellWrite } from "../../api";
 import { errorText, jobEvent } from "../../api";
 import { useApi, useJobId } from "../../job";
 import { useToast } from "../../frame";
+import type { GridMenuState } from "../../GridMenu";
+import { GridMenu } from "../../GridMenu";
 import { SheetTabs } from "../../SheetTabs";
 import { sizeEdits } from "../../sizes";
 import { useHostEditor } from "../../useHostEditor";
@@ -255,6 +260,7 @@ function SheetMonitor({
   useEffect(() => {
     const off = listen<HostEvent>(jobEvent("sheet-changes", job), (e) => {
       const ev = e.payload;
+      if (ev.type === "deadlineClose") return; // 공유 닫기는 호스트 앱이 한다(1c·사이드바에 보인다)
       if (ev.type === "reset") {
         void load();
         return;
@@ -311,11 +317,18 @@ function SheetMonitor({
     return () => window.clearTimeout(id);
   }, [status]);
 
-  // 마감 카운트다운
+  // 마감 카운트다운(이 PC 시계 = 마감을 재는 시계). 2분 안쪽은 1초마다, 그 밖은 15초마다.
+  const due = parseDeadline(data?.view.config.deadline)?.getTime();
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(id);
-  }, []);
+    let timer: number;
+    const tick = () => {
+      const t = Date.now();
+      setNow(t);
+      timer = window.setTimeout(tick, remainingTick(due, t));
+    };
+    tick();
+    return () => window.clearTimeout(timer);
+  }, [due]);
 
   const flags = useMemo(() => (data ? decodeFlags(data.view.flags) : new Uint8Array()), [data]);
   const model = data?.model;
@@ -469,6 +482,27 @@ function SheetMonitor({
     notify: toast,
   });
 
+  // 오른쪽 클릭: 크기·행·열 추가·지우기·취소 행(1b와 같은 메뉴). 누른 곳이 선택 밖이면 그 칸·열·행을 고른다.
+  const [menu, setMenu] = useState<GridMenuState | null>(null);
+  const onContextMenu = (hit: GridHit, e: ReactMouseEvent) => {
+    if (!viewModel) return;
+    e.preventDefault();
+    editor.leave();
+    const next = selectForMenu(viewModel, selection, hit);
+    if (next !== selection) setSelection(next);
+    setMenu({ x: e.clientX, y: e.clientY, hit });
+  };
+  const onStructure = async (edit: StructureEdit) => {
+    setError(null);
+    try {
+      const r = await api.sheetStructure(sheet, edit, null);
+      setData((d) => (d ? { ...d, model: r.model, view: r.view } : d));
+      if (edit.op === "deleteRows" || edit.op === "deleteCols") setSelection(null);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+
   // 머리글 경계를 끌어 열 너비·행 높이를 바꾼다(1b와 같이, 모두에게 보인다). 바뀐 크기는 `resized`로도 다시 온다.
   const onResize = async (axis: Axis, index: number, size: number) => {
     if (!viewModel) return;
@@ -547,7 +581,7 @@ function SheetMonitor({
   // 머리의 진행률·담당자별은 모든 시트 합(시트가 하나면 그 시트), 열별 완료는 보고 있는 시트.
   const total = many && snapshot ? { filled: snapshot.filled, required: snapshot.required } : p;
   const pct = total && total.required > 0 ? Math.round((total.filled / total.required) * 100) : 0;
-  const left = remaining(view?.config.deadline, new Date(now));
+  const left = remainingAt(due, now);
   const people = snapshot?.participants ?? [];
   const unread = (comms?.chat ?? []).filter((m) => !m.host && m.id > chatSeen).length;
   const sel = useMemo(
@@ -745,7 +779,21 @@ function SheetMonitor({
             onKey={editor.onKey}
             onCellDoubleClick={editor.onCellDoubleClick}
             onResize={(axis, index, size) => void onResize(axis, index, size)}
+            onContextMenu={onContextMenu}
           />
+          {menu && data && viewModel && (
+            <GridMenu
+              menu={menu}
+              model={data.model}
+              shown={viewModel}
+              view={data.view}
+              selection={selection}
+              onClose={() => setMenu(null)}
+              onConfirm={(confirm) => setMenu({ ...menu, confirm })}
+              onResize={(axis, index, size) => void onResize(axis, index, size)}
+              onStructure={(edit) => void onStructure(edit)}
+            />
+          )}
           <SheetTabs
             names={sheets.map((m) => m.sheet)}
             active={sheet}

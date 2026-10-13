@@ -12,6 +12,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use collect_core::CellValue;
+use collect_core::format::Axis;
 use collect_core::history::ChangeEntry;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -128,6 +129,15 @@ enum Op {
     Snapshot(SnapshotMeta, Vec<u8>),
     Meta(String, String),
     Blob(String, u64, Vec<u8>),
+    /// 앱에서 붙인 행·열을 지움: 그 줄의 기록은 `gone`, 뒤의 기록은 당긴다.
+    Remap {
+        sheet: u32,
+        axis: Axis,
+        from: u32,
+        count: u32,
+    },
+    /// 스냅샷 값을 바꿔 쓴다(표 구조가 바뀜).
+    ReplaceSnapshot(u32, Vec<u8>),
     /// 다른 시트로 바꿈: 기록·스냅샷을 비운다.
     Reset,
     Flush(mpsc::SyncSender<()>),
@@ -154,7 +164,8 @@ CREATE TABLE IF NOT EXISTS changes (
     row INTEGER NOT NULL,
     col INTEGER NOT NULL,
     old TEXT NOT NULL,
-    new TEXT NOT NULL
+    new TEXT NOT NULL,
+    gone INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY,
@@ -168,14 +179,20 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, seq INTEGER NOT NULL, data BLOB NOT NULL);
 ";
 
-/// 여러 시트를 함께 취합하기 전에 만든 파일: 변경 기록에 `sheet` 열을 더한다(옛 기록은 모두 첫 시트).
+/// 옛 파일에 없는 변경 기록 열을 더한다: 여러 시트를 함께 취합하기 전 파일은 `sheet`(옛 기록은 모두 첫 시트), 행·열
+/// 지우기 전 파일은 `gone`(모두 살아 있는 기록).
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let has_sheet =
-        conn.query_row("SELECT count(*) FROM pragma_table_info('changes') WHERE name = 'sheet'", [], |r| {
+    let has = |name: &str| -> rusqlite::Result<bool> {
+        conn.query_row("SELECT count(*) FROM pragma_table_info('changes') WHERE name = ?1", [name], |r| {
             r.get::<_, i64>(0)
-        })? > 0;
-    if !has_sheet {
+        })
+        .map(|n| n > 0)
+    };
+    if !has("sheet")? {
         conn.execute_batch("ALTER TABLE changes ADD COLUMN sheet INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    if !has("gone")? {
+        conn.execute_batch("ALTER TABLE changes ADD COLUMN gone INTEGER NOT NULL DEFAULT 0;")?;
     }
     Ok(())
 }
@@ -190,8 +207,8 @@ fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
             let tx = conn.transaction()?;
             {
                 let mut stmt = tx.prepare_cached(
-                    "INSERT OR REPLACE INTO changes (seq, at_ms, user, batch, origin, kind, row, col, old, new, sheet)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    "INSERT OR REPLACE INTO changes (seq, at_ms, user, batch, origin, kind, row, col, old, new, sheet, gone)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )?;
                 for e in &entries {
                     stmt.execute(params![
@@ -206,6 +223,7 @@ fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
                         json(&e.old),
                         json(&e.new),
                         e.sheet,
+                        e.gone,
                     ])?;
                 }
             }
@@ -223,6 +241,26 @@ fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
         Op::Blob(k, seq, data) => conn
             .execute("INSERT OR REPLACE INTO blobs (key, seq, data) VALUES (?1, ?2, ?3)", params![k, seq as i64, data])
             .map(drop),
+        Op::Remap { sheet, axis, from, count } => {
+            let line = match axis {
+                Axis::Row => "row",
+                Axis::Col => "col",
+            };
+            let end = from.saturating_add(count);
+            let tx = conn.transaction()?;
+            tx.execute(
+                &format!("UPDATE changes SET gone = 1 WHERE sheet = ?1 AND gone = 0 AND {line} >= ?2 AND {line} < ?3"),
+                params![sheet, from, end],
+            )?;
+            tx.execute(
+                &format!("UPDATE changes SET {line} = {line} - ?3 WHERE sheet = ?1 AND gone = 0 AND {line} >= ?2"),
+                params![sheet, end, count],
+            )?;
+            tx.commit()
+        }
+        Op::ReplaceSnapshot(id, data) => {
+            conn.execute("UPDATE snapshots SET data = ?2 WHERE id = ?1", params![id, data]).map(drop)
+        }
         Op::Reset => conn.execute_batch("DELETE FROM changes; DELETE FROM snapshots; DELETE FROM blobs;"),
         Op::Flush(done) => {
             let _ = done.send(());
@@ -286,6 +324,17 @@ impl Store {
         self.send(Op::Reset);
     }
 
+    /// 앱에서 붙인 행(열)을 `from`부터 `count`개 지웠다: 그 줄의 기록은 지운 것으로 두고(`gone`) 뒤의 기록은 당긴다.
+    /// 세션이 메모리의 기록에 한 것([`collect_core::structure::remap_entries`])과 같다.
+    pub fn remap(&self, sheet: u32, axis: Axis, from: u32, count: u32) {
+        self.send(Op::Remap { sheet, axis, from, count });
+    }
+
+    /// 스냅샷 값을 바꿔 쓴다(표 구조가 바뀌어 지금 시트 모양에 맞춘 값).
+    pub fn replace_snapshot(&self, id: u32, data: Vec<u8>) {
+        self.send(Op::ReplaceSnapshot(id, data));
+    }
+
     /// 그때까지 보낸 쓰기가 끝날 때까지 기다린다.
     pub fn flush(&self) -> Result<()> {
         let (tx, rx) = mpsc::sync_channel(1);
@@ -329,8 +378,9 @@ pub fn load(path: impl AsRef<Path>) -> Result<Saved> {
     conn.execute_batch(SCHEMA)?;
     migrate(&conn)?;
     let mut out = Saved::default();
-    let mut stmt = conn
-        .prepare("SELECT seq, at_ms, user, batch, origin, kind, row, col, old, new, sheet FROM changes ORDER BY seq")?;
+    let mut stmt = conn.prepare(
+        "SELECT seq, at_ms, user, batch, origin, kind, row, col, old, new, sheet, gone FROM changes ORDER BY seq",
+    )?;
     let rows = stmt.query_map([], |r| {
         Ok(ChangeEntry {
             seq: r.get::<_, i64>(0)? as u64,
@@ -344,6 +394,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<Saved> {
             col: r.get(7)?,
             old: from_json(&r.get::<_, String>(8)?)?,
             new: from_json(&r.get::<_, String>(9)?)?,
+            gone: r.get(11)?,
         })
     })?;
     for row in rows {
@@ -429,6 +480,7 @@ mod tests {
             col: 5,
             old: CellValue::Empty,
             new,
+            gone: false,
         }
     }
 
@@ -524,6 +576,27 @@ mod tests {
         drop(store);
         let saved = load(&path).unwrap();
         assert_eq!((saved.changes.len(), saved.snapshots.len()), (1, 0));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn removed_lines_mark_history_gone_and_pull_the_rest() {
+        let path = temp("remap.sqlite");
+        let at = |seq, row, col| ChangeEntry { row, col, ..entry(seq, CellValue::Number(seq as f64)) };
+        {
+            let store = Store::open(&path).unwrap();
+            store.append(&[at(1, 3, 0), at(2, 4, 0), at(3, 5, 0), ChangeEntry { sheet: 1, ..at(4, 5, 0) }]);
+            store.remap(0, Axis::Row, 4, 1);
+            store.remap(0, Axis::Col, 0, 1);
+            let meta = SnapshotMeta { id: 1, at_ms: 5, kind: SnapshotKind::Manual, seq: 3, label: String::new() };
+            store.snapshot(&meta, &pack(&[CellValue::Empty]));
+            store.replace_snapshot(1, pack(&[CellValue::Number(2.0)]));
+            store.flush().unwrap();
+        }
+        let saved = load(&path).unwrap();
+        let shape: Vec<(u32, u32, bool)> = saved.changes.iter().map(|e| (e.row, e.col, e.gone)).collect();
+        assert_eq!(shape, [(3, 0, true), (4, 0, true), (4, 0, true), (5, 0, false)]);
+        assert_eq!(unpack(&saved.snapshots[0].1).unwrap(), [CellValue::Number(2.0)]);
         let _ = std::fs::remove_file(&path);
     }
 }

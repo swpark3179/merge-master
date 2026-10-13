@@ -2,7 +2,15 @@ import type { SheetModel } from "@mm/shared";
 import { describe, expect, it } from "vitest";
 
 import { buildLayout } from "./layout";
-import { columnSelection, countCells, expandToMerges, rowSelection, selectionRange } from "./selection";
+import {
+  columnSelection,
+  countCells,
+  expandToMerges,
+  lineSelection,
+  rowSelection,
+  selectForMenu,
+  selectionRange,
+} from "./selection";
 
 function model(merges: SheetModel["merges"]): SheetModel {
   const rows = 8;
@@ -60,5 +68,23 @@ describe("selection", () => {
 
   it("병합은 한 칸으로 센다", () => {
     expect(countCells(l, { row: 2, col: 0, rows: 4, cols: 3 })).toBe(7); // A3·B3·C3·C4·B5·B6·C6
+  });
+
+  it("오른쪽 클릭: 선택 안이면 그대로, 밖이면 그 칸·열·행", () => {
+    const m = { rows: 8, cols: 4, headerRows: 2 };
+    expect(lineSelection(m, "col", 1, 2)).toEqual(columnSelection(l, 2, 1, 2));
+    expect(lineSelection(m, "row", 3)).toEqual(rowSelection(l, 3, 3));
+    const cols = lineSelection(m, "col", 1, 2);
+    expect(selectForMenu(m, cols, { kind: "col", col: 2 })).toBe(cols);
+    expect(selectForMenu(m, cols, { kind: "col", col: 3 })).toEqual(lineSelection(m, "col", 3));
+    expect(selectForMenu(m, cols, { kind: "row", row: 4 })).toEqual(lineSelection(m, "row", 4));
+    expect(selectForMenu(m, cols, { kind: "cell", row: 4, col: 1 })).toBe(cols);
+    expect(selectForMenu(m, null, { kind: "cell", row: 4, col: 1 })).toEqual({
+      anchor: { row: 4, col: 1 },
+      focus: { row: 4, col: 1 },
+    });
+    const cell = { anchor: { row: 4, col: 1 }, focus: { row: 4, col: 1 } };
+    // 칸만 고른 행은 행 전체로
+    expect(selectForMenu(m, cell, { kind: "row", row: 4 })).toEqual(lineSelection(m, "row", 4));
   });
 });

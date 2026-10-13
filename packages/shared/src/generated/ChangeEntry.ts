@@ -14,4 +14,8 @@ atMs: number, user: string, batch: string, origin: BatchOrigin, kind: ChangeKind
 /**
  * 세션 안 시트 순번(불러온 순서). 여러 시트를 취합하기 전의 기록은 0.
  */
-sheet: number, row: number, col: number, old?: CellValue, new?: CellValue, };
+sheet: number, row: number, col: number, old?: CellValue, new?: CellValue, 
+/**
+ * 이 칸이 든 행·열을 지웠다(앱에서 붙인 행·열 지우기). 좌표는 지울 때의 것이고, 되돌리거나 다시 적용하지 않는다.
+ */
+gone?: boolean, };

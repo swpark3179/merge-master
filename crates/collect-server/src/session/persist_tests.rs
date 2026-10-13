@@ -22,7 +22,8 @@ fn temp(name: &str) -> std::path::PathBuf {
 
 fn set(st: &mut State, c: &Client, batch: &str, row: u32, col: u32, value: CellValue) {
     let cells = vec![CellEdit { row, col, value, base: 0 }];
-    let msg = ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: Some(BatchOrigin::Paste) };
+    let msg =
+        ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: Some(BatchOrigin::Paste), layout: None };
     st.handle(Command::Client { conn: c.conn, msg });
 }
 

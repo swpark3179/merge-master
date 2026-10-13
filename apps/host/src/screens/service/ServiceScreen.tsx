@@ -1,5 +1,6 @@
 import type {
   CollectConfig,
+  DeadlineAction,
   HostSnapshot,
   IpNamesView,
   JobSummary,
@@ -135,15 +136,19 @@ export function ServiceScreen(props: Props) {
     }
   };
 
-  const setLock = async (on: boolean) => {
+  const setDeadlineAction = async (deadlineAction: DeadlineAction) => {
     if (!config) return;
-    // '마감 후 읽기 전용'은 모든 시트에 같이 걸린다(다른 권한은 첫 시트 것 그대로).
-    const v = await api.configApply(
-      0,
-      { op: "setPermissions", permissions: { ...config.permissions, lockAfterDeadline: on } },
-      null,
-    );
-    setConfig(v.config);
+    // 마감 동작은 모든 시트에 같이 걸린다(다른 권한은 첫 시트 것 그대로).
+    try {
+      const v = await api.configApply(
+        0,
+        { op: "setPermissions", permissions: { ...config.permissions, deadlineAction } },
+        null,
+      );
+      setConfig(v.config);
+    } catch (e) {
+      setError(errorText(e));
+    }
   };
 
   // 내 이름이 비어 있고 이 PC의 IP가 IP 명단에 있으면 그 이름으로 채워 저장한다(입력 중인 글은 덮지 않는다, 한 번만).
@@ -279,15 +284,27 @@ export function ServiceScreen(props: Props) {
                     value={config.deadline ?? ""}
                     onChange={(e) => void saveMeta({ deadline: e.target.value || undefined })}
                   />
+                  <HostClock />
                 </label>
-                <label className="check deadline-lock">
-                  <input
-                    type="checkbox"
-                    checked={config.permissions.lockAfterDeadline}
-                    onChange={(e) => void setLock(e.target.checked)}
-                  />
-                  마감 후 자동 읽기 전용
-                </label>
+                <fieldset className="deadline-action" disabled={!config.deadline}>
+                  <legend>마감 시각이 되면</legend>
+                  {(
+                    [
+                      ["readOnly", "읽기 전용으로 전환", "참여자는 접속한 채로 보기만 합니다"],
+                      ["stopSharing", "공유 닫기", "이 업무의 공유를 닫아 참여자 연결이 끊깁니다(다시 열 수 있음)"],
+                    ] as const
+                  ).map(([value, label, hint]) => (
+                    <label key={value} className="radio" title={hint}>
+                      <input
+                        type="radio"
+                        name="deadline-action"
+                        checked={config.permissions.deadlineAction === value}
+                        onChange={() => void setDeadlineAction(value)}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </fieldset>
               </div>
             </>
           )}
@@ -440,4 +457,15 @@ export function ServiceScreen(props: Props) {
       <IpNamesPanel snapshot={snapshot} rev={ipRev} onError={setError} onChange={onIpNames} />
     </div>
   );
+}
+
+/** 마감 시각은 이 PC(호스트) 시계로 잰다: 지금 시각을 함께 보인다(30초마다). */
+function HostClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const hm = [now.getHours(), now.getMinutes()].map((n) => String(n).padStart(2, "0")).join(":");
+  return <span className="muted small">호스트 PC 시각 기준 (지금 {hm})</span>;
 }

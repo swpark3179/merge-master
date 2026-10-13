@@ -164,7 +164,7 @@ async fn join_pending_approve_and_switch_over_websocket() {
     assert_eq!(session.snapshot().online, 2);
     tokio::time::timeout(Duration::from_secs(5), server.stop()).await.expect("stop()이 끝나지 않음");
     let closing = until(&mut b, |m| matches!(m, ServerMsg::Closing { .. })).await;
-    assert!(matches!(closing, ServerMsg::Closing { ended: false }));
+    assert!(matches!(closing, ServerMsg::Closing { ended: false, .. }));
 }
 
 #[tokio::test]
@@ -205,7 +205,7 @@ async fn edits_flow_over_websocket_and_survive_restart() {
     let row = w.sheets[0].row_owner.iter().position(|&o| o == 0).unwrap() as u32;
 
     let cells = vec![CellEdit { row, col: 5, value: CellValue::Text("9,800".into()), base: 0 }];
-    send(&mut a, &ClientMsg::SetCells { sheet: 0, batch: "b1".into(), cells, origin: None }).await;
+    send(&mut a, &ClientMsg::SetCells { sheet: 0, batch: "b1".into(), cells, origin: None, layout: None }).await;
     let ok = until(&mut a, |m| matches!(m, ServerMsg::Applied { .. })).await;
     assert!(matches!(ok, ServerMsg::Applied { cells, .. } if cells[0].value == CellValue::Number(9800.0)));
     let seen = until(&mut b, |m| matches!(m, ServerMsg::Cells { .. })).await;
@@ -365,9 +365,9 @@ async fn two_sessions_on_one_port() {
     // hr만 공개를 멈추면(업무 끝냄) hr 연결만 닫히고 q4는 그대로.
     assert!(hub.unpublish("hr", true).is_some());
     let closing = until(&mut wb, |m| matches!(m, ServerMsg::Closing { .. })).await;
-    assert!(matches!(closing, ServerMsg::Closing { ended: true }));
+    assert!(matches!(closing, ServerMsg::Closing { ended: true, .. }));
     send(&mut wa, &ClientMsg::Ping).await;
-    assert!(matches!(until(&mut wa, |m| matches!(m, ServerMsg::Pong)).await, ServerMsg::Pong));
+    assert!(matches!(until(&mut wa, |m| matches!(m, ServerMsg::Pong { .. })).await, ServerMsg::Pong { .. }));
     assert!(!http(addr, "GET", "/api/sessions", "").await.contains(r#""slug":"hr""#));
     assert!(http(addr, "GET", "/hr", "").await.starts_with("HTTP/1.1 404"));
     assert!(tokio_tungstenite::connect_async(format!("ws://{addr}/ws?s=hr")).await.is_err());
@@ -385,7 +385,7 @@ async fn two_sessions_on_one_port() {
     // 개발용 관리 API로 멈췄다 다시 열기.
     assert!(http(addr, "POST", "/__dev/unpublish?s=hr", "").await.starts_with("HTTP/1.1 200"));
     let closing = until(&mut again, |m| matches!(m, ServerMsg::Closing { .. })).await;
-    assert!(matches!(closing, ServerMsg::Closing { ended: false }));
+    assert!(matches!(closing, ServerMsg::Closing { ended: false, .. }));
     assert!(http(addr, "POST", "/__dev/publish?s=hr", "").await.starts_with("HTTP/1.1 200"));
     assert!(http(addr, "GET", "/api/session?s=hr", "").await.contains("인력 계획 취합"));
 
@@ -393,6 +393,6 @@ async fn two_sessions_on_one_port() {
     server.stop().await;
     assert!(matches!(
         until(&mut wa, |m| matches!(m, ServerMsg::Closing { .. })).await,
-        ServerMsg::Closing { ended: false }
+        ServerMsg::Closing { ended: false, .. }
     ));
 }

@@ -1,11 +1,13 @@
-import type { CellDecoration, SheetGridHandle } from "@mm/grid";
-import { countCells, SheetGrid, withHiddenRows } from "@mm/grid";
+import type { CellDecoration, GridHit, SheetGridHandle } from "@mm/grid";
+import { countCells, selectForMenu, SheetGrid, withHiddenRows } from "@mm/grid";
 import type { Axis, Brush, CellRange, ColumnRule, HAlign, SheetModel, StylePatch } from "@mm/shared";
 import { colLetters, FLAG, formatRange, formatValue, parseHex, personColor, rgbHex } from "@mm/shared";
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { useCallback, useMemo, useRef, useState } from "react";
 
 import { useToast } from "../../frame";
+import type { GridMenuState } from "../../GridMenu";
+import { GridMenu } from "../../GridMenu";
 import { SheetTabs } from "../../SheetTabs";
 import { sizeEdits } from "../../sizes";
 import { useHostEditor } from "../../useHostEditor";
@@ -97,6 +99,16 @@ function SheetConfig({
   // 머리글로 여러 열(행)을 골라 두고 그중 하나의 경계를 끌면 고른 열(행) 모두를 같은 크기로(Excel처럼).
   const onResize = async (axis: Axis, index: number, size: number) => {
     for (const edit of sizeEdits(shown, s.range, axis, index, size)) await s.format(edit);
+  };
+
+  // 오른쪽 클릭: 크기·행·열 추가·지우기·취소 행. 누른 곳이 지금 선택 밖이면 그 칸·열·행을 고른다(Excel처럼).
+  const [menu, setMenu] = useState<GridMenuState | null>(null);
+  const onContextMenu = (hit: GridHit, e: MouseEvent) => {
+    e.preventDefault();
+    editor.leave();
+    const sel = selectForMenu(model, s.selection, hit);
+    if (sel !== s.selection) s.setSelection(sel);
+    setMenu({ x: e.clientX, y: e.clientY, hit });
   };
 
   // 머리글 맨 아래 행(병합이면 그 병합의 왼쪽 위)에 열 태그(조회·배정 기준·필수·목록)를 붙인다.
@@ -212,9 +224,9 @@ function SheetConfig({
             </span>
             <span
               className="muted small grid-tip"
-              title="칸을 두 번 누르거나 바로 입력해 내용을 고치고, Delete로 지웁니다. 열·행 머리글 경계를 끌면 너비·높이가 바뀝니다."
+              title="칸을 두 번 누르거나 바로 입력해 내용을 고치고, Delete로 지웁니다. 열·행 머리글 경계를 끌거나 머리글을 오른쪽 클릭하면 너비·높이가 바뀝니다. 오른쪽 클릭으로 표 끝에 행·열을 추가하고, 앱에서 추가한 행·열을 지웁니다."
             >
-              두 번 눌러 고치기 · 머리글 경계를 끌어 크기 조절
+              두 번 눌러 고치기 · 머리글 경계를 끌어 크기 조절 · 오른쪽 클릭 메뉴
             </span>
             <span className="spacer" />
             <ViewerPick s={s} />
@@ -238,6 +250,7 @@ function SheetConfig({
                 onKey={editor.onKey}
                 onCellDoubleClick={editor.onCellDoubleClick}
                 onResize={(axis, index, size) => void onResize(axis, index, size)}
+                onContextMenu={onContextMenu}
                 className="preview-grid"
               />
             ) : (
@@ -246,6 +259,19 @@ function SheetConfig({
           </div>
           {tabs}
         </div>
+        {menu && view && (
+          <GridMenu
+            menu={menu}
+            model={model}
+            shown={shown}
+            view={view}
+            selection={s.selection}
+            onClose={() => setMenu(null)}
+            onConfirm={(confirm) => setMenu({ ...menu, confirm })}
+            onResize={(axis, index, size) => void onResize(axis, index, size)}
+            onStructure={(edit) => void s.structure(edit)}
+          />
+        )}
         {tab === "roles" ? <Legend s={s} /> : <AccessFooter s={s} />}
       </div>
       {view && (
@@ -691,23 +717,38 @@ function Legend({ s }: { s: ConfigState }) {
   );
 }
 
-/** 그리드 아래 오른쪽: 참여자 행 추가 허용(참여자 권한 '행 추가'와 같다). */
+/** 그리드 아래 오른쪽: 참여자 행 추가·삭제 허용(참여자 권한 '행 추가'·'행 삭제'와 같다). */
 function AddRowsSwitch({ s }: { s: ConfigState }) {
   const perms = s.view?.config.permissions;
   if (!perms) return null;
   return (
-    <button
-      className="switch"
-      role="switch"
-      aria-checked={perms.addRows}
-      disabled={s.busy}
-      title="켜면 참여자 화면에 '+ 행 추가'가 생겨 표 맨 아래에 행을 붙일 수 있습니다"
-      onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, addRows: !perms.addRows } })}
-    >
-      참여자가 새 행을 추가할 수 있게 하기
-      <span className="track">
-        <span className="knob" />
-      </span>
-    </button>
+    <>
+      <button
+        className="switch"
+        role="switch"
+        aria-checked={perms.addRows}
+        disabled={s.busy}
+        title="켜면 참여자 화면의 마지막 행 번호 아래에 ＋가 생겨 표 맨 아래에 행을 붙일 수 있습니다"
+        onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, addRows: !perms.addRows } })}
+      >
+        참여자가 새 행을 추가할 수 있게 하기
+        <span className="track">
+          <span className="knob" />
+        </span>
+      </button>
+      <button
+        className="switch"
+        role="switch"
+        aria-checked={perms.deleteRows}
+        disabled={s.busy}
+        title="켜면 참여자가 행 번호를 오른쪽 클릭해 자기가 추가한 행을 지울 수 있습니다"
+        onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, deleteRows: !perms.deleteRows } })}
+      >
+        추가한 행을 지울 수 있게 하기
+        <span className="track">
+          <span className="knob" />
+        </span>
+      </button>
+    </>
   );
 }

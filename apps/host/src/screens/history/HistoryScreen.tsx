@@ -273,12 +273,14 @@ export function HistoryScreen({ active, sheets, sheet }: Props) {
     return i >= 0 ? personColor(i) : "#222";
   };
 
+  // 앱에서 붙인 행·열을 지웠으면 그 칸의 기록은 '삭제됨'으로 남는다(좌표는 지울 때의 것, 되돌리거나 칸으로 가지 않는다).
   const entryRow = (e: ChangeEntry, child: boolean) => (
     <div
       key={e.seq}
-      className={`hrow${child ? " child" : ""}${cell && cell.sheet === e.sheet && cell.row === e.row && cell.col === e.col ? " on" : ""}`}
+      className={`hrow${child ? " child" : ""}${e.gone ? " gone" : ""}${!e.gone && cell && cell.sheet === e.sheet && cell.row === e.row && cell.col === e.col ? " on" : ""}`}
       role="row"
-      onClick={() => setCell({ sheet: e.sheet, row: e.row, col: e.col })}
+      title={e.gone ? "지운 행·열에 있던 칸의 기록입니다" : undefined}
+      onClick={() => !e.gone && setCell({ sheet: e.sheet, row: e.row, col: e.col })}
     >
       {child ? (
         <>
@@ -294,7 +296,10 @@ export function HistoryScreen({ active, sheets, sheet }: Props) {
           </span>
         </>
       )}
-      <span className="mono">{addr(e.sheet, e)}</span>
+      <span className="mono">
+        {addr(e.sheet, e)}
+        {e.gone && <span className="tag gone-tag">삭제됨</span>}
+      </span>
       <span className="small muted">
         {child
           ? labelsOf(e.sheet)[e.col]
@@ -305,15 +310,17 @@ export function HistoryScreen({ active, sheets, sheet }: Props) {
         <span className={`kind kind-${e.kind}`}>{KIND_LABEL[e.kind]}</span>
       </span>
       <span>
-        <button
-          className="ghost small"
-          onClick={(ev) => {
-            ev.stopPropagation();
-            void run(() => revert(addr(e.sheet, e), (force) => api.historyRevert([e.seq], force)));
-          }}
-        >
-          되돌리기
-        </button>
+        {!e.gone && (
+          <button
+            className="ghost small"
+            onClick={(ev) => {
+              ev.stopPropagation();
+              void run(() => revert(addr(e.sheet, e), (force) => api.historyRevert([e.seq], force)));
+            }}
+          >
+            되돌리기
+          </button>
+        )}
       </span>
     </div>
   );

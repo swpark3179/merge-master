@@ -1822,8 +1822,32 @@ button.link:hover:not(:disabled) {
   resize: vertical;
 }
 
-.deadline-lock {
-  height: 34px;
+/* 마감 시각이 되면: 읽기 전용 / 공유 닫기 */
+.deadline-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.deadline-action legend {
+  float: left;
+  margin-right: 4px;
+  padding: 0;
+  font-weight: 600;
+}
+
+.deadline-action .radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.deadline-action:disabled {
+  opacity: 0.5;
 }
 
 .divider {
@@ -2690,4 +2714,21 @@ button.save-btn {
 
 .list-url .muted {
   flex: none;
+}
+
+/* 1h: 지운 행·열에 있던 칸의 기록 */
+.hrow.gone {
+  color: var(--muted);
+  cursor: default;
+}
+
+.hrow.gone > .mono:not(.small) {
+  text-decoration: line-through;
+}
+
+.gone-tag {
+  margin-left: 4px;
+  background: var(--cancel-bg);
+  color: var(--cancel-ink);
+  text-decoration: none;
 }

@@ -137,7 +137,7 @@ export function JoinScreen({ s }: { s: SessionState }) {
         )}
         {phase.kind === "closed" && (
           <div className="state-card" role="status">
-            <b>서비스가 중지되었습니다</b>
+            <b>{phase.deadline ? "마감 시각이 지나 공유가 닫혔습니다" : "서비스가 중지되었습니다"}</b>
             <div className="muted">호스트가 다시 열면 자동으로 연결합니다.</div>
             <a className="back-link" href="/">
               다른 취합 업무 보기

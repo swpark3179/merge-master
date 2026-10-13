@@ -4,11 +4,13 @@
 //! - 프레즌스: 접속 상태·커서(3단계)
 //! - 편집: 셀 잠금, 셀 수정 묶음(기준 버전으로 충돌 감지), 진행률, 마감 읽기 전용, 서식, 행 이력(4단계)
 //! - 소통: 공지(읽음 확인), 셀 강조(확인), 채팅(전체·호스트와 1:1)(6단계)
-//! - 행 추가: 참여자가 표 아래에 행을 붙인다(참여자 권한 '행 추가')
+//! - 행 추가·삭제: 참여자가 표 아래에 행을 붙이고(참여자 권한 '행 추가') 자기가 붙인 행을 지운다('행 삭제')
+//! - 취소 행: 행을 취소 표시한다(행 전체 회색 + 취소선, 필수로 세지 않는다)
 //! - 크기 조절: 열 너비·행 높이(호스트, 참여자 권한 '크기 조절'이면 참여자도). 모두에게 보인다
+//! - 시각: 남은 시간은 호스트 PC 시계 기준(`welcome.serverNow`·`pong.now`로 차이를 잡고 `session.deadlineAt`과 비교)
 
 pub use collect_core::access::PersonProgress;
-use collect_core::config::{ColumnRule, Permissions};
+use collect_core::config::{ColumnRule, DeadlineAction, Permissions};
 use collect_core::format::{Axis, StylePatch};
 pub use collect_core::history::{BatchOrigin, ChangeEntry, ChangeKind};
 use collect_core::{CellRange, CellRef, CellStyle, CellValue, SheetCell, SheetModel};
@@ -18,7 +20,8 @@ use ts_rs::TS;
 /// 2: 4단계 편집 메시지 추가. 3: 6단계 공지·강조·채팅, 묶음 출처. 4: IP 명단 입장(`known`), 행 추가.
 /// 5: 여러 시트(칸·범위가 든 메시지마다 `sheet` = 세션 안 시트 순번, `welcome.sheets`).
 /// 6: 열 너비·행 높이(`resize` → 모두에게 `resized`).
-pub const PROTOCOL_VERSION: u32 = 6;
+/// 7: 행 삭제·취소 행(`deleteRows`·`cancelRows`, 편집의 `layout`), 호스트 시각(`serverNow`·`deadlineAt`), 마감 동작.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// 채팅 받는 쪽. 참여자는 전체나 호스트에게, 호스트는 전체나 한 사람에게 보낸다.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
@@ -122,6 +125,10 @@ pub enum ClientMsg {
         #[serde(default)]
         sheet: u32,
         at: CellRef,
+        /// 클라이언트가 본 시트의 구조 판(`model.layout`). 다르면 거절한다(없으면 검사하지 않는다).
+        #[serde(default)]
+        #[ts(optional)]
+        layout: Option<u32>,
     },
     /// 편집을 취소했다.
     Unlock {
@@ -139,6 +146,10 @@ pub enum ClientMsg {
         #[serde(default)]
         #[ts(optional)]
         origin: Option<BatchOrigin>,
+        /// 묶음을 만들 때 본 시트의 구조 판. 그 뒤 앱에서 붙인 행·열을 지워 좌표가 밀렸으면 묶음 전체를 거절한다.
+        #[serde(default)]
+        #[ts(optional)]
+        layout: Option<u32>,
     },
     /// 행 변경 이력(1g '이 행 변경 이력').
     RowHistory {
@@ -152,6 +163,9 @@ pub enum ClientMsg {
         sheet: u32,
         range: CellRange,
         patch: StylePatch,
+        #[serde(default)]
+        #[ts(optional)]
+        layout: Option<u32>,
     },
     /// 공지를 확인했다.
     AckNotice {
@@ -171,6 +185,28 @@ pub enum ClientMsg {
         #[serde(default)]
         sheet: u32,
         count: u32,
+    },
+    /// 내가 추가한 행 `from`부터 `count`개를 지운다(그 시트의 참여자 권한 '행 삭제'일 때만). 결과는 모두에게 새 시트
+    /// (`welcome`, 구조 판이 오른다) + `rowsDeleted`.
+    DeleteRows {
+        #[serde(default)]
+        sheet: u32,
+        from: u32,
+        count: u32,
+        #[serde(default)]
+        #[ts(optional)]
+        layout: Option<u32>,
+    },
+    /// 행 `from`부터 `count`개를 취소 표시하거나(`on`) 푼다(내가 입력할 수 있는 칸이 있는 행만). 결과는 모두에게 새 시트.
+    CancelRows {
+        #[serde(default)]
+        sheet: u32,
+        from: u32,
+        count: u32,
+        on: bool,
+        #[serde(default)]
+        #[ts(optional)]
+        layout: Option<u32>,
     },
     /// `from`부터 `count`개 열 너비(행 높이)를 `size`(pt)로(그 시트의 참여자 권한 '크기 조절'일 때만, 행은 내게 보이는 행만).
     /// 결과는 모두에게 `resized`.
@@ -192,9 +228,16 @@ pub struct SessionInfo {
     pub title: String,
     pub description: String,
     pub requester: String,
+    /// 마감(호스트 PC의 현지 시각 `YYYY-MM-DDTHH:MM` — 화면에 그대로 보인다).
     #[ts(optional)]
     pub deadline: Option<String>,
-    pub lock_after_deadline: bool,
+    /// 마감 시각(유닉스 ms, 호스트 PC 시계·시간대로 계산). 남은 시간은 이것과 호스트 시각(`serverNow`)으로 센다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub deadline_at: Option<i64>,
+    /// 마감 시각이 되면 읽기 전용으로 바꾸는지, 공유를 닫는지.
+    #[serde(default)]
+    pub deadline_action: DeadlineAction,
     /// 마감이 지나 입력할 수 없다.
     pub read_only: bool,
     /// 호스트가 취합을 마감했다(마감 시각과 별개).
@@ -255,6 +298,9 @@ pub struct SheetView {
     pub row_owner: Vec<i32>,
     /// 이 시트에서 내 필수 진행률.
     pub progress: PersonProgress,
+    /// 호스트가 담당자를 배정했다(행 배정 기준 열이나 범위 배정). 아니면 '내 담당만' 필터를 보이지 않는다.
+    #[serde(default)]
+    pub assigned: bool,
 }
 
 /// 입장 허락. 설정이 바뀌면(호스트가 1b에서 고치거나 배정을 바꿈) 같은 내용으로 다시 보낸다.
@@ -268,6 +314,9 @@ pub struct Welcome {
     pub token: String,
     pub color: i32,
     pub session: SessionInfo,
+    /// 보낼 때의 호스트 PC 시각(유닉스 ms). 참여자는 자기 시계와의 차이를 잡아 마감까지 남은 시간을 호스트 기준으로 센다.
+    #[ts(type = "number")]
+    pub server_now: i64,
     /// 명단(모든 시트 명단의 합집합, 순서 = 색).
     pub roster: Vec<String>,
     /// 시트마다(불러온 순서, 하나 이상).
@@ -425,6 +474,13 @@ pub enum ServerMsg {
         sheet: u32,
         range: CellRange,
     },
+    /// 누군가(호스트 포함) 앱에서 붙인 행을 지웠다(새 시트는 `welcome`으로 먼저 온다). 지운 뒤의 행은 위로 당겨졌다.
+    RowsDeleted {
+        by: String,
+        sheet: u32,
+        from: u32,
+        count: u32,
+    },
     /// 누군가(호스트 포함) 열 너비·행 높이를 바꿨다: `from`부터 `count`개 줄이 `size`(pt, 서버가 맞춘 값). 숨긴 줄
     /// (크기 0 — 남의 행 숨김으로 숨은 행 포함)은 그대로 둔다.
     Resized {
@@ -439,8 +495,15 @@ pub enum ServerMsg {
     Closing {
         #[serde(default)]
         ended: bool,
+        /// 마감 시각이 되어 공유를 닫았다(호스트가 다시 열면 이어서).
+        #[serde(default)]
+        deadline: bool,
     },
-    Pong,
+    /// `ping`의 답. `now`는 호스트 PC 시각(유닉스 ms).
+    Pong {
+        #[ts(type = "number")]
+        now: i64,
+    },
     Error {
         message: String,
     },

@@ -142,6 +142,13 @@ impl Access {
                 *h = true;
             }
         }
+        // 취소 표시한 행의 칸은 필수로 세지 않는다(진행률·필수 미입력에서 빠진다).
+        let mut cancelled = vec![false; rows as usize];
+        for &r in &model.cancelled_rows {
+            if let Some(x) = cancelled.get_mut(r as usize) {
+                *x = true;
+            }
+        }
         let mut hidden_col = vec![false; cols as usize];
         for &c in &model.hidden_cols {
             if let Some(h) = hidden_col.get_mut(c as usize) {
@@ -176,7 +183,7 @@ impl Access {
                 let input = (col_input || exc[i] & EXC_INPUT != 0) && exc[i] & EXC_LOCKED == 0 && f & blocked == 0;
                 if input {
                     f |= flag::INPUT;
-                    if rule.is_some_and(|r| r.required) || exc[i] & EXC_REQUIRED != 0 {
+                    if (rule.is_some_and(|r| r.required) || exc[i] & EXC_REQUIRED != 0) && !cancelled[r as usize] {
                         f |= flag::REQUIRED;
                     }
                 }
@@ -536,6 +543,21 @@ mod tests {
             assert!(!a.can_edit(Viewer::Person(p), at("E3")));
             assert_eq!(a.rows_of(p), (2..8).collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn cancelled_rows_have_no_required_cells() {
+        let m = budget();
+        let mut cfg = CollectConfig::suggest(&m);
+        cfg.columns[5].required = true;
+        let before = Access::compile(&m, &cfg).progress(&m).required;
+        let mut m = m;
+        m.cancelled_rows = vec![2, 3];
+        let a = Access::compile(&m, &cfg);
+        assert_eq!(a.progress(&m).required, before - 2);
+        assert_eq!(a.flags(at("F3")) & flag::REQUIRED, 0);
+        assert_ne!(a.flags(at("F3")) & flag::INPUT, 0, "입력은 그대로 된다");
+        assert_ne!(a.flags(at("F5")) & flag::REQUIRED, 0);
     }
 
     #[test]

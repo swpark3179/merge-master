@@ -12,4 +12,8 @@ styles: boolean,
 /**
  * '변경 이력' 시트를 더한다.
  */
-history: boolean, };
+history: boolean, 
+/**
+ * 취소 표시한 행에 취소선 + 회색 채우기를 쓴다(취소를 푼 행은 원래 서식으로).
+ */
+cancelled: boolean, };

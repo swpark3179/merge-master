@@ -52,11 +52,13 @@ pub struct SessionListItem {
 
 /// 공개가 끝난 까닭(그 업무의 WebSocket에 알린다).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Gone {
+pub enum Gone {
     /// 공개만 멈췄다(다시 공개하면 이어서).
     Paused,
     /// 호스트가 업무를 끝냈다.
     Ended,
+    /// 마감 시각이 되어 공유를 닫았다(마감 동작 '공유 닫기', 다시 공개하면 이어서).
+    Deadline,
 }
 
 struct Entry {
@@ -108,11 +110,16 @@ impl Hub {
 
     /// 공개를 멈춘다. 그 업무에 붙어 있던 연결은 `closing`(`ended`면 업무를 끝냈다고)을 받고 닫힌다.
     pub fn unpublish(&self, slug: &str, ended: bool) -> Option<SessionHandle> {
+        self.unpublish_as(slug, if ended { Gone::Ended } else { Gone::Paused })
+    }
+
+    /// [`unpublish`](Self::unpublish)와 같지만 까닭을 고른다(마감 시각에 공유 닫기).
+    pub fn unpublish_as(&self, slug: &str, why: Gone) -> Option<SessionHandle> {
         let mut entries = self.0.entries.write().unwrap();
         let i = entries.iter().position(|e| e.slug.eq_ignore_ascii_case(slug))?;
         let entry = entries.remove(i);
         // 받는 연결이 없어도 값은 남겨 둔다(그사이 붙은 연결도 곧바로 본다).
-        entry.gone.send_replace(Some(if ended { Gone::Ended } else { Gone::Paused }));
+        entry.gone.send_replace(Some(why));
         Some(entry.session)
     }
 

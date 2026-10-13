@@ -401,7 +401,7 @@ pub async fn save_run(
                 .collect()
         })
         .collect();
-    let styles = options.export.styles;
+    let (styles, cancelled) = (options.export.styles, options.export.cancelled);
     let closed = matches!(options.after, AfterSave::ReadOnly);
     let kept_count = kept.iter().map(Vec::len).sum::<usize>() as u32;
     let history_entries = snap.history.len() as u32;
@@ -418,8 +418,10 @@ pub async fn save_run(
                     }
                 }
                 if original {
-                    // 표 아래에 끼워 넣은 행은 이제 원본에 있다: 기준 시트에도 붙인다.
-                    collect_core::export::adopt_rows(&mut slot.baseline, planned);
+                    // 표 아래·오른쪽에 끼워 넣은 행·열은 이제 원본에 있다: 기준 시트에도 붙인다.
+                    collect_core::export::adopt_structure(&mut slot.baseline, planned);
+                    let (rows, cols) = (planned.rows, planned.cols);
+                    slot.model.added_rows.retain(|a| a.row >= rows);
                     for (at, v) in written {
                         if let Some(cell) = slot.baseline.cell_mut(at) {
                             cell.v = v;
@@ -428,9 +430,20 @@ pub async fn save_run(
                     if styles {
                         slot.baseline.styles = slot.model.styles.clone();
                         slot.baseline.merges = slot.model.merges.clone();
-                        for (b, m) in slot.baseline.cells.iter_mut().zip(&slot.model.cells) {
-                            b.s = m.s;
+                        // 기준 시트는 저장 계획을 만든 크기다(그사이 붙인 행·열은 아직 원본에 없다).
+                        for r in 0..rows.min(slot.model.rows) {
+                            for c in 0..cols.min(slot.model.cols) {
+                                let at = CellRef::new(r, c);
+                                let style = slot.model.cell(at).map(|m| m.s);
+                                if let (Some(s), Some(cell)) = (style, slot.baseline.cell_mut(at)) {
+                                    cell.s = s;
+                                }
+                            }
                         }
+                    }
+                    // 취소 표시를 Excel에 썼으면 그 행들이 새 기준이다(서식까지 썼으면 덮개 없이 쓴 행은 풀린 것).
+                    if cancelled {
+                        slot.baseline.cancelled_rows = planned.cancelled_rows.clone();
                     }
                 }
                 if !kept.is_empty() {

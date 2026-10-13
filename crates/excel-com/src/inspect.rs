@@ -96,6 +96,9 @@ impl Session {
             validations: Vec::new(),
             hidden_rows: Vec::new(),
             hidden_cols: Vec::new(),
+            added_rows: Vec::new(),
+            cancelled_rows: Vec::new(),
+            layout: 0,
         };
         let head = CellRange::new(0, 0, used.rows.min(HEAD_SCAN_ROWS), used.cols);
         let mut no_progress = |_| true;

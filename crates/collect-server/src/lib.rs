@@ -34,7 +34,7 @@ use collect_core::CellRange;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-pub use hub::{Hub, SessionListItem, validate_slug};
+pub use hub::{Gone, Hub, SessionListItem, validate_slug};
 pub use ipnames::{IpEntry, IpNames, IpNamesView};
 pub use net::{LanAddress, lan_addresses};
 pub use protocol::{ClientMsg, ServerMsg};
@@ -107,6 +107,9 @@ pub async fn start(config: ServerConfig, hub: Hub) -> Result<ServerHandle, Serve
         parked: Default::default(),
     });
 
+    if state.config.dev_admin {
+        close_at_deadline(&state);
+    }
     let app = router(state.clone());
     let mut stop = shutdown_rx;
     let join = tokio::spawn(async move {
@@ -120,6 +123,32 @@ pub async fn start(config: ServerConfig, hub: Hub) -> Result<ServerHandle, Serve
     });
     tracing::info!("참여자 서버 시작: http://{local_addr}/");
     Ok(ServerHandle { local_addr, state, shutdown: shutdown_tx, join })
+}
+
+/// 개발 서버: 마감 동작이 '공유 닫기'인 업무는 마감 시각이 되면 공개를 멈춘다(호스트 앱의 `service::unpublish`와 같다 —
+/// 참여자는 '마감 시각이 지나 공유가 닫혔습니다'). `/__dev/publish`로 다시 공개한다.
+fn close_at_deadline(state: &Arc<AppState>) {
+    for (_, session) in state.hub.sessions() {
+        let (state, mut feed, mut stop) = (state.clone(), session.host_events(), state.shutdown.clone());
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    ev = feed.recv() => match ev {
+                        Ok(HostEvent::DeadlineClose) => {
+                            if let Some(slug) = state.hub.slug_of(&session)
+                                && let Some(s) = state.hub.unpublish_as(&slug, hub::Gone::Deadline)
+                            {
+                                state.parked.lock().unwrap().push((slug, s));
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        _ => {}
+                    },
+                    _ = stop.wait_for(|v| *v) => break,
+                }
+            }
+        });
+    }
 }
 
 fn router(state: Arc<AppState>) -> Router {
@@ -253,6 +282,12 @@ struct DevConfig {
     /// 참여자 열 너비·행 높이 조절 허용.
     #[serde(default)]
     resize: Option<bool>,
+    /// 참여자가 추가한 행 지우기 허용.
+    #[serde(default)]
+    delete_rows: Option<bool>,
+    /// 마감 시각이 되면(읽기 전용 / 공유 닫기, 모든 시트 공통).
+    #[serde(default)]
+    deadline_action: Option<collect_core::config::DeadlineAction>,
     /// 서식 정책·행 추가·크기 조절을 바꿀 시트(기본 첫 시트). 마감은 모든 시트가 같다.
     #[serde(default)]
     sheet: usize,
@@ -267,6 +302,9 @@ async fn dev_config(Picked(session): Picked, Json(req): Json<DevConfig>) -> Resp
             if let Some(d) = req.deadline {
                 s.sheets[0].config.deadline = (!d.is_empty()).then_some(d);
             }
+            if let Some(a) = req.deadline_action {
+                s.sheets[0].config.permissions.deadline_action = a;
+            }
             let config = &mut s.sheets[req.sheet].config;
             if let Some(f) = req.format {
                 config.permissions.format = f;
@@ -276,6 +314,9 @@ async fn dev_config(Picked(session): Picked, Json(req): Json<DevConfig>) -> Resp
             }
             if let Some(on) = req.resize {
                 config.permissions.resize = on;
+            }
+            if let Some(on) = req.delete_rows {
+                config.permissions.delete_rows = on;
             }
             s.changed();
             Ok("ok")

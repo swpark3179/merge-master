@@ -216,6 +216,26 @@
   z-index: 2;
 }
 
+/* 취소 행: 보이는 열 전체를 회색으로 덮고 가운데에 줄을 그어(빈 칸에도) 취소·삭제한 행처럼 보이게 한다.
+ * 칸 채우기·남의 행 바탕보다 위, 호스트 강조(아래에 정의)보다는 아래. */
+.mmg-cell.mmg-cancelled {
+  background-color: var(--cancel-bg) !important;
+  background-image: linear-gradient(
+    transparent calc(50% - 0.75px),
+    var(--cancel-line) calc(50% - 0.75px),
+    var(--cancel-line) calc(50% + 0.75px),
+    transparent calc(50% + 0.75px)
+  ) !important;
+  color: var(--cancel-ink) !important;
+  text-decoration: line-through;
+}
+
+.mmg-rowhead.mmg-cancelled-head {
+  text-decoration: line-through;
+  color: var(--cancel-ink);
+  background: var(--cancel-bg);
+}
+
 .peer-tag {
   position: absolute;
   left: -1px;
@@ -353,4 +373,178 @@
   font-size: 11px;
   white-space: nowrap;
   pointer-events: none;
+}
+
+/* 보이는 마지막 행 번호칸 아래 자리(rowFooter): 행 추가 단추 등 */
+.mmg-rowfoot {
+  position: absolute;
+  left: 0;
+  width: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mmg-add-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 20px;
+  padding: 0;
+  border: 1px dashed var(--field);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--accent);
+  font:
+    600 15px/1 system-ui,
+    sans-serif;
+  cursor: pointer;
+}
+
+.mmg-add-row:hover:not(:disabled) {
+  border-style: solid;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.mmg-add-row:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.mmg-add-row:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* ------------------------------------------------------------------ 오른쪽 클릭 메뉴(ContextMenu) */
+.mmg-menu {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  min-width: 210px;
+  max-width: 300px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(16, 24, 40, 0.18);
+  color: var(--ink);
+  font:
+    13px system-ui,
+    sans-serif;
+  animation: mm-drop var(--dur-fast) var(--ease-out);
+}
+
+.mmg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mmg-menu-item:hover:not(:disabled),
+.mmg-menu-item:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+.mmg-menu-item:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.mmg-menu-item.danger:not(:disabled) {
+  color: var(--danger);
+}
+
+.mmg-menu-item.danger:hover:not(:disabled),
+.mmg-menu-item.danger:focus-visible {
+  background: var(--danger-soft);
+}
+
+.mmg-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line-soft);
+}
+
+.mmg-menu-title {
+  padding: 4px 10px 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mmg-menu-note {
+  padding: 2px 10px 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mmg-menu-actions {
+  display: flex;
+  gap: 6px;
+  padding: 2px 10px 6px;
+}
+
+.mmg-menu-actions button {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mmg-menu-actions button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
+/* 크기 조절: 슬라이더(볼륨처럼) + 값 입력 */
+.mmg-size {
+  display: grid;
+  grid-template-columns: 1fr 72px auto;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 6px 10px;
+}
+
+.mmg-size-label {
+  color: var(--ink-2);
+}
+
+.mmg-size input[type="number"] {
+  box-sizing: border-box;
+  width: 72px;
+  padding: 2px 4px;
+  border: 1px solid var(--field);
+  border-radius: 4px;
+  font: inherit;
+  text-align: right;
+}
+
+.mmg-size-unit {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mmg-size input[type="range"] {
+  grid-column: 1 / -1;
+  width: 100%;
+  accent-color: var(--accent);
 }

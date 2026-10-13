@@ -113,6 +113,18 @@ pub enum OthersRows {
     Hidden,
 }
 
+/// 마감 시각이 되면 하는 일(1c '마감 시각이 되면'). 마감 시각은 호스트 PC 시계로 잰다.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum DeadlineAction {
+    /// 참여자 입력을 막는다(접속은 그대로, 보기만 한다).
+    #[default]
+    ReadOnly,
+    /// 이 업무의 공유를 닫는다(참여자 연결이 끊긴다). 같은 마감 시각으로는 한 번만 닫고, 호스트가 다시 열면 그대로 둔다.
+    StopSharing,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -121,16 +133,15 @@ pub struct Permissions {
     pub others_rows: OthersRows,
     pub filter_sort: bool,
     pub add_rows: bool,
-    /// 마감이 지나면 참여자 입력을 막는다(1c '마감 후 자동 읽기 전용').
-    #[serde(default = "yes")]
-    pub lock_after_deadline: bool,
+    /// 참여자가 자기가 추가한 행을 지울 수 있다(1b 참여자 권한 '행 삭제'). 기본은 금지.
+    #[serde(default)]
+    pub delete_rows: bool,
+    /// 마감 시각이 되면 읽기 전용으로 바꿀지 공유를 닫을지. 예전 '마감 후 자동 읽기 전용' 설정은 읽지 않는다(읽기 전용).
+    #[serde(default)]
+    pub deadline_action: DeadlineAction,
     /// 참여자가 열 너비·행 높이를 바꿀 수 있다(1b 참여자 권한 '크기 조절', 바꾸면 모두에게 보인다). 기본은 금지.
     #[serde(default)]
     pub resize: bool,
-}
-
-fn yes() -> bool {
-    true
 }
 
 impl Default for Permissions {
@@ -140,7 +151,8 @@ impl Default for Permissions {
             others_rows: OthersRows::ReadOnly,
             filter_sort: true,
             add_rows: false,
-            lock_after_deadline: true,
+            delete_rows: false,
+            deadline_action: DeadlineAction::ReadOnly,
             resize: false,
         }
     }
@@ -166,7 +178,7 @@ pub struct CollectConfig {
     pub permissions: Permissions,
 }
 
-/// 여러 시트를 함께 취합할 때 모든 시트가 같이 쓰는 설정: 제목·안내·요청자·마감·'마감 후 읽기 전용'과 직접 넣은 명단.
+/// 여러 시트를 함께 취합할 때 모든 시트가 같이 쓰는 설정: 제목·안내·요청자·마감·마감 동작과 직접 넣은 명단.
 /// 첫 시트의 설정이 주인이고, 세션이 바뀔 때마다 다른 시트 설정에 그대로 옮겨 적는다(나머지 설정은 시트마다 따로).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SessionCommon {
@@ -174,7 +186,7 @@ pub struct SessionCommon {
     pub description: String,
     pub requester: String,
     pub deadline: Option<String>,
-    pub lock_after_deadline: bool,
+    pub deadline_action: DeadlineAction,
     pub extra_people: Vec<String>,
 }
 
@@ -185,7 +197,7 @@ impl SessionCommon {
             description: c.description.clone(),
             requester: c.requester.clone(),
             deadline: c.deadline.clone(),
-            lock_after_deadline: c.permissions.lock_after_deadline,
+            deadline_action: c.permissions.deadline_action,
             extra_people: c.assignment.extra_people.clone(),
         }
     }
@@ -199,7 +211,7 @@ impl SessionCommon {
         c.description.clone_from(&self.description);
         c.requester.clone_from(&self.requester);
         c.deadline.clone_from(&self.deadline);
-        c.permissions.lock_after_deadline = self.lock_after_deadline;
+        c.permissions.deadline_action = self.deadline_action;
         c.assignment.extra_people.clone_from(&self.extra_people);
         true
     }
@@ -273,6 +285,60 @@ impl CollectConfig {
             assignment: Assignment::default(),
             permissions: Permissions::default(),
         }
+    }
+}
+
+impl ColumnRule {
+    /// 앱에서 붙인 열의 규칙: 입력 열, 글자, 필수·조회조건 아님.
+    pub fn input() -> Self {
+        Self { role: ColumnRole::Input, required: false, filter: false, format: InputFormat::Text, hint: String::new() }
+    }
+}
+
+/// 범위 목록에서 지운 줄을 당기고, 다 지워진 범위는 뺀다.
+fn retain_ranges<T>(
+    list: &mut Vec<T>,
+    range: impl Fn(&mut T) -> &mut CellRange,
+    map: impl Fn(&CellRange) -> Option<CellRange>,
+) {
+    list.retain_mut(|item| {
+        let r = range(item);
+        match map(r) {
+            Some(m) => {
+                *r = m;
+                true
+            }
+            None => false,
+        }
+    });
+}
+
+impl CollectConfig {
+    /// 표 오른쪽에 열을 붙였다: 열 규칙을 시트 열 수(`cols`)만큼 입력 열로 채운다.
+    pub fn on_cols_appended(&mut self, cols: u32) {
+        self.columns.resize(cols as usize, ColumnRule::input());
+    }
+
+    /// 행을 지웠다: 셀 예외·범위 배정을 당기거나 줄이고, 다 지워진 것은 뺀다.
+    pub fn on_rows_removed(&mut self, from: u32, count: u32) {
+        retain_ranges(&mut self.exceptions, |e| &mut e.range, |r| r.without_rows(from, count));
+        retain_ranges(&mut self.assignment.ranges, |a| &mut a.range, |r| r.without_rows(from, count));
+    }
+
+    /// 열을 지웠다: 열 규칙을 빼고, 셀 예외·범위 배정·행 배정 기준 열을 당긴다(기준 열을 지웠으면 행 배정 없음).
+    pub fn on_cols_removed(&mut self, from: u32, count: u32) {
+        let end = (from.saturating_add(count) as usize).min(self.columns.len());
+        if (from as usize) < end {
+            self.columns.drain(from as usize..end);
+        }
+        retain_ranges(&mut self.exceptions, |e| &mut e.range, |r| r.without_cols(from, count));
+        retain_ranges(&mut self.assignment.ranges, |a| &mut a.range, |r| r.without_cols(from, count));
+        self.assignment.key_col = self.assignment.key_col.and_then(|k| crate::a1::shift_after_removal(k, from, count));
+    }
+
+    /// 담당자를 배정했는가(행 배정 기준 열이나 범위 배정). 없으면 참여자 '내 담당만'이 뜻이 없어 숨긴다.
+    pub fn has_assignment(&self) -> bool {
+        self.assignment.key_col.is_some() || !self.assignment.ranges.is_empty()
     }
 }
 
@@ -415,6 +481,9 @@ pub(crate) mod tests {
             }],
             hidden_rows: vec![],
             hidden_cols: vec![],
+            added_rows: Vec::new(),
+            cancelled_rows: Vec::new(),
+            layout: 0,
         }
     }
 
@@ -452,7 +521,7 @@ pub(crate) mod tests {
         let mut first = CollectConfig::suggest(&m);
         first.title = "예산".into();
         first.deadline = Some("2026-10-31T18:00".into());
-        first.permissions.lock_after_deadline = false;
+        first.permissions.deadline_action = DeadlineAction::StopSharing;
         first.assignment.extra_people.push("정하늘".into());
         let mut other = CollectConfig::suggest(&m);
         other.permissions.add_rows = true; // 시트별 권한은 그대로
@@ -460,7 +529,7 @@ pub(crate) mod tests {
         assert!(common.write_to(&mut other));
         assert!(!common.write_to(&mut other), "같으면 바뀐 것 없음");
         assert_eq!((other.title.as_str(), other.deadline.as_deref()), ("예산", Some("2026-10-31T18:00")));
-        assert!(!other.permissions.lock_after_deadline && other.permissions.add_rows);
+        assert!(other.permissions.deadline_action == DeadlineAction::StopSharing && other.permissions.add_rows);
         assert_eq!(other.assignment.extra_people, ["정하늘"]);
     }
 
@@ -493,5 +562,39 @@ pub(crate) mod tests {
         assert!(json["assignment"]["keyCol"].is_null());
         let back: CollectConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn removed_lines_move_exceptions_assignments_and_key_column() {
+        let m = budget();
+        let mut cfg = assigned(&m);
+        let cols = cfg.columns.len() as u32;
+        cfg.on_cols_appended(cols + 2);
+        assert_eq!(cfg.columns.len() as u32, cols + 2);
+        assert_eq!(cfg.columns[cols as usize], ColumnRule::input());
+        cfg.exceptions.push(CellException {
+            range: CellRange::new(8, 0, 2, cols + 2),
+            kind: ExceptionKind::Input,
+            note: String::new(),
+        });
+        cfg.assignment.ranges.push(RangeAssignment {
+            range: CellRange::new(9, cols + 1, 1, 1),
+            person: "이서연".into(),
+            note: String::new(),
+        });
+        cfg.on_rows_removed(8, 1);
+        assert_eq!(cfg.exceptions[0].range, CellRange::new(8, 0, 1, cols + 2));
+        assert_eq!(cfg.assignment.ranges[0].range, CellRange::new(8, cols + 1, 1, 1));
+        cfg.on_cols_removed(cols, 1);
+        assert_eq!(cfg.columns.len() as u32, cols + 1);
+        assert_eq!(cfg.assignment.ranges[0].range.col, cols);
+        assert_eq!(cfg.assignment.key_col, Some(2), "앞쪽 기준 열은 그대로");
+        cfg.on_rows_removed(8, 1);
+        assert!(cfg.exceptions.is_empty() && cfg.assignment.ranges.is_empty(), "다 지워진 범위는 뺀다");
+        cfg.on_cols_removed(0, 1);
+        assert_eq!(cfg.assignment.key_col, Some(1));
+        assert!(cfg.has_assignment());
+        cfg.on_cols_removed(1, 1);
+        assert!(!cfg.has_assignment(), "기준 열을 지우면 행 배정 없음");
     }
 }
