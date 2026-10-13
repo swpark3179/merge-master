@@ -898,9 +898,13 @@ export function Workspace({ s }: { s: SessionState }) {
     );
     if (mode === "form") setFormRow(row);
     else {
-      // '+ 행 추가' 버튼에 있던 포커스를 놓아 새 칸으로 가면 곧바로 입력할 수 있게 한다.
-      if (document.activeElement instanceof HTMLElement && !gridHost.current?.contains(document.activeElement))
-        document.activeElement.blur();
+      // 행 추가 단추(＋, 행 번호 메뉴)에 있던 포커스를 놓아 새 칸으로 가면 곧바로 입력할 수 있게 한다.
+      const focused = document.activeElement;
+      if (
+        focused instanceof HTMLElement &&
+        (!gridHost.current?.contains(focused) || focused.closest(".mmg-rowfoot") !== null)
+      )
+        focused.blur();
       showInGrid(row);
     }
     // 새 행을 받은 시트(model)가 바뀐 뒤 한 번만 움직인다.
