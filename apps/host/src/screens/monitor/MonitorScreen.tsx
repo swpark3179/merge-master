@@ -95,6 +95,9 @@ interface Filter {
 
 const NO_FILTER: Filter = { values: {}, missingOnly: false, recentDeleted: false, person: null, column: null };
 
+/** 채팅 참조로 간 범위를 표시해 두는 시간(ms): 그리드의 `mm-ping`(900ms)이 끝난 뒤 뗀다. */
+const PING_MS = 1000;
+
 /** 시트를 받기 전 편집기에 줄 빈 시트. */
 const EMPTY_MODEL: SheetModel = {
   workbook: "",
@@ -224,6 +227,14 @@ function SheetMonitor({
   const [activity, setActivity] = useState<Activity | null>(null);
   const [selection, setSelection] = useState<GridSelection | null>(null);
   const [filter, setFilter] = useState<Filter>(NO_FILTER);
+  /** 채팅 참조·활동으로 간 범위: 테두리가 두 번 깜빡인다(`PING_MS` 뒤에 뗀다). */
+  const [ping, setPing] = useState<{ range: CellRange; seq: number } | null>(null);
+  const pingSeq = useRef(0);
+  useEffect(() => {
+    if (!ping) return;
+    const id = window.setTimeout(() => setPing(null), PING_MS);
+    return () => window.clearTimeout(id);
+  }, [ping]);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -390,11 +401,27 @@ function SheetMonitor({
     return i >= 0 ? personColor(i) : "#222";
   };
 
-  /** 그 시트의 칸으로 간다(다른 시트면 탭을 바꾼다, 필터에 걸려 숨었으면 필터를 지운다). */
+  /** 보고 있는 시트의 범위를 선택하고 테두리를 깜빡인다(필터에 걸려 숨은 행이 있으면 필터를 지운다). */
+  const selectRange = (r: CellRange) => {
+    if (!model) return;
+    const row = Math.max(0, r.row);
+    const col = Math.max(0, r.col);
+    const rows = Math.min(model.rows, r.row + r.rows) - row;
+    const cols = Math.min(model.cols, r.col + r.cols) - col;
+    if (rows <= 0 || cols <= 0) return;
+    for (let y = row; y < row + rows; y++)
+      if (hidden.has(y)) {
+        setFilter(NO_FILTER);
+        break;
+      }
+    const last = { row: row + rows - 1, col: col + cols - 1 };
+    requestAnimationFrame(() => grid.current?.select({ anchor: { row, col }, focus: last }));
+    setPing({ range: { row, col, rows, cols }, seq: ++pingSeq.current });
+  };
+  /** 그 시트의 범위로 간다(다른 시트면 탭을 바꾼 뒤). */
   const reveal = (s: number, r: CellRange) => {
     if (s !== sheet) return onGoto({ sheet: s, range: r });
-    if (hidden.has(r.row)) setFilter(NO_FILTER);
-    requestAnimationFrame(() => grid.current?.reveal({ row: r.row, col: r.col }));
+    selectRange(r);
   };
   /** 시트 주소 범위(채팅 #참조, 시트 이름이 없으면 보고 있는 시트) → 그 시트의 모델 좌표로 옮겨서 간다. */
   const revealSheet = (r: CellRange, name?: string) => {
@@ -408,7 +435,9 @@ function SheetMonitor({
   useEffect(() => {
     if (!ready || !goto) return;
     onArrived();
-    requestAnimationFrame(() => grid.current?.reveal({ row: goto.row, col: goto.col }));
+    selectRange(goto);
+    // selectRange는 다 읽은 지금의 모델·필터로 정해진다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, goto, onArrived]);
 
   // ------------------------------------------------------------ 그리드 장식
@@ -773,6 +802,7 @@ function SheetMonitor({
             model={viewModel}
             decorate={decorate}
             marks={marks}
+            ranges={ping ? [{ key: `ping${ping.seq}`, range: ping.range, kind: "ping" }] : undefined}
             cellText={cellText}
             rowMarker={(r) => {
               const o = view.rowOwner[r] ?? -1;

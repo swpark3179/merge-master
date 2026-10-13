@@ -1,4 +1,13 @@
-import type { CellDecoration, EditorState, GridHit, GridMark, GridSelection, Move, SheetGridHandle } from "@mm/grid";
+import type {
+  CellDecoration,
+  EditorState,
+  GridHit,
+  GridMark,
+  GridRange,
+  GridSelection,
+  Move,
+  SheetGridHandle,
+} from "@mm/grid";
 import {
   CellEditor,
   ContextMenu,
@@ -12,9 +21,21 @@ import {
   SheetGrid,
   SizeControl,
   toTsv,
+  trimHiddenRows,
 } from "@mm/grid";
 import type { Axis, CellRange, CellRef, HAlign, SheetModel, StylePatch } from "@mm/shared";
-import { a1, colLetters, displayValue, editText, FLAG, normalize, personColor, rgbHex, sheetPrefix } from "@mm/shared";
+import {
+  a1,
+  colLetters,
+  displayValue,
+  editText,
+  FLAG,
+  formatRange,
+  normalize,
+  personColor,
+  rgbHex,
+  sheetPrefix,
+} from "@mm/shared";
 import type { ClipboardEvent, CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -94,6 +115,18 @@ function rectOf(sel: GridSelection): CellRange {
     rows: Math.abs(sel.anchor.row - sel.focus.row) + 1,
     cols: Math.abs(sel.anchor.col - sel.focus.col) + 1,
   };
+}
+
+/** 채팅 참조로 간 범위를 표시해 두는 시간(ms): 그리드의 `mm-ping`(900ms)이 끝난 뒤 뗀다. */
+const PING_MS = 1000;
+
+/** 범위를 시트 안으로 줄인다(채팅에 적힌 주소가 시트보다 클 수 있다). 시트 밖이면 `null`. */
+function clampTo(model: Pick<SheetModel, "rows" | "cols">, r: CellRange): CellRange | null {
+  const row = Math.max(0, r.row);
+  const col = Math.max(0, r.col);
+  const rows = Math.min(model.rows, r.row + r.rows) - row;
+  const cols = Math.min(model.cols, r.col + r.cols) - col;
+  return rows > 0 && cols > 0 ? { row, col, rows, cols } : null;
 }
 
 /** 사이드바를 열어 둘지(주소 경로마다 기억). 처음에는 넓은 화면이면 연다. */
@@ -186,6 +219,14 @@ export function Workspace({ s }: { s: SessionState }) {
   const [chatSeen, setChatSeen] = useState(0);
   const [menu, setMenu] = useState<HeaderMenu | null>(null);
   const onChatSeen = useCallback((id: number) => setChatSeen((x) => Math.max(x, id)), []);
+  /** 채팅 참조·강조로 간 범위: 테두리가 두 번 깜빡인다(`PING_MS` 뒤에 뗀다). */
+  const [ping, setPing] = useState<{ sheet: number; range: CellRange; seq: number } | null>(null);
+  const pingSeq = useRef(0);
+  useEffect(() => {
+    if (!ping) return;
+    const id = window.setTimeout(() => setPing(null), PING_MS);
+    return () => window.clearTimeout(id);
+  }, [ping]);
   const editorRef = useRef<ActiveEdit | null>(null);
   editorRef.current = editor;
   const input = useRef<HTMLTextAreaElement>(null);
@@ -733,6 +774,9 @@ export function Workspace({ s }: { s: SessionState }) {
     });
   }
 
+  const gridRanges: GridRange[] = [];
+  if (ping && ping.sheet === active) gridRanges.push({ key: `ping${ping.seq}`, range: ping.range, kind: "ping" });
+
   /** 입력할 수 없는 칸에 쓰려 하면 잠깐 내 담당 칸을 깜빡인다(두 번 깜빡이는 동안만 둔다). */
   const [mineHint, setMineHint] = useState(false);
   useEffect(() => {
@@ -772,7 +816,12 @@ export function Workspace({ s }: { s: SessionState }) {
     s.cursor(back?.selection?.anchor ?? null);
   };
 
-  /** 그 칸(그 시트의 모델 좌표)으로 간다. 다른 시트면 시트를 바꾸고, 필터에 걸려 숨었으면 필터를 지운다. */
+  const othersRows = useMemo(() => new Set(model.hiddenRows), [model]);
+
+  /**
+   * 그 범위(그 시트의 모델 좌표)를 선택한다. 다른 시트면 시트를 바꾸고, 필터에 걸려 숨은 행이 있으면 필터를 지운다.
+   * 앞뒤로 걸친 남의 행은 잘라 내고 보이는 부분만 고른다.
+   */
   const revealRange = (range: CellRange, highlight?: number, target: number = active) => {
     if (highlight !== undefined) s.ackHighlight(highlight);
     if (mode !== "grid") setMode("grid");
@@ -782,12 +831,24 @@ export function Workspace({ s }: { s: SessionState }) {
       setPendingReveal({ sheet: target, range });
       return;
     }
-    if (hidden.has(range.row)) setFilter(NO_FILTER);
-    if (model.hiddenRows.includes(range.row)) {
+    const inSheet = clampTo(model, range);
+    const shown = inSheet && trimHiddenRows(inSheet, (r) => othersRows.has(r));
+    if (!inSheet || !shown) {
       notify("그 칸은 이 화면에서 볼 수 없습니다(남의 행)", "warn");
       return;
     }
-    requestAnimationFrame(() => grid.current?.reveal({ row: range.row, col: range.col }));
+    if (shown.rows < inSheet.rows) {
+      const where = formatRange({ ...shown, row: model.origin.row + shown.row, col: model.origin.col + shown.col });
+      notify(`일부 행은 볼 수 없어 보이는 부분(${where})만 선택했습니다`, "warn");
+    }
+    for (let r = shown.row; r < shown.row + shown.rows; r++)
+      if (hidden.has(r)) {
+        setFilter(NO_FILTER);
+        break;
+      }
+    const last = { row: shown.row + shown.rows - 1, col: shown.col + shown.cols - 1 };
+    requestAnimationFrame(() => grid.current?.select({ anchor: { row: shown.row, col: shown.col }, focus: last }));
+    setPing({ sheet: active, range: shown, seq: ++pingSeq.current });
   };
 
   // 시트를 바꾼 뒤(새 시트를 그린 뒤) 가려던 칸을 보인다.
@@ -1231,6 +1292,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 model={view}
                 decorate={decorate}
                 marks={marks}
+                ranges={gridRanges}
                 rowMarker={rowMarker}
                 cellText={cellText}
                 selection={selection}
