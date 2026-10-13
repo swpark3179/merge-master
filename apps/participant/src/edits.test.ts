@@ -34,11 +34,13 @@ function welcome(over: Partial<SheetView> = {}): SheetView {
       othersRows: "readOnly",
       filterSort: true,
       addRows: false,
-      lockAfterDeadline: true,
+      deleteRows: false,
+      deadlineAction: "readOnly",
       resize: false,
     },
     rowOwner: [-1, 2, 2],
     progress: { name: "김민지", rows: 2, required: 0, filled: 0 },
+    assigned: true,
     ...over,
   };
 }
@@ -69,6 +71,26 @@ describe("EditState", () => {
     expect(s.canUndo()).toBe(true);
     s.load({ ...next, model: { ...next.model, sheet: "다른 시트", rows: 2, cells: next.model.cells.slice(0, 4) } });
     expect(s.canUndo()).toBe(false);
+  });
+
+  it("행·열을 지워 구조 판이 바뀌면 되돌리기를 지우고, 그 전 묶음은 새 시트에 그리지 않는다", () => {
+    const w = welcome();
+    const s = new EditState(w, "c");
+    const b = s.edit([{ row: 2, col: 1, value: 7 }])!;
+    expect(b.layout).toBe(0);
+    // 오른쪽에 열만 붙은 것(같은 판)은 좌표가 그대로다: 되돌리기·대기 칸 모두 남는다.
+    const wide: SheetView = {
+      ...w,
+      model: { ...w.model, cols: 3, cells: Array.from({ length: 9 }, () => ({ s: 0 })), colWidths: [60, 60, 60] },
+    };
+    s.load(wide);
+    expect(s.canUndo()).toBe(true);
+    expect(s.value(2, 1)).toBe(7);
+    // 앱에서 붙인 행을 지웠다(판 1): 이 묶음은 서버가 받지 않으니 밀린 칸에 그리지 않는다.
+    s.load({ ...wide, model: { ...wide.model, layout: 1, cells: Array.from({ length: 9 }, () => ({ s: 0 })) } });
+    expect(s.canUndo()).toBe(false);
+    expect(s.value(2, 1)).toBeNull();
+    expect(s.edit([{ row: 1, col: 1, value: 1 }])!.layout).toBe(1);
   });
 
   it("낙관적으로 그리고, 답이 오면 서버가 정규화한 값으로 바꾼다", () => {

@@ -63,3 +63,9 @@ export function filteredOut(model: SheetModel, flags: Uint8Array, myRows: Uint8A
   }
   return out;
 }
+
+/** 조회조건 항목 검색: 대소문자·앞뒤 공백을 가리지 않는 부분 일치(나온 순서 그대로). 빈 검색어면 모두. */
+export function matchOptions(options: readonly string[], query: string): string[] {
+  const q = query.trim().toLocaleLowerCase();
+  return q ? options.filter((o) => o.toLocaleLowerCase().includes(q)) : [...options];
+}

@@ -27,8 +27,10 @@ import {
   displayValue,
   FLAG,
   FLASH_MS,
+  parseDeadline,
   personColor,
-  remaining,
+  remainingAt,
+  remainingTick,
   scrollBehavior,
   sheetPrefix,
   splitCellRefs,
@@ -255,6 +257,7 @@ function SheetMonitor({
   useEffect(() => {
     const off = listen<HostEvent>(jobEvent("sheet-changes", job), (e) => {
       const ev = e.payload;
+      if (ev.type === "deadlineClose") return; // 공유 닫기는 호스트 앱이 한다(1c·사이드바에 보인다)
       if (ev.type === "reset") {
         void load();
         return;
@@ -311,11 +314,18 @@ function SheetMonitor({
     return () => window.clearTimeout(id);
   }, [status]);
 
-  // 마감 카운트다운
+  // 마감 카운트다운(이 PC 시계 = 마감을 재는 시계). 2분 안쪽은 1초마다, 그 밖은 15초마다.
+  const due = parseDeadline(data?.view.config.deadline)?.getTime();
   useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(id);
-  }, []);
+    let timer: number;
+    const tick = () => {
+      const t = Date.now();
+      setNow(t);
+      timer = window.setTimeout(tick, remainingTick(due, t));
+    };
+    tick();
+    return () => window.clearTimeout(timer);
+  }, [due]);
 
   const flags = useMemo(() => (data ? decodeFlags(data.view.flags) : new Uint8Array()), [data]);
   const model = data?.model;
@@ -547,7 +557,7 @@ function SheetMonitor({
   // 머리의 진행률·담당자별은 모든 시트 합(시트가 하나면 그 시트), 열별 완료는 보고 있는 시트.
   const total = many && snapshot ? { filled: snapshot.filled, required: snapshot.required } : p;
   const pct = total && total.required > 0 ? Math.round((total.filled / total.required) * 100) : 0;
-  const left = remaining(view?.config.deadline, new Date(now));
+  const left = remainingAt(due, now);
   const people = snapshot?.participants ?? [];
   const unread = (comms?.chat ?? []).filter((m) => !m.host && m.id > chatSeen).length;
   const sel = useMemo(

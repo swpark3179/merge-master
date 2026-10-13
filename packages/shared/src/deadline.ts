@@ -29,15 +29,30 @@ export function dday(text: string | undefined | null, now: Date = new Date()): s
   return days <= 0 ? "D-day" : `D-${days}`;
 }
 
-/** 마감까지 남은 시간: `"2일 3시간"`, `"3시간 20분"`, `"12분"`, 지났으면 `"마감 지남"`. 마감이 없으면 빈 글자. */
-export function remaining(text: string | undefined | null, now: Date = new Date()): string {
-  const d = parseDeadline(text);
-  if (!d) return "";
-  const mins = Math.floor((d.getTime() - now.getTime()) / 60_000);
-  if (mins <= 0) return "마감 지남";
+/**
+ * 마감까지 남은 시간(유닉스 ms끼리): `"2일 3시간"`, `"3시간 20분"`, `"12분"`, 1분 안쪽은 `"40초"`, 마감 시각부터
+ * `"마감 지남"`. 분은 올려 센다(1분 30초 남았으면 `"2분"` — 서버가 막기 전에 '마감 지남'이 먼저 보이지 않게).
+ * 마감이 없으면 빈 글자.
+ */
+export function remainingAt(dueMs: number | null | undefined, nowMs: number): string {
+  if (dueMs == null || !Number.isFinite(dueMs)) return "";
+  const left = dueMs - nowMs;
+  if (left <= 0) return "마감 지남";
+  if (left < 60_000) return `${Math.ceil(left / 1000)}초`;
+  const mins = Math.ceil(left / 60_000);
   const days = Math.floor(mins / 1440);
   const hours = Math.floor((mins % 1440) / 60);
   if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
-  if (hours > 0) return `${hours}시간 ${mins % 60}분`;
+  if (hours > 0) return mins % 60 > 0 ? `${hours}시간 ${mins % 60}분` : `${hours}시간`;
   return `${mins}분`;
+}
+
+/** [`remainingAt`]과 같지만 마감 글자(`YYYY-MM-DDTHH:MM`, 이 기기의 시각으로 읽는다)로. 호스트 화면이 쓴다. */
+export function remaining(text: string | undefined | null, now: Date = new Date()): string {
+  return remainingAt(parseDeadline(text)?.getTime(), now.getTime());
+}
+
+/** 남은 시간 표시를 다시 그릴 간격(ms): 2분 안쪽은 1초마다, 그 밖은 15초마다. */
+export function remainingTick(dueMs: number | null | undefined, nowMs: number): number {
+  return dueMs != null && dueMs - nowMs < 120_000 ? 1_000 : 15_000;
 }

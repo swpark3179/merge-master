@@ -31,6 +31,9 @@ interface Props {
 /** 바뀐 칸 표시 색(연한 노랑). */
 const MARK = 0xfff3b0;
 
+/** 저장 중 단추 글자. */
+const SAVING = "저장하는 중…";
+
 function show(v: CellValue | undefined): string {
   if (v === undefined || v === null || v === "") return "(빈 칸)";
   if (typeof v === "number") return v.toLocaleString(undefined, { maximumFractionDigits: 6 });
@@ -70,6 +73,8 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
   const [history, setHistory] = useState(true);
   const [mark, setMark] = useState(false);
   const [styles, setStyles] = useState(true);
+  /** 취소 표시한 행에 취소선 + 회색 채우기를 쓴다. */
+  const [cancelled, setCancelled] = useState(true);
   const [after, setAfter] = useState<AfterSave>("keep");
   const [check, setCheck] = useState<SaveCheck | null>(null);
   /** 충돌 칸 → 어느 값을 쓸지. */
@@ -104,7 +109,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
 
   const options: SaveOptions = {
     target: target === "original" ? { kind: "original" } : { kind: "copy", path },
-    export: { mark: mark ? MARK : undefined, styles, history },
+    export: { mark: mark ? MARK : undefined, styles, history, cancelled },
     after,
   };
 
@@ -122,7 +127,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
 
   /** 저장: 먼저 원본과 비교하고, 고를 것이 없으면 바로 저장한다. */
   const onSave = () =>
-    run("저장하는 중…", async () => {
+    run(SAVING, async () => {
       setResult(null);
       const c = await api.saveCheck(options);
       const needsReview = c.sheets.some((x) => x.report.conflicts.length > 0) || c.suspicious || c.targetExists;
@@ -196,6 +201,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
             {result.report.merges > 0 ? ` · 병합 ${result.report.merges}` : ""}
             {result.report.resized > 0 ? ` · 크기 ${result.report.resized}줄` : ""}
             {result.report.inserted > 0 ? ` · 추가한 행 ${result.report.inserted}개` : ""}
+            {result.report.insertedCols > 0 ? ` · 추가한 열 ${result.report.insertedCols}개` : ""}
             {result.report.historySheet ? ` · ‘${result.report.historySheet}’ 시트` : ""}
             {result.kept > 0 ? ` · Excel 값 유지 ${result.kept}칸` : ""} ·{" "}
             {ok ? "다시 읽어 확인함" : `다시 읽었더니 다른 칸 ${result.report.mismatched.length}개`} ·{" "}
@@ -260,8 +266,18 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
               </span>
               <span>마지막 변경 {s.lastChangeMs ? clock(s.lastChangeMs) : "–"}</span>
               {s.addedRows > 0 && (
-                <span title="참여자가 표 아래에 추가한 행. 저장하면 Excel 표 아래에 끼워 넣습니다">
+                <span title="앱에서 표 아래에 추가한 행. 저장하면 Excel 표 아래에 끼워 넣습니다">
                   추가된 행 <b>{s.addedRows.toLocaleString()}</b>
+                </span>
+              )}
+              {s.addedCols > 0 && (
+                <span title="앱에서 표 오른쪽에 추가한 열. 저장하면 Excel 표 오른쪽에 끼워 넣습니다">
+                  추가된 열 <b>{s.addedCols.toLocaleString()}</b>
+                </span>
+              )}
+              {s.cancelledRows > 0 && (
+                <span title="취소 표시한 행(필수 칸으로 세지 않습니다)">
+                  취소 행 <b>{s.cancelledRows.toLocaleString()}</b>
                 </span>
               )}
               {s.unassigned > 0 && <span>담당자 없는 필수 칸 {s.unassigned}(누구나 입력)</span>}
@@ -286,6 +302,8 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
                         : "필수 칸 모두 채움"}
                     </span>
                     {x.addedRows > 0 && <span>추가된 행 {x.addedRows.toLocaleString()}</span>}
+                    {x.addedCols > 0 && <span>추가된 열 {x.addedCols.toLocaleString()}</span>}
+                    {x.cancelledRows > 0 && <span>취소 행 {x.cancelledRows.toLocaleString()}</span>}
                     {x.styleCells > 0 && <span className="muted">서식 {x.styleCells.toLocaleString()}칸</span>}
                   </div>
                 ))}
@@ -376,7 +394,7 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
             <div className="row">
               <button
                 disabled={busy !== null || !reviewReady}
-                onClick={() => check && void run("저장하는 중…", () => doSaveWith(check, choice, force))}
+                onClick={() => check && void run(SAVING, () => doSaveWith(check, choice, force))}
               >
                 이대로 저장
               </button>
@@ -468,6 +486,13 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
                   )
                 </label>
               )}
+              {s && (s.cancelledRows > 0 || s.cancelChanges > 0) && (
+                <label className="check">
+                  <input type="checkbox" checked={cancelled} onChange={(e) => setCancelled(e.target.checked)} />
+                  취소 표시한 행: 취소선 + 회색 채우기 ({s.cancelledRows.toLocaleString()}행
+                  {s.cancelChanges > s.cancelledRows ? ` · 표시를 푼 행은 원래 서식으로` : ""})
+                </label>
+              )}
               <span className="muted small">
                 수식 칸과 원래 서식은 건드리지 않습니다. 수식은 저장할 때 Excel이 다시 계산합니다.
               </span>
@@ -504,29 +529,27 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
             disabled={busy !== null || check !== null || (target === "copy" && !path.trim())}
             onClick={() => void onSave()}
           >
-            {busy ?? "저장하기"}
+            {busy === SAVING ? busy : "저장하기"}
+          </button>
+          <button
+            className="ghost"
+            disabled={busy !== null}
+            onClick={onEndJob}
+            title="저장하지 않고 이 업무를 끝내고 목록에서 뺍니다(저장하지 않은 변경이 있으면 한 번 더 묻습니다)"
+          >
+            저장 없이 업무 끝내기
           </button>
           <span className="spacer" />
-          {info.closed ? (
+          {info.closed && (
+            // 저장 뒤 '읽기 전용으로 전환'으로 마감한 업무를 다시 여는 길.
             <button
               className="ghost"
               disabled={busy !== null}
-              onClick={() => void run("", () => api.collectClose(false).then(reload))}
+              onClick={() => void run("다시 여는 중…", () => api.collectClose(false).then(reload))}
             >
-              취합 다시 열기
-            </button>
-          ) : (
-            <button
-              className="ghost"
-              disabled={busy !== null}
-              onClick={() => void run("", () => api.collectClose(true).then(reload))}
-            >
-              저장 없이 취합 마감
+              {busy === "다시 여는 중…" ? busy : "취합 다시 열기"}
             </button>
           )}
-          <button className="ghost" disabled={busy !== null} onClick={onEndJob} title="이 업무를 목록에서 뺍니다">
-            업무 끝내기
-          </button>
         </div>
 
         {s && people.length > 0 && (

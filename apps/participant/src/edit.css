@@ -136,6 +136,32 @@ button.link:hover:not(:disabled) {
   color: var(--muted);
 }
 
+/* 글자색: '가' 아래에 지금 글자색 밑줄, 목록은 그 색의 '가' */
+.text-color-mark {
+  display: inline-block;
+  padding: 0 1px;
+  border-bottom: 3px solid currentColor;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.swatch.text-swatch {
+  background: #fff;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+/* 취소 행 토글: 눌리면 회색 바탕(취소 행과 같은 색) */
+.toolbar .cancel-toggle.on {
+  background: var(--cancel-bg);
+  border-color: var(--cancel-line);
+  color: var(--cancel-ink);
+}
+
+.row-add {
+  margin: 6px 8px;
+}
+
 .mode-tabs {
   display: flex;
   border: 1.5px solid var(--ink);
@@ -173,6 +199,104 @@ button.link:hover:not(:disabled) {
   border-radius: 6px;
   background: #fff;
   font: inherit;
+}
+
+/* 조회조건 검색 콤보: 단추는 예전 드롭다운 모양, 펼치면 검색 칸 + 목록 */
+.filter-bar .filter {
+  display: inline-flex;
+  align-items: center;
+}
+
+.search-select {
+  position: relative;
+  margin-left: 4px;
+}
+
+.search-select > button {
+  height: 28px;
+  max-width: 220px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+
+.search-select > button.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.search-select > button .value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-select-pop {
+  position: absolute;
+  z-index: 30;
+  top: 32px;
+  left: 0;
+  width: 240px;
+  padding: 6px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(16, 24, 40, 0.14);
+  animation: mm-drop var(--dur-fast) var(--ease-out);
+}
+
+.search-select-pop input {
+  box-sizing: border-box;
+  width: 100%;
+  height: 28px;
+  margin-bottom: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--field);
+  border-radius: 5px;
+  font: inherit;
+}
+
+.search-select-pop ul {
+  max-height: 260px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.search-select-pop li {
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-select-pop li.all {
+  color: var(--muted);
+}
+
+.search-select-pop li.hi {
+  background: var(--hover);
+}
+
+.search-select-pop li[aria-selected="true"] {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.search-select-pop li.empty {
+  color: var(--muted);
+  cursor: default;
 }
 
 .filter-bar .check {

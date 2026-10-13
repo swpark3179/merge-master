@@ -35,8 +35,10 @@ export {
   countCells,
   expandToMerges,
   intersects,
+  lineSelection,
   rowSelection,
+  selectForMenu,
   selectionRange,
 } from "./selection";
-export type { GridSelection } from "./selection";
+export type { GridSelection, LineHit } from "./selection";
 export { resizeRuns, resizeSpan, withLineSize } from "./sizes";

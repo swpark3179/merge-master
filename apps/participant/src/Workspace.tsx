@@ -1,28 +1,32 @@
-import type { CellDecoration, EditorState, GridMark, GridSelection, Move, SheetGridHandle } from "@mm/grid";
-import { CellEditor, fitRowHeights, parseTsv, resizeRuns, SheetGrid, toTsv } from "@mm/grid";
-import type { Axis, CellRange, CellRef, SheetModel, StylePatch } from "@mm/shared";
+import type { CellDecoration, EditorState, GridHit, GridMark, GridSelection, Move, SheetGridHandle } from "@mm/grid";
 import {
-  a1,
-  displayValue,
-  editText,
-  FLAG,
-  formatDeadline,
-  normalize,
-  parseDeadline,
-  personColor,
-  remaining,
-  sheetPrefix,
-} from "@mm/shared";
-import type { ClipboardEvent, CSSProperties, KeyboardEvent } from "react";
+  CellEditor,
+  ContextMenu,
+  fitRowHeights,
+  MenuItem,
+  MenuNote,
+  MenuSep,
+  parseTsv,
+  resizeRuns,
+  selectForMenu,
+  SheetGrid,
+  SizeControl,
+  toTsv,
+} from "@mm/grid";
+import type { Axis, CellRange, CellRef, HAlign, SheetModel, StylePatch } from "@mm/shared";
+import { a1, colLetters, displayValue, editText, FLAG, normalize, personColor, rgbHex, sheetPrefix } from "@mm/shared";
+import type { ClipboardEvent, CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { BenchResult } from "./bench";
 import { runScrollBench } from "./bench";
+import { DeadlineClock } from "./DeadlineClock";
 import type { RowFilter } from "./filters";
 import { filteredOut, filterOptions, isFiltering, myRowsOf, NO_FILTER, withHiddenRows } from "./filters";
 import type { BulkResult, EditContext } from "./gridOps";
 import { canEdit, clearRange, copyRange, pasteRange } from "./gridOps";
 import { RowForm } from "./RowForm";
+import { SearchSelect } from "./SearchSelect";
 import type { PanelTab } from "./SidePanel";
 import { clampSideWidth, SIDE_WIDTH, SidePanel } from "./SidePanel";
 import { storageSlug } from "./slug";
@@ -33,8 +37,46 @@ const FILLS: { label: string; rgb: number | null }[] = [
   { label: "초록", rgb: 0xd9f2e3 },
   { label: "파랑", rgb: 0xdbe8f8 },
   { label: "분홍", rgb: 0xfadbe6 },
+  { label: "빨강", rgb: 0xea2a2a },
+  { label: "진한 노랑", rgb: 0xffff00 },
+  { label: "진한 파랑", rgb: 0x0000ff },
   { label: "채우기 없음", rgb: null },
 ];
+
+/** 글자색(채우기처럼 골라 바꾼다). 검정이 기본 글자색이다. */
+const TEXT_COLORS: { label: string; rgb: number }[] = [
+  { label: "검정", rgb: 0x000000 },
+  { label: "빨강", rgb: 0xea2a2a },
+  { label: "진한 파랑", rgb: 0x0000ff },
+  { label: "진한 노랑", rgb: 0xffff00 },
+  { label: "회색", rgb: 0x7f7f7f },
+];
+
+const ALIGNS: { value: HAlign; label: string; icon: ReactNode }[] = [
+  { value: "left", label: "왼쪽 맞춤", icon: <AlignIcon lines={[16, 10, 14]} anchor="start" /> },
+  { value: "center", label: "가운데 맞춤", icon: <AlignIcon lines={[16, 10, 14]} anchor="middle" /> },
+  { value: "right", label: "오른쪽 맞춤", icon: <AlignIcon lines={[16, 10, 14]} anchor="end" /> },
+];
+
+/** 맞춤 단추 그림: 길이가 다른 가로줄 셋을 왼쪽·가운데·오른쪽에 맞춘다. */
+function AlignIcon({ lines, anchor }: { lines: number[]; anchor: "start" | "middle" | "end" }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 20 20" aria-hidden>
+      {lines.map((w, i) => {
+        const x = anchor === "start" ? 2 : anchor === "end" ? 18 - w : 10 - w / 2;
+        return <rect key={i} x={x} y={4 + i * 5} width={w} height={2} rx={1} fill="currentColor" />;
+      })}
+    </svg>
+  );
+}
+
+/** 오른쪽 클릭 메뉴(행·열 머리글). `confirm`: 값이 있는 행을 지우기 전 확인 중(지울 칸 수). */
+interface HeaderMenu {
+  x: number;
+  y: number;
+  hit: Exclude<GridHit, { kind: "cell" }>;
+  confirm?: number;
+}
 
 interface ActiveEdit {
   at: CellRef;
@@ -142,13 +184,7 @@ export function Workspace({ s }: { s: SessionState }) {
     [setSideOpen],
   );
   const [chatSeen, setChatSeen] = useState(0);
-  /** 마감까지 남은 시간(분 단위로 보이므로 30초마다 다시 센다). */
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!w.session.deadline) return;
-    const id = window.setInterval(() => setNow(Date.now()), 30_000);
-    return () => window.clearInterval(id);
-  }, [w.session.deadline]);
+  const [menu, setMenu] = useState<HeaderMenu | null>(null);
   const onChatSeen = useCallback((id: number) => setChatSeen((x) => Math.max(x, id)), []);
   const editorRef = useRef<ActiveEdit | null>(null);
   editorRef.current = editor;
@@ -489,6 +525,183 @@ export function Workspace({ s }: { s: SessionState }) {
     if (!sent) notify("연결이 끊겨 크기를 바꾸지 못했습니다. 다시 연결되면 해 주세요", "warn");
   };
 
+  // ------------------------------------------------------------ 취소 행·행 추가·행 삭제
+
+  // 담당자를 배정하지 않은 시트에는 '내 담당만'이 없다(시트를 오가며 기억한 필터에 남아 있어도 끈다).
+  useEffect(() => {
+    if (!sv.assigned && filter.mineOnly) setFilter((f) => ({ ...f, mineOnly: false }));
+  }, [sv.assigned, filter.mineOnly]);
+
+  const cancelled = useMemo(() => new Set(model.cancelledRows ?? []), [model]);
+  /** 취소 표시를 바꿀 행: 그리드면 고른 범위의 보이는 데이터 행(이어진 구간마다), 행 단위 입력이면 그 행. */
+  const targetRuns = (): { from: number; count: number }[] => {
+    if (mode === "form") return formRow !== null ? [{ from: formRow, count: 1 }] : [];
+    if (!selection) return [];
+    const r = rectOf(selection);
+    const shown = new Set(view.hiddenRows);
+    const out: { from: number; count: number }[] = [];
+    for (let row = Math.max(r.row, model.headerRows); row < r.row + r.rows; row++) {
+      if (shown.has(row)) continue;
+      const last = out[out.length - 1];
+      if (last && last.from + last.count === row) last.count++;
+      else out.push({ from: row, count: 1 });
+    }
+    return out;
+  };
+  const activeRow = mode === "form" ? formRow : (at?.row ?? null);
+  const activeCancelled = activeRow !== null && cancelled.has(activeRow);
+  /** 고른 행을 취소 표시하거나 푼다(내가 입력할 수 있는 칸이 있는 행만). */
+  const toggleCancel = (on: boolean, runs = targetRuns()) => {
+    if (runs.length === 0) return notify("취소 표시할 데이터 행을 고르세요", "warn");
+    for (const { from, count } of runs)
+      for (let r = from; r < from + count; r++)
+        if (!myRows[r]) return notify("내가 입력할 수 있는 행만 취소 표시할 수 있습니다", "warn");
+    if (editorRef.current) leave();
+    let sent = true;
+    for (const { from, count } of runs) sent = s.cancelRows(from, count, on) && sent;
+    if (!sent) notify("연결이 끊겨 취소 표시를 바꾸지 못했습니다. 다시 연결되면 해 주세요", "warn");
+  };
+
+  const addRow = () => {
+    if (editorRef.current) leave();
+    if (!s.addRows(1)) notify("연결이 끊겨 행을 추가하지 못했습니다. 다시 연결되면 해 주세요", "warn");
+  };
+
+  /** 내가 추가한 행인가(지울 수 있는 행). */
+  const mine = (r: number) => (model.addedRows ?? []).some((a) => a.row === r && a.by === w.name);
+
+  // 칸 오른쪽 클릭 → 셀 이력. 행·열 머리글 → 크기·행 추가·행 삭제·취소 표시 메뉴(할 수 있는 것이 있을 때만).
+  const onGridContext = (hit: GridHit, e: ReactMouseEvent) => {
+    if (hit.kind === "cell") {
+      e.preventDefault();
+      grid.current?.reveal({ row: hit.row, col: hit.col });
+      showPanel("history");
+      return;
+    }
+    const p = sv.permissions;
+    const any =
+      hit.kind === "col"
+        ? canResize
+        : canResize || p.addRows || p.deleteRows || (hit.row >= model.headerRows && !s.readOnly);
+    if (!any) return;
+    e.preventDefault();
+    if (editorRef.current) leave();
+    const sel = selectForMenu(view, selection, hit);
+    if (sel !== selection) onSelection(sel);
+    setMenu({ x: e.clientX, y: e.clientY, hit });
+  };
+
+  const headerMenu = (m: HeaderMenu) => {
+    const close = () => setMenu(null);
+    const r = selection ? rectOf(selection) : null;
+    if (m.hit.kind === "col") {
+      const c = m.hit.col;
+      const count = r && r.cols > 1 && c >= r.col && c < r.col + r.cols ? r.cols : 1;
+      return (
+        <ContextMenu x={m.x} y={m.y} onClose={close} label="열 메뉴">
+          <MenuNote title>
+            {colLetters(model.origin.col + (count > 1 ? r!.col : c))}
+            {count > 1 ? `~${colLetters(model.origin.col + r!.col + count - 1)}` : ""}열
+          </MenuNote>
+          <SizeControl
+            axis="col"
+            value={view.colWidths[c] ?? 48}
+            count={count}
+            onCommit={(pt) => onResize("col", c, pt)}
+          />
+        </ContextMenu>
+      );
+    }
+    const row = m.hit.row;
+    // 행 머리글로 고른 범위 안이면 그 행들 모두, 아니면 누른 행 하나.
+    const whole = r !== null && r.col === 0 && r.cols === model.cols && row >= r.row && row < r.row + r.rows;
+    const from = whole ? r.row : row;
+    const count = whole ? r.rows : 1;
+    const rows = Array.from({ length: count }, (_, k) => from + k);
+    const data = rows.every((x) => x >= model.headerRows);
+    const label = (x: number) => model.origin.row + x + 1;
+    const p = sv.permissions;
+    const deletable = data && rows.every(mine);
+    const doDelete = () => {
+      const filled = rows.reduce(
+        (n, x) =>
+          n +
+          Array.from({ length: model.cols }, (_, c) => c).filter((c) => {
+            const v = model.cells[idx(x, c)]?.v;
+            return (flags[idx(x, c)] ?? 0) & FLAG.MINE && v !== undefined && v !== null && v !== "";
+          }).length,
+        0,
+      );
+      if (filled > 0 && m.confirm === undefined) return setMenu({ ...m, confirm: filled });
+      if (!s.deleteRows(from, count)) notify("연결이 끊겨 행을 지우지 못했습니다. 다시 연결되면 해 주세요", "warn");
+      close();
+    };
+    const allCancelled = rows.every((x) => cancelled.has(x));
+    return (
+      <ContextMenu x={m.x} y={m.y} onClose={close} label="행 메뉴">
+        <MenuNote title>{count > 1 ? `${label(from)}~${label(from + count - 1)}행` : `${label(row)}행`}</MenuNote>
+        {m.confirm !== undefined ? (
+          <>
+            <MenuNote>값이 있는 칸 {m.confirm}개도 함께 지워집니다. 지울까요?</MenuNote>
+            <div className="mmg-menu-actions">
+              <button type="button" className="danger" data-menu-focus onClick={doDelete}>
+                행 삭제
+              </button>
+              <button type="button" onClick={close}>
+                취소
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            {canResize && (
+              <SizeControl
+                axis="row"
+                value={view.rowHeights[row] ?? 15}
+                count={count}
+                onCommit={(pt) => onResize("row", row, pt)}
+              />
+            )}
+            {canResize && (p.addRows || p.deleteRows || data) && <MenuSep />}
+            {p.addRows && (
+              <MenuItem
+                disabled={s.readOnly}
+                onClick={() => {
+                  close();
+                  addRow();
+                }}
+              >
+                ＋ 표 맨 아래에 행 추가
+              </MenuItem>
+            )}
+            {data && (
+              <MenuItem
+                disabled={s.readOnly || !rows.every((x) => myRows[x])}
+                title={rows.every((x) => myRows[x]) ? undefined : "내가 입력할 수 있는 행만 취소 표시할 수 있습니다"}
+                onClick={() => {
+                  close();
+                  toggleCancel(!allCancelled, [{ from, count }]);
+                }}
+              >
+                {allCancelled ? "취소 표시 풀기" : "취소 행으로 표시"}
+              </MenuItem>
+            )}
+            {p.deleteRows && (
+              <MenuItem
+                danger
+                disabled={s.readOnly || !deletable}
+                title={deletable ? undefined : "내가 추가한 행만 지울 수 있습니다"}
+                onClick={doDelete}
+              >
+                행 삭제{count > 1 ? ` (${count}행)` : ""}
+              </MenuItem>
+            )}
+          </>
+        )}
+      </ContextMenu>
+    );
+  };
+
   // ------------------------------------------------------------ 그리기
 
   const colorOf = (name: string) => personColor(Math.max(0, w.roster.indexOf(name)));
@@ -703,10 +916,6 @@ export function Workspace({ s }: { s: SessionState }) {
   const others = s.presence.filter((p) => p.name !== w.name);
   const p = s.progress ?? { name: w.name, rows: 0, required: 0, filled: 0 };
   const pct = p.required > 0 ? Math.round((p.filled / p.required) * 100) : 100;
-  const left = remaining(w.session.deadline, new Date(now));
-  const overdue = left === "마감 지남";
-  const dueAt = parseDeadline(w.session.deadline)?.getTime();
-  const urgent = !overdue && dueAt !== undefined && dueAt - now < 3_600_000;
   const waiting = s.sheets.reduce((n, x) => n + x.outbox.reduce((k, b) => k + b.cells.length, 0), 0);
   // '저장 중'은 답이 늦을 때만(400ms 넘게 대기할 때) 보인다. 편집마다 상태 글자가 깜빡이지 않게.
   const [slowSave, setSlowSave] = useState(false);
@@ -799,16 +1008,7 @@ export function Workspace({ s }: { s: SessionState }) {
             나
           </span>
         </span>
-        {left && (
-          <div
-            className={`deadline-left${overdue || urgent ? " urgent" : ""}`}
-            role="timer"
-            aria-label={overdue ? "마감 지남" : `마감까지 ${left} 남음`}
-          >
-            <div className="eyebrow">마감 {formatDeadline(w.session.deadline)}</div>
-            <b>{overdue ? left : `${left} 남음`}</b>
-          </div>
-        )}
+        <DeadlineClock deadline={w.session.deadline} dueAt={w.session.deadlineAt} offset={s.clockOffset} />
       </header>
 
       {s.readOnly && (
@@ -857,9 +1057,9 @@ export function Workspace({ s }: { s: SessionState }) {
               <button
                 key={x.label}
                 className="swatch"
-                title={x.label}
+                title={x.rgb === null ? x.label : `${x.label} ${rgbHex(x.rgb)}`}
                 aria-label={x.label}
-                style={{ background: x.rgb === null ? "#fff" : `#${x.rgb.toString(16).padStart(6, "0")}` }}
+                style={{ background: x.rgb === null ? "#fff" : rgbHex(x.rgb) }}
                 onClick={(e) => {
                   (e.currentTarget.closest("details") as HTMLDetailsElement).open = false;
                   applyFormat({ fill: x.rgb === null ? { kind: "none" } : { kind: "color", rgb: x.rgb } });
@@ -870,23 +1070,67 @@ export function Workspace({ s }: { s: SessionState }) {
             ))}
           </div>
         </details>
+        <details
+          className={`fill-menu text-color${policy !== "all" || s.readOnly || mode !== "grid" ? " disabled" : ""}`}
+        >
+          <summary aria-label="글자색" title="글자색">
+            <span className="text-color-mark" style={{ borderColor: rgbHex(curStyle?.color ?? 0) }}>
+              가
+            </span>{" "}
+            ▾
+          </summary>
+          <div className="swatches">
+            {TEXT_COLORS.map((x) => (
+              <button
+                key={x.label}
+                className="swatch text-swatch"
+                title={`${x.label} ${rgbHex(x.rgb)}`}
+                aria-label={`글자 ${x.label}`}
+                style={{ color: rgbHex(x.rgb) }}
+                onClick={(e) => {
+                  (e.currentTarget.closest("details") as HTMLDetailsElement).open = false;
+                  applyFormat({ color: x.rgb });
+                }}
+              >
+                가
+              </button>
+            ))}
+          </div>
+        </details>
+        {ALIGNS.map((x) => {
+          const on = curStyle?.hAlign === x.value;
+          return (
+            <button
+              key={x.value}
+              className={`ghost icon${on ? " on" : ""}`}
+              aria-label={x.label}
+              aria-pressed={on}
+              title={`${x.label}${on ? " (다시 누르면 일반)" : ""}`}
+              disabled={policy !== "all" || s.readOnly || mode !== "grid"}
+              onClick={() => applyFormat({ hAlign: on ? "general" : x.value })}
+            >
+              {x.icon}
+            </button>
+          );
+        })}
         <span className="muted small">
           {policy === "none" ? "서식은 호스트가 관리합니다" : policy === "fillOnly" ? "배경색만 바꿀 수 있습니다" : ""}
         </span>
+        <span className="sep" />
+        <button
+          className={`ghost small cancel-toggle${activeCancelled ? " on" : ""}`}
+          aria-pressed={activeCancelled}
+          disabled={s.readOnly || activeRow === null || activeRow < model.headerRows}
+          title={
+            activeCancelled
+              ? "고른 행의 취소 표시를 풉니다"
+              : "고른 행 전체를 취소선·회색으로 표시합니다(필수 칸으로 세지 않습니다)"
+          }
+          onClick={() => toggleCancel(!activeCancelled)}
+        >
+          <s>취소 행</s>
+        </button>
         <span className="spacer" />
-        {sv.permissions.addRows && (
-          <button
-            className="ghost small"
-            disabled={s.readOnly}
-            title="표 맨 아래에 빈 행을 추가합니다"
-            onClick={() => {
-              if (editorRef.current) leave();
-              s.addRows(1);
-            }}
-          >
-            + 행 추가
-          </button>
-        )}
         <button
           className={`ghost small side-toggle${sideOpen && mode === "grid" ? " on" : ""}`}
           aria-pressed={sideOpen && mode === "grid"}
@@ -919,35 +1163,31 @@ export function Workspace({ s }: { s: SessionState }) {
           <div className="filter-bar">
             {filterCols.length > 0 && <span className="tag tag-filter">조회조건</span>}
             {filterCols.map((c) => (
-              <label key={c} className="filter">
+              <span key={c} className="filter">
                 {labels[c] || `열 ${c + 1}`}:
-                <select
-                  aria-label={`${labels[c]} 조회조건`}
+                <SearchSelect
+                  label={labels[c] ?? ""}
                   value={filter.values[c] ?? ""}
-                  onChange={(e) => {
+                  options={options.get(c) ?? []}
+                  onChange={(v) => {
                     const values = { ...filter.values };
-                    if (e.target.value) values[c] = e.target.value;
+                    if (v) values[c] = v;
                     else delete values[c];
                     setFilter({ ...filter, values });
                   }}
-                >
-                  <option value="">전체</option>
-                  {options.get(c)?.map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                />
+              </span>
             ))}
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={filter.mineOnly}
-                onChange={(e) => setFilter({ ...filter, mineOnly: e.target.checked })}
-              />
-              내 담당만
-            </label>
+            {sv.assigned && (
+              <label className="check" title="담당자가 정해지지 않은 행은 누구나 입력할 수 있어 함께 보입니다">
+                <input
+                  type="checkbox"
+                  checked={filter.mineOnly}
+                  onChange={(e) => setFilter({ ...filter, mineOnly: e.target.checked })}
+                />
+                내 담당만 <span className="muted small">(담당자 없는 행 포함)</span>
+              </label>
+            )}
             <label className="check">
               <input
                 type="checkbox"
@@ -963,7 +1203,8 @@ export function Workspace({ s }: { s: SessionState }) {
             )}
             <span className="spacer" />
             <span className="muted small" data-testid="row-count">
-              {(model.rows - model.headerRows).toLocaleString()}행 · 내 담당 {myRowCount.toLocaleString()}행
+              {(model.rows - model.headerRows).toLocaleString()}행
+              {sv.assigned ? ` · 내 담당 ${myRowCount.toLocaleString()}행` : ""}
               {isFiltering(filter) ? ` · 표시 ${shownRows.toLocaleString()}행` : ""}
             </span>
           </div>
@@ -972,15 +1213,6 @@ export function Workspace({ s }: { s: SessionState }) {
             <div
               className="grid-host"
               ref={gridHost}
-              // 오른쪽 클릭 → 셀 이력
-              onContextMenu={(e) => {
-                const el = (e.target as HTMLElement).closest<HTMLElement>("[data-r]");
-                if (!el) return;
-                e.preventDefault();
-                const target = { row: Number(el.dataset.r), col: Number(el.dataset.c) };
-                grid.current?.reveal(target);
-                showPanel("history");
-              }}
               // 칸을 누르면 브라우저가 그리드에 준 포커스를 바로 편집기로 옮긴다(곧바로 입력해도 첫 글자를 받는다).
               onClick={() => {
                 if (overlayOn && !editorRef.current) input.current?.focus({ preventScroll: true });
@@ -1003,6 +1235,21 @@ export function Workspace({ s }: { s: SessionState }) {
                 onKey={onKey}
                 onCellDoubleClick={onDouble}
                 onResize={canResize ? onResize : undefined}
+                onContextMenu={onGridContext}
+                rowFooter={
+                  sv.permissions.addRows ? (
+                    <button
+                      type="button"
+                      className="mmg-add-row"
+                      aria-label="행 추가"
+                      title="표 맨 아래에 행 추가"
+                      disabled={s.readOnly}
+                      onClick={addRow}
+                    >
+                      ＋
+                    </button>
+                  ) : undefined
+                }
               />
             </div>
             {sideOpen && (
@@ -1031,10 +1278,18 @@ export function Workspace({ s }: { s: SessionState }) {
           </div>
         </>
       ) : (
-        <RowForm s={s} myRows={myRows} row={formRow} onRow={setFormRow} onShowInGrid={showInGrid} />
+        <RowForm
+          s={s}
+          myRows={myRows}
+          row={formRow}
+          onRow={setFormRow}
+          onShowInGrid={showInGrid}
+          onAddRow={sv.permissions.addRows ? addRow : undefined}
+        />
       )}
 
       {s.sheets.length > 1 && <SheetTabs s={s} onSelect={switchSheet} />}
+      {menu && mode === "grid" && headerMenu(menu)}
 
       <footer className="status">
         {!s.connected ? (
