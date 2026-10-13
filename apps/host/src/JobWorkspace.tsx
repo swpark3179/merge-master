@@ -1,4 +1,4 @@
-import type { CommsSnapshot, HostSnapshot, JobSummary, ServiceInfo, SheetModel } from "@mm/shared";
+import type { CommsSnapshot, HostEvent, HostSnapshot, JobSummary, ServiceInfo, SheetModel } from "@mm/shared";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -104,6 +104,18 @@ export function JobWorkspace(props: Props) {
   // 접속자 표·소통은 백엔드가 바뀔 때마다 밀어 준다(폴링하지 않음).
   useJobListen<HostSnapshot>("participants", setSnapshot);
   useJobListen<CommsSnapshot>("comms", setComms);
+  // 마감 동작 '공유 닫기': 백엔드가 공유를 닫은 뒤 알린다. 공유 상태(위쪽 알약·1c·1d)를 다시 읽어 '공유 전'으로 바꾸고,
+  // 필요하면 1c에서 다시 공유를 시작한다(같은 마감 시각으로는 다시 닫지 않는다).
+  useJobListen<HostEvent>("sheet-changes", (ev) => {
+    if (ev.type !== "deadlineClose") return;
+    void api
+      .serviceInfo()
+      .then((info) => {
+        setService(info);
+        if (!info) toast("마감 시각이 되어 이 업무의 공유를 닫았어요. 필요하면 '서비스'에서 다시 공유를 시작하세요");
+      })
+      .catch(() => {});
+  });
 
   const onCommitted = useCallback(
     (m: SheetModel[]) => {
