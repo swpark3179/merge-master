@@ -57,6 +57,7 @@ describe("색 토큰 대비", () => {
     ["--danger", "--danger-soft"],
     ["--grid-head-ink", "--grid-head-bg"],
     ["--others-ink", "--others-bg"],
+    ["--cancel-ink", "--cancel-bg"],
     ["--missing-ink", "--missing-bg"],
     ["--hl-ink", "--hl-bg"],
     ["--hl-ink", "--hl-soft"],
@@ -71,6 +72,7 @@ describe("색 토큰 대비", () => {
     ["--focus", "#fff"],
     ["--missing-mark", "--missing-bg"],
     ["--hl-line", "--hl-bg"],
+    ["--cancel-line", "--cancel-bg"],
   ];
   it.each(marks)("표시 %s on %s ≥ 3", (fg, bg) => {
     expect(contrast(fg, bg)).toBeGreaterThanOrEqual(3);
