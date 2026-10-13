@@ -3,4 +3,4 @@
 /**
  * 시트 하나의 저장 요약(여러 시트를 함께 취합할 때 시트마다).
  */
-export type SheetSummary = { name: string, required: number, filled: number, changedCells: number, addedRows: number, styleCells: number, };
+export type SheetSummary = { name: string, required: number, filled: number, changedCells: number, addedRows: number, addedCols: number, cancelledRows: number, styleCells: number, };

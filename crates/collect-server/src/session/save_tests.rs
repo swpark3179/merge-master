@@ -33,6 +33,7 @@ async fn baseline_stays_at_import_until_host_moves_it() {
         batch: "b".into(),
         cells: vec![CellEdit { row: r, col: F, value: CellValue::Number(9800.0), base: 0 }],
         origin: None,
+        layout: None,
     };
     st.handle(Command::Client { conn: c[0].conn, msg });
     let at = CellRef::new(r, F);
@@ -100,6 +101,7 @@ async fn host_can_close_and_reopen_collection() {
         batch: "late".into(),
         cells: vec![CellEdit { row: r, col: F, value: CellValue::Number(1.0), base: 0 }],
         origin: None,
+        layout: None,
     };
     st.handle(Command::Client { conn: c[0].conn, msg });
     let rejected = c[0].take().into_iter().find_map(|m| match m {

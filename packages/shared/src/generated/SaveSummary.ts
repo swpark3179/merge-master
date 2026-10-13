@@ -21,9 +21,21 @@ styleCells: number, mergeChanges: number,
  */
 sizeChanges: number, 
 /**
- * 참여자가 표 아래에 추가한 행 수(저장할 때 Excel에 끼워 넣는다).
+ * 앱에서 표 아래에 추가한 행 수(저장할 때 Excel에 끼워 넣는다).
  */
 addedRows: number, 
+/**
+ * 앱에서 표 오른쪽에 추가한 열 수(저장할 때 Excel에 끼워 넣는다).
+ */
+addedCols: number, 
+/**
+ * 취소 표시한 행 수(지금).
+ */
+cancelledRows: number, 
+/**
+ * 취소 표시가 Excel과 다른 행 수(새로 표시했거나 푼 행 — 저장할 때 취소선·회색 채우기를 쓰거나 지운다).
+ */
+cancelChanges: number, 
 /**
  * 시트마다(불러온 순서).
  */

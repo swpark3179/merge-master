@@ -296,6 +296,29 @@ impl State {
         self.comms.rev += 1;
     }
 
+    /// 앱에서 붙인 행·열을 지웠다: 그 시트 강조 범위를 당기거나 줄이고, 다 지워진 강조는 해제한다(참여자는 새 시트와
+    /// 함께 옮긴 범위를 받는다).
+    pub(super) fn remap_highlights(&mut self, sheet: usize, map: impl Fn(&CellRange) -> Option<CellRange>) {
+        let mut gone = Vec::new();
+        let mut moved = false;
+        for h in self.comms.highlights.iter_mut().filter(|h| h.active && h.sheet as usize == sheet) {
+            match map(&h.range) {
+                Some(r) if r == h.range => {}
+                Some(r) => {
+                    h.range = r;
+                    moved = true;
+                }
+                None => gone.push(h.id),
+            }
+        }
+        for id in gone {
+            self.clear_highlight(id);
+        }
+        if moved {
+            self.comms.rev += 1;
+        }
+    }
+
     pub(super) fn host_chat(&mut self, to: ChatTo, text: String) {
         let to = match to {
             ChatTo::Host => return,

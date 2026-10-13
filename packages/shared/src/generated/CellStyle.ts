@@ -8,6 +8,10 @@ import type { VAlign } from "./VAlign";
  */
 export type CellStyle = { fontName: string, fontSize: number, bold: boolean, italic: boolean, underline: boolean, 
 /**
+ * 취소선.
+ */
+strike?: boolean, 
+/**
  * 글자색 `0xRRGGBB`.
  */
 color: number, 

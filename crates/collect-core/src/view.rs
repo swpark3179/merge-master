@@ -44,6 +44,9 @@ pub struct ConfigView {
     /// 행 배정 기준으로 추천하는 열(담당자 이름 열 후보 1순위).
     #[ts(optional)]
     pub suggested_key_col: Option<u32>,
+    /// 기준 시트(엑셀에서 불러온 표)의 행·열 수. 이보다 뒤의 행·열은 앱에서 붙인 것이라 지울 수 있다.
+    pub baseline_rows: u32,
+    pub baseline_cols: u32,
 }
 
 /// 셀 상태 비트 → base64(화면·참여자에게 보낼 형태).
@@ -107,6 +110,8 @@ pub fn config_view_with(
         legend,
         labels,
         suggested_key_col: suggested_key_col(model),
+        baseline_rows: model.rows,
+        baseline_cols: model.cols,
     })
 }
 

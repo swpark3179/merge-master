@@ -27,4 +27,8 @@ labels: Array<string>,
 /**
  * 행 배정 기준으로 추천하는 열(담당자 이름 열 후보 1순위).
  */
-suggestedKeyCol?: number, };
+suggestedKeyCol?: number, 
+/**
+ * 기준 시트(엑셀에서 불러온 표)의 행·열 수. 이보다 뒤의 행·열은 앱에서 붙인 것이라 지울 수 있다.
+ */
+baselineRows: number, baselineCols: number, };

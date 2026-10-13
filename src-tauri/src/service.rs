@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use collect_core::CellRef;
 use collect_core::a1::parse_sheet_range;
-use collect_server::{HostSnapshot, ServerConfig, SessionHandle};
+use collect_server::{Gone, HostSnapshot, ServerConfig, SessionHandle};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
@@ -144,12 +144,17 @@ pub(crate) async fn publish(
 /// 업무의 공개를 멈춘다(그 업무의 참여자 연결만 닫힌다, `ended`면 '업무를 끝냈습니다'). 공개 중인 업무가 없으면 서버를
 /// 닫는다(포트를 닫는다). 세션(입력한 값·이력)은 그대로 남아 다시 공개하면 이어서 받는다.
 pub(crate) async fn unpublish(app: &AppHandle, state: &AppState, job: &Job, ended: bool) -> CmdResult<()> {
+    unpublish_as(app, state, job, if ended { Gone::Ended } else { Gone::Paused }).await
+}
+
+/// [`unpublish`]와 같지만 참여자에게 알릴 까닭을 고른다(마감 시각에 공유 닫기).
+pub(crate) async fn unpublish_as(app: &AppHandle, state: &AppState, job: &Job, why: Gone) -> CmdResult<()> {
     let mut server = state.server.lock().await;
     let session = job.session.lock().unwrap().clone();
     if let Some(session) = &session
         && let Some(slug) = state.hub.slug_of(session)
     {
-        state.hub.unpublish(&slug, ended);
+        state.hub.unpublish_as(&slug, why);
     }
     let was = std::mem::replace(&mut job.service.lock().unwrap().published, false);
     if state.hub.is_empty()

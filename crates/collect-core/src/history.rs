@@ -90,6 +90,14 @@ pub struct ChangeEntry {
     #[ts(as = "Option<CellValue>", optional)]
     #[serde(default)]
     pub new: CellValue,
+    /// 이 칸이 든 행·열을 지웠다(앱에서 붙인 행·열 지우기). 좌표는 지울 때의 것이고, 되돌리거나 다시 적용하지 않는다.
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[ts(as = "Option<bool>", optional)]
+    pub gone: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl ChangeEntry {
@@ -270,13 +278,14 @@ pub fn query(log: &[ChangeEntry], filter: &HistoryFilter, offset: usize, limit: 
 }
 
 /// 한 묶음의 모든 칸.
+/// 지운 행·열의 칸은 빼고 돌려준다(되돌릴 칸이 없다).
 pub fn batch_entries<'a>(log: &'a [ChangeEntry], batch: &str) -> Vec<&'a ChangeEntry> {
-    log.iter().filter(|e| e.batch == batch).collect()
+    log.iter().filter(|e| e.batch == batch && !e.gone).collect()
 }
 
-/// 셀 타임라인: 그 시트 그 칸의 기록(오래된 것부터).
+/// 셀 타임라인: 그 시트 그 칸의 기록(오래된 것부터, 지운 행·열에 있던 기록은 빼고).
 pub fn timeline(log: &[ChangeEntry], sheet: u32, at: CellRef) -> Vec<ChangeEntry> {
-    log.iter().filter(|e| e.sheet == sheet && e.at() == at).cloned().collect()
+    log.iter().filter(|e| e.sheet == sheet && e.at() == at && !e.gone).cloned().collect()
 }
 
 /// 되돌리기 계획: 바꿀 값과, 그 뒤 다시 바뀌어 지금 값이 기록과 다른 칸.
@@ -294,7 +303,7 @@ pub fn revert_plan(model: &SheetModel, entries: &[&ChangeEntry]) -> RevertPlan {
     let mut first: HashMap<CellRef, &ChangeEntry> = HashMap::new();
     let mut last: HashMap<CellRef, &ChangeEntry> = HashMap::new();
     let mut order: Vec<CellRef> = Vec::new();
-    for e in entries {
+    for e in entries.iter().filter(|e| !e.gone) {
         let at = e.at();
         if !first.contains_key(&at) {
             first.insert(at, e);
@@ -387,9 +396,10 @@ impl SheetLabels {
         Self { name: model.sheet.clone(), origin: model.origin, labels: crate::detect::column_labels(model, &table) }
     }
 
-    /// 기록의 시트 주소(`F7`).
+    /// 기록의 시트 주소(`F7`). 지운 행·열에 있던 칸이면 `F7 (삭제됨)`.
     pub fn address(&self, e: &ChangeEntry) -> String {
-        CellRef::new(e.row + self.origin.row, e.col + self.origin.col).to_string()
+        let at = CellRef::new(e.row + self.origin.row, e.col + self.origin.col);
+        if e.gone { format!("{at} (삭제됨)") } else { at.to_string() }
     }
 
     pub fn label(&self, col: u32) -> String {
@@ -462,6 +472,7 @@ mod tests {
             col: c.col,
             old,
             new,
+            gone: false,
         }
     }
 

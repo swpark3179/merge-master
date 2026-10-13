@@ -99,13 +99,14 @@ async fn handle(socket: WebSocket, state: Arc<AppState>, target: Target, peer: S
             },
             // wait_for가 돌려주는 읽기 가드는 Send가 아니라서 블록 안에서 바로 버린다.
             () = async { let _ = shutdown.wait_for(|stop| *stop).await; } => {
-                let _ = sink.send(encode(&ServerMsg::Closing { ended: false })).await;
+                let _ = sink.send(encode(&ServerMsg::Closing { ended: false, deadline: false })).await;
                 let _ = sink.send(Message::Close(None)).await;
                 break;
             }
             // 이 업무만 공개를 멈췄다(다른 업무의 연결은 그대로).
-            ended = async { gone.wait_for(Option::is_some).await.map(|g| *g == Some(Gone::Ended)).unwrap_or(false) } => {
-                let _ = sink.send(encode(&ServerMsg::Closing { ended })).await;
+            why = async { gone.wait_for(Option::is_some).await.map(|g| *g).unwrap_or(None) } => {
+                let (ended, deadline) = (why == Some(Gone::Ended), why == Some(Gone::Deadline));
+                let _ = sink.send(encode(&ServerMsg::Closing { ended, deadline })).await;
                 let _ = sink.send(Message::Close(None)).await;
                 break;
             }

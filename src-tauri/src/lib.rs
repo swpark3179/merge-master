@@ -325,6 +325,29 @@ async fn sheet_format(
         .await?
 }
 
+/// 표 구조 바꾸기(1b·1d 오른쪽 클릭 메뉴): 표 아래에 행·오른쪽에 열 붙이기, 앱에서 붙인 행·열 지우기, 행 취소 표시.
+/// 지울 수 없는 행·열(엑셀에서 불러온 것, 담당자가 배정된 것, 행 배정 기준 열)이면 이유를 돌려준다. 바뀐 시트와 설정
+/// 보기를 돌려준다(참여자에게는 새 시트가 간다).
+#[tauri::command]
+async fn sheet_structure(
+    state: State<'_, AppState>,
+    job: String,
+    sheet: usize,
+    edit: collect_core::structure::StructureEdit,
+    viewer: Option<String>,
+) -> CmdResult<FormatResult> {
+    let session = state.session(&job)?;
+    session.with(move |s| s.structure(sheet, edit)).await??;
+    // 구조 바꾸기는 작업이 끝난 뒤 반영되므로 다시 읽는다.
+    session
+        .with(move |s| {
+            let model = s.sheets.get(sheet).ok_or("없는 시트입니다")?.model.clone();
+            let view = view_or_host(s, sheet, viewer.as_deref())?;
+            Ok(FormatResult { model, view })
+        })
+        .await?
+}
+
 /// 호스트가 칸에 넣을 값(모델 좌표). TS: `apps/host/src/api.ts`의 `CellWrite`.
 #[derive(Deserialize)]
 struct CellWrite {
@@ -390,6 +413,7 @@ pub fn run() {
             config_view_get,
             config_apply,
             sheet_format,
+            sheet_structure,
             sheet_set_cells,
             lan_addresses,
             recalc::recalc_status,

@@ -314,6 +314,9 @@ mod tests {
             validations: vec![],
             hidden_rows: vec![],
             hidden_cols: vec![],
+            added_rows: Vec::new(),
+            cancelled_rows: Vec::new(),
+            layout: 0,
         }
     }
 

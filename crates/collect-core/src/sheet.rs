@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::a1::{CellRange, CellRef};
+use crate::a1::{CellRange, CellRef, shift_after_removal};
 
 /// 셀 값. JSON에서는 `null | number | string | boolean | {"err": code}`로 직렬화된다.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
@@ -109,6 +109,10 @@ pub struct CellStyle {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    /// 취소선.
+    #[serde(default, skip_serializing_if = "is_false")]
+    #[ts(as = "Option<bool>", optional)]
+    pub strike: bool,
     /// 글자색 `0xRRGGBB`.
     pub color: u32,
     /// 채우기 `0xRRGGBB`. 채우기 없음이면 `None`.
@@ -121,6 +125,22 @@ pub struct CellStyle {
     pub v_align: VAlign,
     pub wrap: bool,
     pub borders: Borders,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
+/// 앱에서 표 아래에 붙인 행 하나와 그 행을 추가한 사람.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AddedRow {
+    pub row: u32,
+    pub by: String,
 }
 
 /// 데이터 유효성 중 참여자 입력 형식으로 바뀔 수 있는 것.
@@ -175,6 +195,19 @@ pub struct SheetModel {
     pub hidden_rows: Vec<u32>,
     #[serde(default)]
     pub hidden_cols: Vec<u32>,
+    /// 앱에서 표 아래에 붙인 행과 추가한 사람(행 오름차순). 원본에 저장해 기준 시트가 된 행은 빠진다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<AddedRow>>", optional)]
+    pub added_rows: Vec<AddedRow>,
+    /// 취소 표시한 행(오름차순). 화면은 행 전체를 회색 + 취소선으로 그리고, 필수 칸으로 세지 않는다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<u32>>", optional)]
+    pub cancelled_rows: Vec<u32>,
+    /// 구조 판: 앱에서 추가한 행·열을 지워 칸 좌표가 밀릴 때마다 1씩 는다. 참여자는 편집에 이 값을 실어 보내고,
+    /// 서버는 다른 판에서 온 편집을 받지 않는다(오프라인 대기열이 밀린 칸에 쓰지 않게).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    #[ts(as = "Option<u32>", optional)]
+    pub layout: u32,
 }
 
 /// 셀 → 병합 영역 인덱스. 셀마다 병합 목록을 훑지 않도록 한 번 만들어 쓴다.
@@ -259,6 +292,114 @@ impl SheetModel {
         CellRange::new(start, 0, count, self.cols.max(1))
     }
 
+    /// 표 오른쪽에 빈 열을 `count`개 붙이고 그 범위를 돌려준다(호스트 '열 추가'). 칸 서식·열 너비는 마지막 열을 따른다
+    /// (Excel이 열을 끼워 넣을 때 왼쪽 열 서식을 따르는 것과 같다). 수식·병합·유효성은 따르지 않는다.
+    pub fn append_cols(&mut self, count: u32) -> CellRange {
+        let (old, start) = (self.cols, self.cols);
+        let cols = old + count;
+        let mut cells = Vec::with_capacity((self.rows * cols) as usize);
+        for r in 0..self.rows {
+            let row = &self.cells[(r * old) as usize..((r + 1) * old) as usize];
+            cells.extend_from_slice(row);
+            let s = row.last().map_or(0, |c| c.s);
+            cells.extend((0..count).map(|_| Cell { s, ..Cell::default() }));
+        }
+        self.cells = cells;
+        let width = self.col_widths.last().copied().filter(|w| *w > 0.0).unwrap_or(48.0);
+        self.col_widths.extend((0..count).map(|_| width));
+        self.cols = cols;
+        CellRange::new(0, start, self.rows.max(1), count)
+    }
+
+    /// 행 `from`부터 `count`개를 지운다(앱에서 붙인 행 지우기). 아래 행·병합·유효성·숨김·추가한 행·취소 표시를 당기고
+    /// 구조 판을 올린다.
+    pub fn remove_rows(&mut self, from: u32, count: u32) {
+        let end = from.saturating_add(count).min(self.rows);
+        if from >= end {
+            return;
+        }
+        let count = end - from;
+        let cols = self.cols as usize;
+        self.cells.drain(from as usize * cols..end as usize * cols);
+        self.row_heights.drain(from as usize..(end as usize).min(self.row_heights.len()));
+        self.rows -= count;
+        self.merges = self.merges.iter().filter_map(|m| m.without_rows(from, count)).collect();
+        self.validations.retain_mut(|v| match v.range.without_rows(from, count) {
+            Some(r) => {
+                v.range = r;
+                true
+            }
+            None => false,
+        });
+        let shift =
+            |list: &mut Vec<u32>| *list = list.iter().filter_map(|&r| shift_after_removal(r, from, count)).collect();
+        shift(&mut self.hidden_rows);
+        shift(&mut self.cancelled_rows);
+        self.added_rows = self
+            .added_rows
+            .iter()
+            .filter_map(|a| Some(AddedRow { row: shift_after_removal(a.row, from, count)?, by: a.by.clone() }))
+            .collect();
+        self.header_rows -= self.header_rows.min(end).saturating_sub(from);
+        self.frozen_rows -= self.frozen_rows.min(end).saturating_sub(from);
+        self.layout += 1;
+    }
+
+    /// 열 `from`부터 `count`개를 지운다(앱에서 붙인 열 지우기). 오른쪽 열·병합·유효성·숨김을 당기고 구조 판을 올린다.
+    pub fn remove_cols(&mut self, from: u32, count: u32) {
+        let end = from.saturating_add(count).min(self.cols);
+        if from >= end {
+            return;
+        }
+        let count = end - from;
+        let old = self.cols;
+        let mut cells = Vec::with_capacity((self.rows * (old - count)) as usize);
+        for r in 0..self.rows {
+            for c in 0..old {
+                if c < from || c >= end {
+                    cells.push(self.cells[(r * old + c) as usize].clone());
+                }
+            }
+        }
+        self.cells = cells;
+        self.col_widths.drain(from as usize..(end as usize).min(self.col_widths.len()));
+        self.cols -= count;
+        self.merges = self.merges.iter().filter_map(|m| m.without_cols(from, count)).collect();
+        self.validations.retain_mut(|v| match v.range.without_cols(from, count) {
+            Some(r) => {
+                v.range = r;
+                true
+            }
+            None => false,
+        });
+        self.hidden_cols = self.hidden_cols.iter().filter_map(|&c| shift_after_removal(c, from, count)).collect();
+        self.frozen_cols -= self.frozen_cols.min(end).saturating_sub(from);
+        self.layout += 1;
+    }
+
+    /// 행 `from`부터 `count`개를 취소 표시하거나(`on`) 푼다. 바뀐 것이 있으면 `true`.
+    pub fn set_cancelled(&mut self, from: u32, count: u32, on: bool) -> bool {
+        let end = from.saturating_add(count).min(self.rows);
+        let before = self.cancelled_rows.clone();
+        if on {
+            self.cancelled_rows.extend(from..end);
+            self.cancelled_rows.sort_unstable();
+            self.cancelled_rows.dedup();
+        } else {
+            self.cancelled_rows.retain(|r| !(from..end).contains(r));
+        }
+        self.cancelled_rows != before
+    }
+
+    pub fn is_cancelled(&self, row: u32) -> bool {
+        self.cancelled_rows.binary_search(&row).is_ok()
+    }
+
+    /// 그 행을 앱에서 붙였으면 추가한 사람.
+    pub fn added_by(&self, row: u32) -> Option<&str> {
+        self.added_rows.iter().find(|a| a.row == row).map(|a| a.by.as_str())
+    }
+
     /// [`effective_value`](Self::effective_value)와 같지만 미리 만든 색인을 쓴다.
     pub fn effective_value_in(&self, index: &MergeIndex, at: CellRef) -> Option<&CellValue> {
         let src = index.get(at).map_or(at, |i| self.merges[i].top_left());
@@ -292,6 +433,9 @@ mod tests {
             validations: vec![],
             hidden_rows: vec![],
             hidden_cols: vec![],
+            added_rows: vec![],
+            cancelled_rows: vec![],
+            layout: 0,
         }
     }
 
@@ -325,6 +469,64 @@ mod tests {
         header_only.row_heights.truncate(1);
         header_only.append_rows(1);
         assert_eq!(header_only.cells[2], Cell::default());
+    }
+
+    #[test]
+    fn appended_cols_copy_the_last_column_style_and_width() {
+        let mut m = tiny();
+        m.cells[1].s = 0;
+        m.styles.push(CellStyle { bold: true, ..CellStyle::default() });
+        m.cells[3].s = 1;
+        m.col_widths[1] = 80.0;
+        let r = m.append_cols(2);
+        assert_eq!((r.col, r.cols, r.rows), (2, 2, 3));
+        assert_eq!((m.cols, m.cells.len(), m.col_widths.len()), (4, 12, 4));
+        assert_eq!(m.cell(CellRef::new(1, 2)).unwrap().s, 1, "오른쪽 끝 열 서식");
+        assert_eq!(m.cell(CellRef::new(1, 1)).unwrap().v, CellValue::Number(9800.0), "기존 칸은 그대로");
+        assert!(m.cell(CellRef::new(1, 3)).unwrap().v.is_empty());
+        assert_eq!(m.col_widths[3], 80.0);
+    }
+
+    #[test]
+    fn removed_rows_and_cols_pull_up_what_follows() {
+        let mut m = tiny();
+        m.append_rows(3); // 행 3..=5
+        m.cells[4 * 2].v = CellValue::Text("넷".into());
+        m.cells[5 * 2].v = CellValue::Text("다섯".into());
+        m.added_rows = vec![
+            AddedRow { row: 3, by: "가".into() },
+            AddedRow { row: 4, by: "나".into() },
+            AddedRow { row: 5, by: "다".into() },
+        ];
+        m.cancelled_rows = vec![1, 5];
+        m.merges.push(CellRange::parse("A5:B6").unwrap()); // 행 4..=5
+        m.remove_rows(3, 1);
+        assert_eq!((m.rows, m.cells.len(), m.row_heights.len(), m.layout), (5, 10, 5, 1));
+        assert_eq!(m.cell(CellRef::new(3, 0)).unwrap().v, CellValue::Text("넷".into()));
+        assert_eq!(m.added_rows, vec![AddedRow { row: 3, by: "나".into() }, AddedRow { row: 4, by: "다".into() }]);
+        assert_eq!(m.cancelled_rows, vec![1, 4]);
+        assert_eq!(m.merges[1], CellRange::parse("A4:B5").unwrap());
+        assert_eq!(m.added_by(4), Some("다"));
+
+        m.append_cols(2);
+        m.cells[2].v = CellValue::Text("C1".into());
+        m.cells[3].v = CellValue::Text("D1".into());
+        m.remove_cols(2, 1);
+        assert_eq!((m.cols, m.cells.len(), m.col_widths.len(), m.layout), (3, 15, 3, 2));
+        assert_eq!(m.cell(CellRef::new(0, 2)).unwrap().v, CellValue::Text("D1".into()));
+        assert_eq!(m.cell(CellRef::new(1, 0)).unwrap().v, CellValue::Text("김민지".into()));
+    }
+
+    #[test]
+    fn cancelled_rows_stay_sorted() {
+        let mut m = tiny();
+        assert!(m.set_cancelled(2, 1, true));
+        assert!(m.set_cancelled(1, 2, true));
+        assert!(!m.set_cancelled(1, 1, true), "이미 표시된 행");
+        assert_eq!(m.cancelled_rows, vec![1, 2]);
+        assert!(m.is_cancelled(2));
+        assert!(m.set_cancelled(2, 5, false));
+        assert_eq!(m.cancelled_rows, vec![1]);
     }
 
     #[test]

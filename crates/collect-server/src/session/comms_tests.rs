@@ -32,7 +32,7 @@ fn first_row(st: &State, name: &str) -> u32 {
 }
 
 fn set(st: &mut State, c: &Client, batch: &str, cells: Vec<CellEdit>, origin: BatchOrigin) {
-    let msg = ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: Some(origin) };
+    let msg = ClientMsg::SetCells { sheet: 0, batch: batch.into(), cells, origin: Some(origin), layout: None };
     st.handle(Command::Client { conn: c.conn, msg });
 }
 

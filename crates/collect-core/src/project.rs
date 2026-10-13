@@ -56,6 +56,9 @@ pub fn project_with(access: &Access, model: &SheetModel, config: &CollectConfig,
             }
         }
         out.hidden_rows.sort_unstable();
+        // 남이 추가한 행은 누가 추가했는지도 알리지 않는다.
+        let me = access.roster().get(p).map(|n| n.trim());
+        out.added_rows.retain(|a| Some(a.by.trim()) == me);
     }
     Projection { model: out, flags }
 }

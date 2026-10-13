@@ -2,7 +2,7 @@
 
 use base64::Engine;
 use collect_core::access::flag;
-use collect_core::config::{ColumnRole, OthersRows, Permissions, suggested_key_col};
+use collect_core::config::{ColumnRole, DeadlineAction, OthersRows, Permissions, suggested_key_col};
 use collect_core::history::BatchOrigin;
 use collect_store::{pack, pack_json};
 
@@ -32,7 +32,7 @@ fn set(st: &mut State, c: &Client, sheet: u32, batch: &str, row: u32, col: u32, 
     let cells = vec![CellEdit { row, col, value, base: 0 }];
     st.handle(Command::Client {
         conn: c.conn,
-        msg: ClientMsg::SetCells { sheet, batch: batch.into(), cells, origin: None },
+        msg: ClientMsg::SetCells { sheet, batch: batch.into(), cells, origin: None, layout: None },
     });
 }
 
@@ -120,11 +120,11 @@ async fn one_lock_per_person_across_sheets() {
     join(&mut st, &kim, "김민지", None);
     let r0 = row_of(&st, 0, "이서연");
     let r1 = row_of(&st, 1, "이서연");
-    st.handle(Command::Client { conn: 1, msg: ClientMsg::Lock { sheet: 0, at: CellRef::new(r0, F) } });
+    st.handle(Command::Client { conn: 1, msg: ClientMsg::Lock { sheet: 0, at: CellRef::new(r0, F), layout: None } });
     assert_eq!(st.snapshot().participants[0].editing, Some(SheetCell::new(0, CellRef::new(r0, F))));
     lee.take();
     kim.take();
-    st.handle(Command::Client { conn: 1, msg: ClientMsg::Lock { sheet: 1, at: CellRef::new(r1, E) } });
+    st.handle(Command::Client { conn: 1, msg: ClientMsg::Lock { sheet: 1, at: CellRef::new(r1, E), layout: None } });
     assert!(lee.take().iter().any(|m| matches!(m, ServerMsg::LockResult { sheet: 1, ok: true, .. })));
     let kim_msgs = kim.take();
     assert!(kim_msgs.iter().any(|m| matches!(m, ServerMsg::LockChanged { sheet: 0, by: None, .. })), "{kim_msgs:?}");
@@ -133,7 +133,7 @@ async fn one_lock_per_person_across_sheets() {
     assert_eq!(st.snapshot().participants[0].editing, Some(SheetCell::new(1, CellRef::new(r1, E))));
     // 김민지는 이서연이 인력계획에서 잡은 칸과 상관없이 예산신청서 자기 칸을 잡는다.
     let k0 = row_of(&st, 0, "김민지");
-    st.handle(Command::Client { conn: 2, msg: ClientMsg::Lock { sheet: 0, at: CellRef::new(k0, F) } });
+    st.handle(Command::Client { conn: 2, msg: ClientMsg::Lock { sheet: 0, at: CellRef::new(k0, F), layout: None } });
     assert!(kim.take().iter().any(|m| matches!(m, ServerMsg::LockResult { sheet: 0, ok: true, .. })));
     assert_eq!((st.rt[0].locks.len(), st.rt[1].locks.len()), (1, 1));
 }
@@ -145,7 +145,7 @@ async fn unknown_sheet_is_refused_without_panicking() {
     join(&mut st, &lee, "이서연", None);
     lee.take();
     set(&mut st, &lee, 9, "x", 2, F, num(1.0));
-    st.handle(Command::Client { conn: 1, msg: ClientMsg::Lock { sheet: 9, at: CellRef::new(2, F) } });
+    st.handle(Command::Client { conn: 1, msg: ClientMsg::Lock { sheet: 9, at: CellRef::new(2, F), layout: None } });
     st.handle(Command::Client { conn: 1, msg: ClientMsg::Cursor { sheet: 9, at: Some(CellRef::new(2, F)) } });
     st.handle(Command::Client { conn: 1, msg: ClientMsg::AddRows { sheet: 9, count: 1 } });
     st.handle(Command::Client { conn: 1, msg: ClientMsg::RowHistory { sheet: 9, row: 2 } });
@@ -197,7 +197,11 @@ async fn common_settings_follow_the_first_sheet() {
             deadline: Some("2026-10-31T18:00".into()),
         };
         s.apply(1, meta).unwrap();
-        let mut p = Permissions { add_rows: true, lock_after_deadline: false, ..s.sheets[1].config.permissions };
+        let mut p = Permissions {
+            add_rows: true,
+            deadline_action: DeadlineAction::StopSharing,
+            ..s.sheets[1].config.permissions
+        };
         p.format = collect_core::config::FormatPolicy::All;
         s.apply(1, ConfigEdit::SetPermissions { permissions: p }).unwrap();
         s.apply(1, ConfigEdit::AddPerson { name: "윤새봄".into() }).unwrap();
@@ -211,7 +215,7 @@ async fn common_settings_follow_the_first_sheet() {
     for slot in &st.sheets {
         assert_eq!(slot.config.title, "인력·예산");
         assert_eq!(slot.config.deadline.as_deref(), Some("2026-10-31T18:00"));
-        assert!(!slot.config.permissions.lock_after_deadline);
+        assert_eq!(slot.config.permissions.deadline_action, DeadlineAction::StopSharing);
         assert_eq!(slot.config.assignment.extra_people, ["윤새봄"]);
     }
     assert!(st.sheets[1].config.permissions.add_rows && !st.sheets[0].config.permissions.add_rows, "시트별 권한");
@@ -390,6 +394,7 @@ async fn single_sheet_files_from_before_still_recover() {
             col: F,
             old: CellValue::Empty,
             new: num(9800.0),
+            gone: false,
         }]);
         store.flush().unwrap();
     }

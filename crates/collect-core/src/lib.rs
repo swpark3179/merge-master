@@ -12,6 +12,7 @@
 //! - [`validate`]: 참여자 입력 검사·정규화(열 형식)
 //! - [`export`]: 엑셀 저장 계획·원본 충돌 확인·저장 요약(5단계)
 //! - [`history`]: 셀 변경 기록·히스토리 보기·되돌리기·스냅샷 비교(6단계)
+//! - [`structure`]: 표 끝에 행·열 붙이기, 앱에서 붙인 행·열 지우기, 행 취소 표시
 
 pub mod a1;
 pub mod access;
@@ -23,6 +24,7 @@ pub mod format;
 pub mod history;
 pub mod project;
 pub mod sheet;
+pub mod structure;
 pub mod validate;
 pub mod view;
 
