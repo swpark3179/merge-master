@@ -5,6 +5,7 @@ import type {
   CellRef,
   ChangeEntry,
   ChatMessage,
+  ChatReaction,
   ChatTo,
   ClientMsg,
   HighlightView,
@@ -28,7 +29,7 @@ import { loadOutbox, outboxKey, saveOutbox, splitBySheet } from "./outbox";
 import { storageSlug } from "./slug";
 
 /** 서버 `protocol::PROTOCOL_VERSION`과 같아야 한다. */
-const PROTOCOL = 7;
+const PROTOCOL = 8;
 const RETRY_MS = [500, 1000, 2000, 4000, 8000];
 const PING_MS = 20_000;
 const CURSOR_MS = 100;
@@ -455,6 +456,9 @@ export function useSession(slug: string) {
         case "chat":
           setChat((list) => [...list, msg].slice(-500));
           break;
+        case "chatReactions":
+          setChat((list) => list.map((m) => (m.id === msg.id ? { ...m, reactions: msg.reactions } : m)));
+          break;
         case "rowsAdded":
           setRowsAdded({ seq: ++rowsSeq.current, by: msg.by, sheet: msg.sheet, range: msg.range });
           break;
@@ -665,6 +669,8 @@ export function useSession(slug: string) {
     [send],
   );
   const sendChat = useCallback((to: ChatTo, text: string) => send({ type: "chat", to, text }), [send]);
+  /** 남의 채팅에 리액션을 달거나 뗀다(결과는 `chatReactions`로 온다). */
+  const reactChat = useCallback((id: number, kind: ChatReaction) => send({ type: "chatReact", id, kind }), [send]);
   /** 지금 시트 표 아래에 빈 행을 붙인다(그 시트의 참여자 권한 '행 추가'). 결과는 새 시트(`welcome`) + `rowsAdded`. */
   const addRows = useCallback((count = 1) => send({ type: "addRows", sheet: activeRef.current, count }), [send]);
   /** 내가 추가한 행을 지운다(그 시트의 참여자 권한 '행 삭제'). 결과는 새 시트(`welcome`, 구조 판이 오른다) + `rowsDeleted`. */
@@ -748,6 +754,7 @@ export function useSession(slug: string) {
     ackNotice,
     ackHighlight,
     sendChat,
+    reactChat,
     addRows,
     deleteRows,
     cancelRows,

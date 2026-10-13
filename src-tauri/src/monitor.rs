@@ -6,7 +6,7 @@ use collect_core::access::ProgressStats;
 use collect_core::history::{self, ChangeKind, HistoryFilter, HistoryPage};
 use collect_core::view::ConfigView;
 use collect_core::{CellRange, SheetModel};
-use collect_server::protocol::ChatTo;
+use collect_server::protocol::{ChatReaction, ChatTo};
 use collect_server::{CommsSnapshot, HighlightAudience, NoticeTarget, SessionHandle};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -173,4 +173,10 @@ pub async fn chat_send(state: State<'_, AppState>, job: String, to: ChatTo, text
         return Ok(());
     }
     state.session(&job)?.with(move |s| s.chat(to, &text)).await
+}
+
+/// 참여자 채팅에 리액션을 달거나 뗀다(같은 종류를 다시 누르면 뗀다).
+#[tauri::command]
+pub async fn chat_react(state: State<'_, AppState>, job: String, id: u32, kind: ChatReaction) -> CmdResult<()> {
+    state.session(&job)?.with(move |s| s.chat_react(id, kind)).await
 }

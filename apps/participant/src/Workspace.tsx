@@ -1438,7 +1438,7 @@ function Toast({
   }, [leaving, id, onDone]);
   return (
     <div className={`toast ${tone}${leaving ? " leaving" : ""}`} role={tone === "error" ? "alert" : "status"}>
-      <span>{text}</span>
+      <span className="toast-text">{text}</span>
       {action && (
         <button
           className="small"

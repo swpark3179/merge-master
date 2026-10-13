@@ -13,13 +13,15 @@ use ts_rs::TS;
 
 use super::edit::now_ms;
 use super::{ConnId, State};
-use crate::protocol::{ChatMessage, ChatTo, HighlightView, NoticeView, ServerMsg};
+use crate::protocol::{ChatMessage, ChatReaction, ChatReactionMark, ChatTo, HighlightView, NoticeView, ServerMsg};
 
 /// 채팅 한 통의 최대 글자 수.
 pub const MAX_CHAT_CHARS: usize = 1000;
 /// 이 시간 동안 한 사람이 보낼 수 있는 채팅 수.
 const CHAT_WINDOW: Duration = Duration::from_secs(10);
 const CHAT_PER_WINDOW: usize = 10;
+/// 같은 시간 동안 한 사람이 누를 수 있는 리액션 수.
+const REACT_PER_WINDOW: usize = 30;
 /// 입장할 때 보내는 채팅 수 / 호스트 화면에 보이는 채팅 수.
 const CHAT_IN_WELCOME: usize = 200;
 const CHAT_IN_SNAPSHOT: usize = 500;
@@ -85,6 +87,7 @@ pub(super) struct Comms {
     /// 바뀔 때마다 늘어난다(호스트 화면에 보낼지 판단).
     pub(super) rev: u64,
     chat_times: HashMap<String, VecDeque<Instant>>,
+    react_times: HashMap<String, VecDeque<Instant>>,
 }
 
 /// 기록 파일에 남기는 소통 상태(7단계 복구).
@@ -328,6 +331,12 @@ impl State {
         self.post_chat(from, true, to, text);
     }
 
+    /// 호스트가 참여자 채팅에 리액션을 달거나 뗀다.
+    pub(super) fn host_chat_react(&mut self, id: u32, kind: ChatReaction) {
+        let by = self.host_name();
+        self.toggle_reaction(id, kind, by, true);
+    }
+
     // ------------------------------------------------------------ 참여자
 
     pub(super) fn ack_notice(&mut self, conn: ConnId, id: u32) {
@@ -355,12 +364,7 @@ impl State {
         if matches!(to, ChatTo::Person { .. }) {
             return self.send(conn, ServerMsg::Error { message: "참여자끼리 1:1 채팅은 할 수 없습니다".into() });
         }
-        let times = self.comms.chat_times.entry(name.clone()).or_default();
-        let now = Instant::now();
-        while times.front().is_some_and(|t| now.duration_since(*t) > CHAT_WINDOW) {
-            times.pop_front();
-        }
-        if times.len() >= CHAT_PER_WINDOW {
+        if !within_rate(self.comms.chat_times.entry(name.clone()).or_default(), CHAT_PER_WINDOW) {
             return self.send(
                 conn,
                 ServerMsg::Error {
@@ -368,9 +372,45 @@ impl State {
                 },
             );
         }
-        times.push_back(now);
         self.touch(conn);
         self.post_chat(name, false, to, text);
+    }
+
+    pub(super) fn chat_react(&mut self, conn: ConnId, id: u32, kind: ChatReaction) {
+        let Some((name, _)) = self.person_of(conn) else { return };
+        if !within_rate(self.comms.react_times.entry(name.clone()).or_default(), REACT_PER_WINDOW) {
+            return self.send(
+                conn,
+                ServerMsg::Error {
+                    message: "리액션을 너무 빨리 누르고 있습니다. 잠시 뒤에 눌러 주세요".into()
+                },
+            );
+        }
+        self.touch(conn);
+        self.toggle_reaction(id, kind, name, false);
+    }
+
+    /// 남의 채팅(참여자는 자기에게 보이는 것만)에 그 사람의 리액션을 달거나 떼고, 그 채팅이 보이는 사람에게 알린다.
+    fn toggle_reaction(&mut self, id: u32, kind: ChatReaction, by: String, host: bool) {
+        let Some(m) = self.comms.chat.iter_mut().find(|m| m.id == id) else { return };
+        let allowed = if host { !m.host } else { (m.host || m.from != by) && chat_visible(m, &by) };
+        if !allowed {
+            return;
+        }
+        let same = |r: &ChatReactionMark| r.kind == kind && r.host == host && (host || r.by == by);
+        match m.reactions.iter().position(same) {
+            Some(i) => {
+                m.reactions.remove(i);
+            }
+            None => m.reactions.push(ChatReactionMark { kind, by, host }),
+        }
+        let msg = m.clone();
+        for (conn, p) in self.attached() {
+            if chat_visible(&msg, &self.roster[p]) {
+                self.send(conn, ServerMsg::ChatReactions { id, reactions: msg.reactions.clone() });
+            }
+        }
+        self.comms.rev += 1;
     }
 
     fn post_chat(&mut self, from: String, host: bool, to: ChatTo, text: String) {
@@ -380,7 +420,7 @@ impl State {
         }
         let text: String = text.chars().take(MAX_CHAT_CHARS).collect();
         let id = self.comms.id();
-        let msg = ChatMessage { id, at_ms: now_ms(), from, host, to, text };
+        let msg = ChatMessage { id, at_ms: now_ms(), from, host, to, text, reactions: Vec::new() };
         for (conn, p) in self.attached() {
             let name = &self.roster[p];
             if chat_visible(&msg, name) {
@@ -454,6 +494,19 @@ impl State {
             chat: c.chat[c.chat.len().saturating_sub(CHAT_IN_SNAPSHOT)..].to_vec(),
         }
     }
+}
+
+/// 이 시간 안에 `limit`번보다 적게 했으면 지금을 남기고 참(채팅·리액션 속도 제한).
+fn within_rate(times: &mut VecDeque<Instant>, limit: usize) -> bool {
+    let now = Instant::now();
+    while times.front().is_some_and(|t| now.duration_since(*t) > CHAT_WINDOW) {
+        times.pop_front();
+    }
+    if times.len() >= limit {
+        return false;
+    }
+    times.push_back(now);
+    true
 }
 
 /// 그 사람에게 보이는 채팅: 전체, 내가 호스트에게 보낸 것, 호스트가 나에게 보낸 것.

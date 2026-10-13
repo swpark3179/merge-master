@@ -3,6 +3,7 @@ import type {
   CellRange,
   CellRef,
   CellValue,
+  ChatReaction,
   ChatTo,
   CommsSnapshot,
   ConfigEdit,
@@ -203,6 +204,9 @@ export function jobApi(job: string) {
     highlightClear: (id: number) => call<void>("highlight_clear", { id }),
 
     chatSend: (to: ChatTo, text: string) => call<void>("chat_send", { to, text }),
+
+    /** 참여자 채팅에 리액션을 달거나 뗀다(같은 종류를 다시 보내면 뗀다). */
+    chatReact: (id: number, kind: ChatReaction) => call<void>("chat_react", { id, kind }),
 
     // ---------------------------------------------------------- 5 히스토리
     historyQuery: (filter: HistoryFilter, offset: number, limit: number) =>

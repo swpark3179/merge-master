@@ -48,8 +48,8 @@ use ts_rs::TS;
 
 use crate::ipnames::IpNames;
 use crate::protocol::{
-    CellUpdate, ChangeEntry, ChatTo, ClientMsg, KickReason, LockEntry, PROTOCOL_VERSION, PersonProgress, PresenceEntry,
-    PresenceStatus, ServerMsg, SessionInfo, SheetView, StyleChange, Welcome,
+    CellUpdate, ChangeEntry, ChatReaction, ChatTo, ClientMsg, KickReason, LockEntry, PROTOCOL_VERSION, PersonProgress,
+    PresenceEntry, PresenceStatus, ServerMsg, SessionInfo, SheetView, StyleChange, Welcome,
 };
 
 /// 이만큼 입력·이동이 없으면 '자리 비움'.
@@ -258,6 +258,10 @@ enum Action {
     Chat {
         to: ChatTo,
         text: String,
+    },
+    ChatReact {
+        id: u32,
+        kind: ChatReaction,
     },
     Store(Store),
     Meta(String, String),
@@ -493,6 +497,11 @@ impl Shared<'_> {
     /// 호스트 채팅(전체 또는 한 사람).
     pub fn chat(&mut self, to: ChatTo, text: &str) {
         self.actions.push(Action::Chat { to, text: text.to_string() });
+    }
+
+    /// 참여자 채팅에 호스트 리액션을 달거나 뗀다(같은 종류를 다시 보내면 뗀다).
+    pub fn chat_react(&mut self, id: u32, kind: ChatReaction) {
+        self.actions.push(Action::ChatReact { id, kind });
     }
 
     /// 기록을 남길 저장소를 바꾼다(다시 불러와 확정할 때 새 파일).
@@ -984,6 +993,7 @@ impl State {
             ClientMsg::AckNotice { id } => self.ack_notice(conn, id),
             ClientMsg::AckHighlight { id } => self.ack_highlight(conn, id),
             ClientMsg::Chat { to, text } => self.chat(conn, to, text),
+            ClientMsg::ChatReact { id, kind } => self.chat_react(conn, id, kind),
             ClientMsg::AddRows { sheet, count } => {
                 self.participant_structure(conn, sheet, StructureEdit::AddRows { count }, None)
             }
@@ -1350,6 +1360,7 @@ impl State {
                 Action::Highlight { sheet, range, note, audience } => self.add_highlight(sheet, range, note, audience),
                 Action::ClearHighlight(id) => self.clear_highlight(id),
                 Action::Chat { to, text } => self.host_chat(to, text),
+                Action::ChatReact { id, kind } => self.host_chat_react(id, kind),
                 Action::Store(store) => {
                     store.append(&self.log);
                     self.store = Some(store);

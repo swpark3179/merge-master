@@ -399,6 +399,12 @@ button.link:hover:not(:disabled) {
   font-size: 13px;
 }
 
+/* 여러 줄 공지도 적은 그대로 */
+.toast-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .toast.leaving {
   animation: mm-leave 150ms var(--ease-in) forwards;
 }
@@ -804,16 +810,22 @@ textarea.detail-text:focus {
 
 .important-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding: 6px 16px;
   border-bottom: 1.5px solid var(--warn);
   background: var(--warn-soft);
   font-size: 14px;
+  line-height: 28px;
 }
 
+/* 여러 줄 공지는 적은 그대로(줄바꿈) */
 .important-bar .grow {
   flex: 1;
+  line-height: 1.45;
+  padding: 4px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .side-panel {
@@ -912,6 +924,13 @@ body.side-resizing {
   opacity: 0.7;
 }
 
+/* 공지·강조 메모는 적은 그대로(줄바꿈) */
+.alert-text {
+  align-self: stretch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .chat-list {
   flex: 1;
   min-height: 0;
@@ -922,6 +941,7 @@ body.side-resizing {
 }
 
 .chat-msg {
+  position: relative;
   animation: mm-drop var(--dur-base) var(--ease-out);
   max-width: 92%;
   padding: 6px 8px;
@@ -935,14 +955,126 @@ body.side-resizing {
   background: var(--accent-soft);
 }
 
+.chat-text {
+  white-space: pre-wrap;
+}
+
+/* 리액션: 단 것은 칩(이모지·수), 남의 글에 마우스를 올리면 오른쪽 위에 고르는 막대 */
+.chat-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.chat-reactions .reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.chat-reactions button.reaction:hover {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.chat-reactions .reaction.on,
+.chat-reactions button.reaction.on:hover {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.reaction-bar {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  display: none;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.chat-msg:hover .reaction-bar,
+.chat-msg:focus-within .reaction-bar {
+  display: flex;
+}
+
+.reaction-bar button {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.reaction-bar button:hover {
+  background: var(--hover);
+}
+
+.reaction-bar button.on {
+  background: var(--accent-tint);
+}
+
+/* 마우스가 없는 기기: 막대를 글 아래에 늘 보인다 */
+@media (hover: none) {
+  .reaction-bar {
+    position: static;
+    display: flex;
+    width: fit-content;
+    margin-top: 4px;
+    box-shadow: none;
+  }
+}
+
+.chat-opts {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .chat-input {
   display: flex;
+  align-items: flex-end;
   gap: 4px;
 }
 
-.chat-input input {
+.chat-input textarea {
   flex: 1;
   min-width: 0;
+  min-height: 30px;
+  max-height: 112px;
+  padding: 4px 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  line-height: 1.4;
+  resize: none;
+  overflow-y: auto;
+}
+
+/* 빈 칸의 안내 글은 한 줄(줄바꿈되면 칸이 높아진다) */
+.chat-input textarea:placeholder-shown {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 button.cell-ref {

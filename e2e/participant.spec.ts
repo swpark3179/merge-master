@@ -87,6 +87,21 @@ test("선택과 키보드 이동이 사이드바 '셀 내용'에 반영된다", 
   await expect(page.locator(".cell-detail .addr")).toHaveText("C8");
 });
 
+test("브라우저 기본 오른쪽 클릭 메뉴는 뜨지 않고, 글 입력 칸에서만 쓴다", async ({ page }) => {
+  await enterAs(page, "한지우");
+  // 메뉴를 막았으면 dispatchEvent가 false(기본 동작 취소)를 돌려준다.
+  const blocked = (selector: string) =>
+    page
+      .locator(selector)
+      .first()
+      .evaluate((el) => !el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+  expect(await blocked(".mmg-colhead[data-col-head]")).toBe(true); // 크기 조절 권한이 없는 열 머리글
+  expect(await blocked(".status")).toBe(true); // 그리드 밖
+  expect(await blocked(".side-panel")).toBe(true);
+  await page.locator(".side-panel").getByRole("tab", { name: /^채팅/ }).click();
+  expect(await blocked('[aria-label="채팅 입력"]')).toBe(false); // 붙여넣기 등
+});
+
 test("사이드바 왼쪽 경계를 끌어 너비를 바꾸고, 새로 고쳐도 기억한다", async ({ page }) => {
   await enterAs(page, "최도윤");
   const panel = page.locator(".side-panel");

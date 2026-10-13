@@ -58,7 +58,7 @@ fn chats(msgs: &[ServerMsg]) -> Vec<ChatMessage> {
         .collect()
 }
 
-use crate::protocol::{ChatMessage, NoticeView};
+use crate::protocol::{ChatMessage, ChatReaction, ChatReactionMark, NoticeView};
 
 #[tokio::test]
 async fn notices_reach_targets_and_count_reads() {
@@ -209,6 +209,88 @@ async fn chat_routes_to_everyone_host_or_one_person() {
     // 길면 자른다.
     host(&mut st, |s| s.chat(ChatTo::All, &"가".repeat(5000)));
     assert_eq!(st.comms_snapshot().chat.last().unwrap().text.chars().count(), comms::MAX_CHAT_CHARS);
+}
+
+fn reactions(msgs: &[ServerMsg]) -> Vec<(u32, Vec<ChatReactionMark>)> {
+    msgs.iter()
+        .filter_map(|m| match m {
+            ServerMsg::ChatReactions { id, reactions } => Some((*id, reactions.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn chat_reactions_toggle_for_others_messages_only() {
+    let (mut st, mut c) = setup(&["이서연", "최도윤", "한지우"]);
+    let say = |st: &mut State, c: &Client, to: ChatTo, text: &str| {
+        st.handle(Command::Client { conn: c.conn, msg: ClientMsg::Chat { to, text: text.into() } });
+    };
+    let react = |st: &mut State, c: &Client, id: u32, kind: ChatReaction| {
+        st.handle(Command::Client { conn: c.conn, msg: ClientMsg::ChatReact { id, kind } });
+    };
+    say(&mut st, &c[0], ChatTo::All, "다 적었어요");
+    let all = chats(&c[0].take())[0].id;
+    for x in &mut c[1..] {
+        x.take();
+    }
+
+    // 남의 글: 모두에게 리액션 목록이 간다. 한 사람이 여러 종류를 달 수 있다.
+    react(&mut st, &c[1], all, ChatReaction::Good);
+    react(&mut st, &c[1], all, ChatReaction::Thanks);
+    for x in &mut c {
+        let got = reactions(&x.take());
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[1].0, all);
+        assert_eq!(
+            got[1].1.iter().map(|r| (r.kind, r.by.as_str(), r.host)).collect::<Vec<_>>(),
+            vec![(ChatReaction::Good, "최도윤", false), (ChatReaction::Thanks, "최도윤", false)]
+        );
+    }
+    // 같은 종류를 다시 누르면 뗀다.
+    react(&mut st, &c[1], all, ChatReaction::Good);
+    assert_eq!(reactions(&c[0].take())[0].1.iter().map(|r| r.kind).collect::<Vec<_>>(), vec![ChatReaction::Thanks]);
+    for x in &mut c[1..] {
+        x.take();
+    }
+    // 내 글에는 달 수 없다.
+    react(&mut st, &c[0], all, ChatReaction::Ok);
+    assert!(reactions(&c[0].take()).is_empty());
+
+    // 호스트에게만 보낸 글: 다른 참여자는 달 수 없고, 호스트는 단다(보낸 사람에게만 알린다).
+    say(&mut st, &c[1], ChatTo::Host, "질문 있어요");
+    let private = chats(&c[1].take())[0].id;
+    react(&mut st, &c[2], private, ChatReaction::Yes);
+    assert!(reactions(&c[1].take()).is_empty());
+    host(&mut st, move |s| s.chat_react(private, ChatReaction::Yes));
+    let got = reactions(&c[1].take());
+    assert_eq!(got[0].1.len(), 1);
+    assert!(got[0].1[0].host);
+    assert!(reactions(&c[0].take()).is_empty() && reactions(&c[2].take()).is_empty());
+    // 호스트는 이름이 바뀌어도 같은 사람: 다시 누르면 뗀다. 호스트 글에는 호스트가 달 수 없다.
+    host(&mut st, move |s| s.chat_react(private, ChatReaction::Yes));
+    assert!(reactions(&c[1].take())[0].1.is_empty());
+    host(&mut st, |s| s.chat(ChatTo::All, "확인했습니다"));
+    let from_host = st.comms_snapshot().chat.last().unwrap().id;
+    host(&mut st, move |s| s.chat_react(from_host, ChatReaction::Ok));
+    react(&mut st, &c[2], from_host, ChatReaction::Ok);
+
+    // 호스트 화면·입장(welcome)에도 리액션이 실린다.
+    let snap = st.comms_snapshot();
+    let kinds = |id: u32| snap.chat.iter().find(|m| m.id == id).unwrap().reactions.clone();
+    assert_eq!(kinds(all).len(), 1);
+    assert_eq!(kinds(from_host).iter().map(|r| (r.by.as_str(), r.host)).collect::<Vec<_>>(), vec![("한지우", false)]);
+    let w = st.welcome("이서연").unwrap();
+    assert_eq!(w.chat.iter().find(|m| m.id == all).unwrap().reactions[0].kind, ChatReaction::Thanks);
+    // 없는 채팅은 그냥 둔다.
+    react(&mut st, &c[2], 9999, ChatReaction::Ok);
+    assert!(reactions(&c[2].take()).iter().all(|(id, _)| *id != 9999));
+
+    // 너무 빨리 누르면 막는다.
+    for _ in 0..40 {
+        react(&mut st, &c[2], all, ChatReaction::Sad);
+    }
+    assert!(c[2].take().iter().any(|m| matches!(m, ServerMsg::Error { message } if message.contains("너무 빨리"))));
 }
 
 #[tokio::test]

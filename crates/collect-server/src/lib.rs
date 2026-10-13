@@ -175,6 +175,7 @@ fn router(state: Arc<AppState>) -> Router {
             .route("/__dev/highlight", post(dev_highlight))
             .route("/__dev/highlight/clear", post(dev_highlight_clear))
             .route("/__dev/chat", post(dev_chat))
+            .route("/__dev/chat/react", post(dev_chat_react))
             .route("/__dev/comms", get(dev_comms))
             .route("/__dev/history", get(dev_history))
             .route("/__dev/snapshot", get(dev_snapshot))
@@ -409,6 +410,17 @@ struct DevChat {
 
 async fn dev_chat(Picked(session): Picked, Json(req): Json<DevChat>) -> Response {
     dev_result(session.with(move |s| s.chat(req.to, &req.text)).await.map(|_| "ok"))
+}
+
+#[derive(serde::Deserialize)]
+struct DevChatReact {
+    id: u32,
+    kind: protocol::ChatReaction,
+}
+
+/// 호스트 리액션(같은 종류를 다시 보내면 뗀다).
+async fn dev_chat_react(Picked(session): Picked, Json(req): Json<DevChatReact>) -> Response {
+    dev_result(session.with(move |s| s.chat_react(req.id, req.kind)).await.map(|_| "ok"))
 }
 
 async fn dev_comms(Picked(session): Picked) -> impl IntoResponse {
