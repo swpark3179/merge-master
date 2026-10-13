@@ -425,6 +425,7 @@ pub fn run() {
             monitor::highlight_add,
             monitor::highlight_clear,
             monitor::chat_send,
+            monitor::chat_react,
             history::history_query,
             history::history_timeline,
             history::history_revert,

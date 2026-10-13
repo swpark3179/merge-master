@@ -1,7 +1,24 @@
-import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
-import { a1, scrollBehavior, sheetPrefix, splitCellRefs } from "@mm/shared";
+import type {
+  CellRange,
+  CellRef,
+  CellValue,
+  ChatReaction,
+  ChatReactionMark,
+  ChatTo,
+  ColumnRule,
+  ReactionViewer,
+} from "@mm/shared";
+import {
+  a1,
+  CHAT_REACTIONS,
+  chatEnterKey,
+  reactionGroups,
+  scrollBehavior,
+  sheetPrefix,
+  splitCellRefs,
+} from "@mm/shared";
 import type { KeyboardEvent, PointerEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { CellDetail } from "./CellDetail";
 import { sameValue } from "./edits";
@@ -203,7 +220,7 @@ function Alerts({
             <span className="mono">{addr(h.sheet, h.range)}</span> · {h.from} · {time(h.atMs)}
             {h.acked && <span className="muted"> · 확인함</span>}
           </div>
-          {h.note && <div>{h.note}</div>}
+          {h.note && <div className="alert-text">{h.note}</div>}
           <button className="link" onClick={() => onReveal(h.range, h.id, h.sheet)}>
             셀로 이동 →
           </button>
@@ -216,7 +233,7 @@ function Alerts({
             {n.important && <span className="tag tag-required">중요</span>} {time(n.atMs)} · {n.from}
             {n.read && <span className="muted"> · 확인함</span>}
           </div>
-          <div>{n.text}</div>
+          <div className="alert-text">{n.text}</div>
           {!n.read && (
             <button className="ghost small" onClick={() => s.ackNotice(n.id)}>
               확인
@@ -228,6 +245,9 @@ function Alerts({
     </div>
   );
 }
+
+/** 채팅 한 통의 최대 글자 수(서버 `MAX_CHAT_CHARS`). */
+const CHAT_MAX = 1000;
 
 function Chat({
   s,
@@ -246,6 +266,9 @@ function Chat({
   const [toHost, setToHost] = useState(false);
   const [text, setText] = useState("");
   const list = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
+  /** Ctrl+Enter로 줄을 넣은 뒤 둘 커서 자리. */
+  const caret = useRef<number | null>(null);
   const last = s.chat[s.chat.length - 1]?.id ?? 0;
   // 새 메시지가 오면 맨 아래로(처음 열 때는 바로, 그 뒤로는 부드럽게).
   const scrolled = useRef(false);
@@ -254,53 +277,87 @@ function Chat({
     list.current?.scrollTo({ top: list.current.scrollHeight, behavior: scrollBehavior(!scrolled.current) });
     scrolled.current = true;
   }, [last, onSeen]);
+  // 입력 칸은 글에 맞춰 높아진다(CSS 최대 높이를 넘으면 스크롤).
+  useLayoutEffect(() => {
+    const el = input.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight + el.offsetHeight - el.clientHeight}px`;
+    if (caret.current !== null) {
+      el.setSelectionRange(caret.current, caret.current);
+      caret.current = null;
+    }
+  }, [text]);
   const send = () => {
     const to: ChatTo = toHost ? { kind: "host" } : { kind: "all" };
     if (!text.trim()) return;
     s.sendChat(to, text);
     setText("");
   };
+  const viewer = { name: me };
   return (
     <div className="side-body chat">
       <div className="chat-list" ref={list} aria-label="채팅 내용">
         {s.chat.length === 0 && (
           <div className="muted small">아직 채팅이 없습니다. {host} 님에게 물어볼 것이 있으면 적어 주세요.</div>
         )}
-        {s.chat.map((m) => (
-          <div key={m.id} className={`chat-msg${m.from === me && !m.host ? " mine" : ""}`}>
-            <div className="small">
-              <b>{m.from === me && !m.host ? "나" : m.from}</b>
-              {m.to.kind === "host" && <span className="muted"> → {host}</span>}
-              {m.to.kind === "person" && <span className="muted"> → 나에게</span>}
-              <span className="muted"> · {time(m.atMs)}</span>
+        {s.chat.map((m) => {
+          const mine = m.from === me && !m.host;
+          return (
+            <div key={m.id} className={`chat-msg${mine ? " mine" : ""}`}>
+              <div className="small">
+                <b>{mine ? "나" : m.from}</b>
+                {m.to.kind === "host" && <span className="muted"> → {host}</span>}
+                {m.to.kind === "person" && <span className="muted"> → 나에게</span>}
+                <span className="muted"> · {time(m.atMs)}</span>
+              </div>
+              <div className="chat-text">
+                {splitCellRefs(m.text).map((p, i) =>
+                  "ref" in p ? (
+                    <button key={i} className="cell-ref" onClick={() => onRef(p.range, p.sheet)}>
+                      #{p.ref}
+                    </button>
+                  ) : (
+                    <span key={i}>{p.text}</span>
+                  ),
+                )}
+              </div>
+              <ChatReactions
+                marks={m.reactions}
+                viewer={viewer}
+                canReact={!mine}
+                onToggle={(kind) => s.reactChat(m.id, kind)}
+              />
             </div>
-            <div>
-              {splitCellRefs(m.text).map((p, i) =>
-                "ref" in p ? (
-                  <button key={i} className="cell-ref" onClick={() => onRef(p.range, p.sheet)}>
-                    #{p.ref}
-                  </button>
-                ) : (
-                  <span key={i}>{p.text}</span>
-                ),
-              )}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      <label className="check small">
-        <input type="checkbox" checked={toHost} onChange={(e) => setToHost(e.target.checked)} />
-        {host} 님에게만
-      </label>
+      <div className="chat-opts">
+        <label className="check small">
+          <input type="checkbox" checked={toHost} onChange={(e) => setToHost(e.target.checked)} />
+          {host} 님에게만
+        </label>
+        <span className="muted small">Shift+Enter 줄바꿈</span>
+      </div>
       <div className="chat-input">
-        <input
+        <textarea
+          ref={input}
           aria-label="채팅 입력"
           placeholder="메시지 · #셀 참조(예: #F7)"
-          maxLength={1000}
+          rows={1}
+          maxLength={CHAT_MAX}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.nativeEvent.isComposing) send();
+            const key = chatEnterKey(e);
+            if (!key) return;
+            e.preventDefault();
+            if (key === "send") return send();
+            const el = e.currentTarget;
+            const next = text.slice(0, el.selectionStart) + "\n" + text.slice(el.selectionEnd);
+            if (next.length > CHAT_MAX) return;
+            caret.current = el.selectionStart + 1;
+            setText(next);
           }}
         />
         <button className="small" disabled={!text.trim()} onClick={send}>
@@ -308,6 +365,78 @@ function Chat({
         </button>
       </div>
     </div>
+  );
+}
+
+/**
+ * 채팅 한 통의 리액션: 단 것은 칩(이모지·수, 마우스를 올리면 단 사람). 남의 글이면 칩을 눌러 내 것을 달거나 떼고,
+ * 마우스를 올리면 오른쪽 위에 고르는 막대가 나온다.
+ */
+function ChatReactions({
+  marks,
+  viewer,
+  canReact,
+  onToggle,
+}: {
+  marks: ChatReactionMark[] | undefined;
+  viewer: ReactionViewer;
+  canReact: boolean;
+  onToggle: (kind: ChatReaction) => void;
+}) {
+  const groups = reactionGroups(marks, viewer);
+  return (
+    <>
+      {groups.length > 0 && (
+        <div className="chat-reactions">
+          {groups.map((g) => {
+            const title = `${g.label}: ${g.names.join(", ")}`;
+            const body = (
+              <>
+                <span aria-hidden="true">{g.emoji}</span>
+                {g.count}
+              </>
+            );
+            return canReact ? (
+              <button
+                key={g.kind}
+                type="button"
+                className={`reaction${g.mine ? " on" : ""}`}
+                aria-label={`${g.label} ${g.count}`}
+                aria-pressed={g.mine}
+                title={title}
+                onClick={() => onToggle(g.kind)}
+              >
+                {body}
+              </button>
+            ) : (
+              <span key={g.kind} className="reaction" role="img" aria-label={`${g.label} ${g.count}`} title={title}>
+                {body}
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {canReact && (
+        <div className="reaction-bar" role="group" aria-label="리액션 달기">
+          {CHAT_REACTIONS.map((r) => {
+            const on = groups.some((g) => g.kind === r.kind && g.mine);
+            return (
+              <button
+                key={r.kind}
+                type="button"
+                className={on ? "on" : undefined}
+                aria-label={r.label}
+                aria-pressed={on}
+                title={r.label}
+                onClick={() => onToggle(r.kind)}
+              >
+                {r.emoji}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </>
   );
 }
 

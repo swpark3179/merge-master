@@ -21,7 +21,8 @@ use ts_rs::TS;
 /// 5: 여러 시트(칸·범위가 든 메시지마다 `sheet` = 세션 안 시트 순번, `welcome.sheets`).
 /// 6: 열 너비·행 높이(`resize` → 모두에게 `resized`).
 /// 7: 행 삭제·취소 행(`deleteRows`·`cancelRows`, 편집의 `layout`), 호스트 시각(`serverNow`·`deadlineAt`), 마감 동작.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// 8: 채팅 리액션(`chatReact` → 보이는 사람에게 `chatReactions`, `ChatMessage.reactions`).
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// 채팅 받는 쪽. 참여자는 전체나 호스트에게, 호스트는 전체나 한 사람에게 보낸다.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
@@ -45,6 +46,32 @@ pub struct ChatMessage {
     pub host: bool,
     pub to: ChatTo,
     pub text: String,
+    /// 단 순서. 옛 기록 파일에는 없다.
+    #[serde(default)]
+    pub reactions: Vec<ChatReactionMark>,
+}
+
+/// 채팅 리액션(아이콘은 화면이 정한다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum ChatReaction {
+    Ok,
+    Yes,
+    No,
+    Thanks,
+    Good,
+    Sad,
+}
+
+/// 리액션 하나. 호스트는 이름이 바뀔 수 있어 `host`로 가린다(`by`는 달 때의 이름).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ChatReactionMark {
+    pub kind: ChatReaction,
+    pub by: String,
+    pub host: bool,
 }
 
 /// 참여자가 받는 공지.
@@ -178,6 +205,11 @@ pub enum ClientMsg {
     Chat {
         to: ChatTo,
         text: String,
+    },
+    /// 남의 채팅에 리액션을 달거나 뗀다(같은 종류를 다시 보내면 뗀다).
+    ChatReact {
+        id: u32,
+        kind: ChatReaction,
     },
     /// 그 시트 표 아래에 빈 행을 붙인다(그 시트의 참여자 권한 '행 추가'일 때만). 결과는 모두에게 새 시트(`welcome`)
     /// + `rowsAdded`.
@@ -468,6 +500,11 @@ pub enum ServerMsg {
         id: u32,
     },
     Chat(ChatMessage),
+    /// 그 채팅의 리액션이 바뀌었다(전체 목록).
+    ChatReactions {
+        id: u32,
+        reactions: Vec<ChatReactionMark>,
+    },
     /// 누군가 표 아래에 행을 붙였다(새 시트는 `welcome`으로 먼저 온다). 모델 좌표.
     RowsAdded {
         by: String,

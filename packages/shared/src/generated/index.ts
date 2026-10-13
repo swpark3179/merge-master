@@ -22,6 +22,8 @@ export type { CellValue } from "./CellValue";
 export type { ChangeEntry } from "./ChangeEntry";
 export type { ChangeKind } from "./ChangeKind";
 export type { ChatMessage } from "./ChatMessage";
+export type { ChatReaction } from "./ChatReaction";
+export type { ChatReactionMark } from "./ChatReactionMark";
 export type { ChatTo } from "./ChatTo";
 export type { CheckReport } from "./CheckReport";
 export type { ClientMsg } from "./ClientMsg";

@@ -55,6 +55,23 @@ test("중요 공지는 확인할 때까지 위에 고정되고 읽음이 집계�
   await expect(a.locator(".side-panel")).toContainText("참고: 양식 갱신");
 });
 
+test("여러 줄 공지는 중요 공지 막대·알림 탭에 적은 그대로 보인다", async ({ browser, request }) => {
+  const a = await open(browser, "최도윤");
+  const body = "1. 산출 근거 입력\n2. 금액 다시 확인\n3. 저장";
+  const ok = await request.post("/__dev/notice", {
+    data: { text: body, important: true, target: { kind: "people", names: ["최도윤"] } },
+  });
+  expect(ok.ok()).toBe(true);
+  const lines = (el: Element) => (el as HTMLElement).innerText;
+  const bar = a.locator(".important-bar", { hasText: "금액 다시 확인" });
+  await expect.poll(() => bar.locator(".grow").evaluate(lines)).toBe(body);
+  await a.locator(".side-panel").getByRole("tab", { name: /^알림/ }).click();
+  const item = a.locator(".alert-item", { hasText: "금액 다시 확인" }).locator(".alert-text");
+  await expect.poll(() => item.evaluate(lines)).toBe(body);
+  await bar.getByRole("button", { name: "확인" }).click();
+  await expect(bar).toHaveCount(0);
+});
+
 test("셀 강조: 노란 표시·말풍선과 '셀로 이동', 확인 집계, 해제", async ({ browser, request }) => {
   const a = await open(browser, "정하늘");
   const ok = await request.post("/__dev/highlight", {
@@ -116,6 +133,57 @@ test("채팅: 전체·호스트에게, 호스트의 1:1 답장과 #셀 참조", 
   await a.locator(".side-panel").getByRole("tab", { name: "셀 내용" }).click();
   await expect(a.locator(".cell-detail .addr")).toHaveText("F9");
   await expect(b.getByLabel("채팅 내용")).not.toContainText("히스토리에서 복원했습니다");
+});
+
+test("채팅: Shift·Ctrl+Enter로 여러 줄, 남의 글에 리액션(여러 개·다시 누르면 뗌, 호스트 포함)", async ({
+  browser,
+  request,
+}) => {
+  const a = await open(browser, "김민지");
+  const b = await open(browser, "정하늘");
+  for (const p of [a, b]) await p.locator(".side-panel").getByRole("tab", { name: /^채팅/ }).click();
+  const input = a.getByLabel("채팅 입력");
+  await input.click();
+  await a.keyboard.type("오늘 할 일");
+  await a.keyboard.press("Shift+Enter");
+  await a.keyboard.type("산출 근거");
+  await a.keyboard.press("Control+Enter");
+  await a.keyboard.type("금액 확인");
+  await expect(input).toHaveValue("오늘 할 일\n산출 근거\n금액 확인");
+  await a.keyboard.press("Enter");
+  await expect(input).toHaveValue("");
+  const lines = (el: Element) => (el as HTMLElement).innerText;
+  const msgA = a.getByLabel("채팅 내용").locator(".chat-msg", { hasText: "오늘 할 일" }).last();
+  const msgB = b.getByLabel("채팅 내용").locator(".chat-msg", { hasText: "오늘 할 일" }).last();
+  await expect.poll(() => msgB.locator(".chat-text").evaluate(lines)).toBe("오늘 할 일\n산출 근거\n금액 확인");
+
+  // 남의 글: 마우스를 올리면 리액션 막대. 여러 개를 달 수 있고 모두에게 보인다.
+  const bar = msgB.getByRole("group", { name: "리액션 달기" });
+  await msgB.hover();
+  await bar.getByRole("button", { name: "좋아요" }).click();
+  await msgB.hover();
+  await bar.getByRole("button", { name: "감사합니다" }).click();
+  await expect(msgA.locator(".chat-reactions")).toHaveText("🙏1👍1"); // 종류 순서(👌 ✅ ❌ 🙏 👍 😢)
+  await expect(msgA.locator(".reaction", { hasText: "👍" })).toHaveAttribute("title", "좋아요: 정하늘");
+  // 내 글에는 막대가 없고 칩도 누를 수 없다.
+  await expect(msgA.locator(".reaction-bar")).toHaveCount(0);
+  await expect(msgA.locator("button.reaction")).toHaveCount(0);
+  // 내 리액션은 칩에 표시되고, 다시 누르면 뗀다.
+  const good = msgB.locator(".chat-reactions").getByRole("button", { name: "좋아요 1" });
+  await expect(good).toHaveAttribute("aria-pressed", "true");
+  await good.click();
+  await expect(msgA.locator(".reaction", { hasText: "👍" })).toHaveCount(0);
+  await expect(msgA.locator(".reaction", { hasText: "🙏" })).toHaveCount(1);
+
+  // 호스트 리액션(개발 서버 API로 대신): 호스트 이름(박지훈)으로 보인다.
+  const chat: { id: number; text: string }[] = (await (await request.get("/__dev/comms")).json()).chat;
+  const id = chat.findLast((m) => m.text.startsWith("오늘 할 일"))!.id;
+  expect((await request.post("/__dev/chat/react", { data: { id, kind: "ok" } })).ok()).toBe(true);
+  await expect(msgA.locator(".reaction", { hasText: "👌" })).toHaveAttribute("title", "OK: 박지훈");
+  await expect(msgB.locator(".chat-reactions").getByRole("button", { name: "OK 1" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("셀 이력(오른쪽 클릭)에서 내 마지막 변경을 되돌리고, 묶음 출처가 기록된다", async ({ browser, request }) => {

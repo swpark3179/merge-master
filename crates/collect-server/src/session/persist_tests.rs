@@ -5,7 +5,7 @@ use collect_core::history::BatchOrigin;
 
 use super::tests::{Client, connect, fixture, host, join};
 use super::*;
-use crate::protocol::{CellEdit, ChatTo};
+use crate::protocol::{CellEdit, ChatReaction, ChatTo};
 
 const F: u32 = 5;
 const H: u32 = 7;
@@ -62,6 +62,9 @@ async fn session_comes_back_from_its_file() {
         s.sheets[0].baseline.cells[0].v = CellValue::Text("저장한 기준".into());
         s.set_closed(true);
     });
+    let hello = st.comms_snapshot().chat[0].id;
+    let msg = ClientMsg::ChatReact { id: hello, kind: ChatReaction::Thanks };
+    st.handle(Command::Client { conn: lee.conn, msg });
     set(&mut st, &lee, "late", r + 2, F, CellValue::Number(2.0)); // 마감 뒤: 거절(기록 없음)
     st.store.as_ref().unwrap().flush().unwrap();
     let before_model = st.sheets[0].model.clone();
@@ -86,6 +89,7 @@ async fn session_comes_back_from_its_file() {
     assert_eq!(st.snapshots.list.len(), before_snaps);
     let comms = st.comms_snapshot();
     assert_eq!((comms.notices.len(), comms.highlights.len(), comms.chat.len()), (1, 1, 1));
+    assert_eq!(comms.chat[0].reactions[0].kind, ChatReaction::Thanks, "채팅 리액션도 남는다");
     assert_eq!(st.rt[0].versions[(r * st.sheets[0].model.cols + F) as usize], 1);
 
     // 참여자가 다시 들어오면 공지·강조·채팅을 받고, 보내지 못했던 묶음(b3)을 다시 보내도 한 번만 반영된다.
