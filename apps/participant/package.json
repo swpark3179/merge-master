@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@mm/chat": "workspace:*",
     "@mm/grid": "workspace:*",
     "@mm/shared": "workspace:*",
     "react": "^19.3.0",

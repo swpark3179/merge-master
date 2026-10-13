@@ -1,22 +1,7 @@
-import type {
-  CellRange,
-  CellRef,
-  CellValue,
-  ChatReaction,
-  ChatReactionMark,
-  ChatTo,
-  ColumnRule,
-  ReactionViewer,
-} from "@mm/shared";
-import {
-  a1,
-  CHAT_REACTIONS,
-  chatEnterKey,
-  reactionGroups,
-  scrollBehavior,
-  sheetPrefix,
-  splitCellRefs,
-} from "@mm/shared";
+import type { ColorOf, PreviewOf, TimelineItem } from "@mm/chat";
+import { buildRefPreview, ChatBubble, ChatText, ChatTimeline, ReactionChips } from "@mm/chat";
+import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
+import { a1, chatEnterKey, displayValue, personColor, sheetPrefix } from "@mm/shared";
 import type { KeyboardEvent, PointerEvent } from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -78,6 +63,8 @@ interface Props {
   /** 채팅의 셀 참조(시트 주소, 시트 이름이 있으면 그 시트). */
   onRef: (range: CellRange, sheet?: string) => void;
   onChatSeen: (id: number) => void;
+  /** 채팅 탭을 열기 전에 본 마지막 글(구분선 자리). */
+  chatSeen: number;
 }
 
 /** 1f 오른쪽 사이드바: 셀 내용(고른 칸의 위치·내용 보기·고치기), 알림(강조된 셀·공지), 채팅(전체·취합을 연 사람에게), 셀 이력. */
@@ -192,6 +179,7 @@ export function SidePanel(props: Props) {
           me={w.name}
           host={s.presence.find((x) => x.host)?.name || w.session.requester || "요청자"}
           onRef={onRef}
+          seen={props.chatSeen}
           onSeen={onChatSeen}
         />
       )}
@@ -254,6 +242,7 @@ function Chat({
   me,
   host,
   onRef,
+  seen,
   onSeen,
 }: {
   s: SessionState;
@@ -261,22 +250,15 @@ function Chat({
   /** 취합을 연 사람의 이름(1c '내 이름'). */
   host: string;
   onRef: (r: CellRange, sheet?: string) => void;
+  seen: number;
   onSeen: (id: number) => void;
 }) {
+  const w = s.welcome!;
   const [toHost, setToHost] = useState(false);
   const [text, setText] = useState("");
-  const list = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   /** Ctrl+Enter로 줄을 넣은 뒤 둘 커서 자리. */
   const caret = useRef<number | null>(null);
-  const last = s.chat[s.chat.length - 1]?.id ?? 0;
-  // 새 메시지가 오면 맨 아래로(처음 열 때는 바로, 그 뒤로는 부드럽게).
-  const scrolled = useRef(false);
-  useEffect(() => {
-    onSeen(last);
-    list.current?.scrollTo({ top: list.current.scrollHeight, behavior: scrollBehavior(!scrolled.current) });
-    scrolled.current = true;
-  }, [last, onSeen]);
   // 입력 칸은 글에 맞춰 높아진다(CSS 최대 높이를 넘으면 스크롤).
   useLayoutEffect(() => {
     const el = input.current;
@@ -295,43 +277,71 @@ function Chat({
     setText("");
   };
   const viewer = { name: me };
+  const colorOf: ColorOf = (name, isHost) => (isHost ? "var(--ink)" : personColor(Math.max(0, w.roster.indexOf(name))));
+  const preview: PreviewOf = (range, name) => {
+    const i = name === undefined ? s.active : s.sheets.findIndex((x) => x.model.sheet === name);
+    const m = s.sheets[i]?.model;
+    if (!m) return null;
+    const { columns, labels } = w.sheets[i] ?? { columns: [], labels: [] };
+    const others = new Set(m.hiddenRows);
+    return buildRefPreview(
+      {
+        sheet: m.sheet,
+        origin: m.origin,
+        rows: m.rows,
+        cols: m.cols,
+        text: (r, c) => {
+          const cell = m.cells[r * m.cols + c];
+          const nf = m.styles[cell?.s ?? 0]?.numberFormat ?? "";
+          return { text: displayValue(cell?.v, nf, columns[c]?.format), numeric: typeof cell?.v === "number" };
+        },
+        label: (c) => labels[c],
+        hidden: (r) => others.has(r),
+      },
+      { ...range, row: range.row - m.origin.row, col: range.col - m.origin.col },
+    );
+  };
+  const items: TimelineItem[] = s.chat.map((m) => {
+    const mine = m.from === me && !m.host;
+    return {
+      id: m.id,
+      mine,
+      node: (
+        <ChatBubble
+          mine={mine}
+          name={m.from}
+          color={colorOf(m.from, m.host)}
+          head={
+            <>
+              <b style={mine ? undefined : { color: colorOf(m.from, m.host) }}>{mine ? "나" : m.from}</b>
+              {m.to.kind === "host" && <span className="muted"> → {host}</span>}
+              {m.to.kind === "person" && <span className="muted"> → 나에게</span>}
+              <span className="muted"> · {time(m.atMs)}</span>
+            </>
+          }
+          reactions={
+            <ReactionChips
+              marks={m.reactions}
+              viewer={viewer}
+              canReact={!mine}
+              onToggle={(kind) => s.reactChat(m.id, kind)}
+              colorOf={colorOf}
+            />
+          }
+        >
+          <ChatText text={m.text} onRef={onRef} preview={preview} />
+        </ChatBubble>
+      ),
+    };
+  });
   return (
     <div className="side-body chat">
-      <div className="chat-list" ref={list} aria-label="채팅 내용">
-        {s.chat.length === 0 && (
-          <div className="muted small">아직 채팅이 없습니다. {host} 님에게 물어볼 것이 있으면 적어 주세요.</div>
-        )}
-        {s.chat.map((m) => {
-          const mine = m.from === me && !m.host;
-          return (
-            <div key={m.id} className={`chat-msg${mine ? " mine" : ""}`}>
-              <div className="small">
-                <b>{mine ? "나" : m.from}</b>
-                {m.to.kind === "host" && <span className="muted"> → {host}</span>}
-                {m.to.kind === "person" && <span className="muted"> → 나에게</span>}
-                <span className="muted"> · {time(m.atMs)}</span>
-              </div>
-              <div className="chat-text">
-                {splitCellRefs(m.text).map((p, i) =>
-                  "ref" in p ? (
-                    <button key={i} className="cell-ref" onClick={() => onRef(p.range, p.sheet)}>
-                      #{p.ref}
-                    </button>
-                  ) : (
-                    <span key={i}>{p.text}</span>
-                  ),
-                )}
-              </div>
-              <ChatReactions
-                marks={m.reactions}
-                viewer={viewer}
-                canReact={!mine}
-                onToggle={(kind) => s.reactChat(m.id, kind)}
-              />
-            </div>
-          );
-        })}
-      </div>
+      <ChatTimeline
+        items={items}
+        seen={seen}
+        onSeen={onSeen}
+        empty={<div className="muted small">아직 채팅이 없습니다. {host} 님에게 물어볼 것이 있으면 적어 주세요.</div>}
+      />
       <div className="chat-opts">
         <label className="check small">
           <input type="checkbox" checked={toHost} onChange={(e) => setToHost(e.target.checked)} />
@@ -365,78 +375,6 @@ function Chat({
         </button>
       </div>
     </div>
-  );
-}
-
-/**
- * 채팅 한 통의 리액션: 단 것은 칩(이모지·수, 마우스를 올리면 단 사람). 남의 글이면 칩을 눌러 내 것을 달거나 떼고,
- * 마우스를 올리면 오른쪽 위에 고르는 막대가 나온다.
- */
-function ChatReactions({
-  marks,
-  viewer,
-  canReact,
-  onToggle,
-}: {
-  marks: ChatReactionMark[] | undefined;
-  viewer: ReactionViewer;
-  canReact: boolean;
-  onToggle: (kind: ChatReaction) => void;
-}) {
-  const groups = reactionGroups(marks, viewer);
-  return (
-    <>
-      {groups.length > 0 && (
-        <div className="chat-reactions">
-          {groups.map((g) => {
-            const title = `${g.label}: ${g.names.join(", ")}`;
-            const body = (
-              <>
-                <span aria-hidden="true">{g.emoji}</span>
-                {g.count}
-              </>
-            );
-            return canReact ? (
-              <button
-                key={g.kind}
-                type="button"
-                className={`reaction${g.mine ? " on" : ""}`}
-                aria-label={`${g.label} ${g.count}`}
-                aria-pressed={g.mine}
-                title={title}
-                onClick={() => onToggle(g.kind)}
-              >
-                {body}
-              </button>
-            ) : (
-              <span key={g.kind} className="reaction" role="img" aria-label={`${g.label} ${g.count}`} title={title}>
-                {body}
-              </span>
-            );
-          })}
-        </div>
-      )}
-      {canReact && (
-        <div className="reaction-bar" role="group" aria-label="리액션 달기">
-          {CHAT_REACTIONS.map((r) => {
-            const on = groups.some((g) => g.kind === r.kind && g.mine);
-            return (
-              <button
-                key={r.kind}
-                type="button"
-                className={on ? "on" : undefined}
-                aria-label={r.label}
-                aria-pressed={on}
-                title={r.label}
-                onClick={() => onToggle(r.kind)}
-              >
-                {r.emoji}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </>
   );
 }
 

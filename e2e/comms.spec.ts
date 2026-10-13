@@ -129,7 +129,7 @@ test("채팅: 전체·호스트에게, 호스트의 1:1 답장과 #셀 참조", 
   const reply = a.getByLabel("채팅 내용").locator(".chat-msg").last();
   // 호스트 글은 이름만 보인다('호스트'라고 붙이지 않는다).
   await expect(reply.locator("b")).toHaveText("박지훈");
-  await reply.getByRole("button", { name: "#F9" }).click();
+  await reply.getByRole("button", { name: "F9" }).click();
   await a.locator(".side-panel").getByRole("tab", { name: "셀 내용" }).click();
   await expect(a.locator(".cell-detail .addr")).toHaveText("F9");
   await expect(b.getByLabel("채팅 내용")).not.toContainText("히스토리에서 복원했습니다");
@@ -164,7 +164,11 @@ test("채팅: Shift·Ctrl+Enter로 여러 줄, 남의 글에 리액션(여러 �
   await msgB.hover();
   await bar.getByRole("button", { name: "감사합니다" }).click();
   await expect(msgA.locator(".chat-reactions")).toHaveText("🙏1👍1"); // 종류 순서(👌 ✅ ❌ 🙏 👍 😢)
-  await expect(msgA.locator(".reaction", { hasText: "👍" })).toHaveAttribute("title", "좋아요: 정하늘");
+  // 칩에 마우스를 올리면 단 사람 목록이 뜬다(내 글의 칩도).
+  await msgA.locator(".reaction", { hasText: "👍" }).hover();
+  await expect(a.getByRole("tooltip")).toContainText("좋아요· 1명");
+  await expect(a.getByRole("tooltip").getByRole("listitem")).toHaveCount(1);
+  await expect(a.getByRole("tooltip").getByRole("listitem")).toContainText("정하늘");
   // 내 글에는 막대가 없고 칩도 누를 수 없다.
   await expect(msgA.locator(".reaction-bar")).toHaveCount(0);
   await expect(msgA.locator("button.reaction")).toHaveCount(0);
@@ -179,7 +183,8 @@ test("채팅: Shift·Ctrl+Enter로 여러 줄, 남의 글에 리액션(여러 �
   const chat: { id: number; text: string }[] = (await (await request.get("/__dev/comms")).json()).chat;
   const id = chat.findLast((m) => m.text.startsWith("오늘 할 일"))!.id;
   expect((await request.post("/__dev/chat/react", { data: { id, kind: "ok" } })).ok()).toBe(true);
-  await expect(msgA.locator(".reaction", { hasText: "👌" })).toHaveAttribute("title", "OK: 박지훈");
+  await msgA.locator(".reaction", { hasText: "👌" }).hover();
+  await expect(a.getByRole("tooltip").getByRole("listitem")).toContainText("박지훈호스트");
   await expect(msgB.locator(".chat-reactions").getByRole("button", { name: "OK 1" })).toHaveAttribute(
     "aria-pressed",
     "false",

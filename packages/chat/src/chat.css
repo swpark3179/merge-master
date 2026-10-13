@@ -1,0 +1,517 @@
+/*
+ * 채팅(참여자 사이드바·호스트 오른쪽 패널 공용). 색·길이는 tokens.css, 키프레임은 motion.css.
+ * 두 앱의 기본 button 규칙(높이·바탕·hover)을 덮도록 버튼마다 클래스를 붙이고 hover는 :not(:disabled)까지 적는다.
+ */
+
+/* ------------------------------------------------------------------ 목록 */
+.chat-timeline {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  /* 첫 글 위에도 리액션 막대가 뜰 자리 */
+  padding: 14px 2px 6px;
+}
+
+.chat-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 처음 그린 뒤에 온 글만: 남의 글은 위에서, 내 글은 입력 칸 쪽 아래에서 */
+.chat-row.fresh {
+  animation: mm-drop var(--dur-base) var(--ease-out);
+}
+
+.chat-row.fresh.mine {
+  animation-name: mm-rise;
+}
+
+.chat-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  animation: mm-fade-in var(--dur-base) var(--ease-out);
+}
+
+.chat-divider::before,
+.chat-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--accent-line);
+}
+
+.chat-jump-wrap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 8px;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+button.chat-jump {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 15px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 6px 16px rgba(29, 33, 41, 0.25);
+  animation: mm-rise var(--dur-base) var(--ease-out);
+}
+
+button.chat-jump:hover:not(:disabled) {
+  border: 0;
+  background: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ 한 통 */
+.chat-msg {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+}
+
+.chat-msg.mine {
+  justify-content: flex-end;
+}
+
+.chat-avatar {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-avatar.sm {
+  width: 20px;
+  height: 20px;
+  font-size: 10px;
+}
+
+.chat-bubble {
+  position: relative;
+  min-width: 0;
+  max-width: calc(100% - 31px);
+  padding: 6px 9px 7px;
+  border-radius: 4px 10px 10px 10px;
+  background: var(--paper);
+  overflow-wrap: anywhere;
+}
+
+.chat-msg.mine .chat-bubble {
+  max-width: 92%;
+  border-radius: 10px 4px 10px 10px;
+  background: var(--accent-soft);
+}
+
+.chat-head {
+  font-size: 12px;
+}
+
+.chat-head .muted {
+  color: var(--muted);
+}
+
+.chat-text {
+  white-space: pre-wrap;
+}
+
+/* 셀블럭 칩: 누르면 그 범위로 간다 */
+button.chat-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 20px;
+  margin: 0 1px;
+  padding: 0 5px;
+  border: 1px solid var(--accent-line);
+  border-radius: 4px;
+  background: #fff;
+  color: var(--accent-ink);
+  font:
+    12px/18px ui-monospace,
+    Consolas,
+    Menlo,
+    monospace;
+  font-weight: 400;
+  vertical-align: 1px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--dur-fast),
+    border-color var(--dur-fast),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+button.chat-ref:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+button.chat-ref:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+button.chat-ref .sheet {
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ 리액션 */
+.chat-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.chat-reactions .reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1;
+  transition:
+    background-color var(--dur-fast),
+    border-color var(--dur-fast),
+    transform var(--dur-fast) var(--ease-out);
+}
+
+.chat-reactions button.reaction:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.chat-reactions button.reaction:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.chat-reactions .reaction.on,
+.chat-reactions button.reaction.on:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.chat-reactions .reaction:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.chat-reactions .reaction.pop {
+  animation: mm-pop var(--dur-base) var(--ease-out);
+}
+
+.chat-reactions .count {
+  display: inline-block;
+}
+
+.chat-reactions .count.bump {
+  animation: mm-count var(--dur-fast) var(--ease-out);
+}
+
+/* 고르는 막대: 남의 글에 마우스를 올리거나 초점이 오면 말풍선 오른쪽 위에서 떠오른다 */
+.reaction-bar {
+  position: absolute;
+  z-index: 2;
+  top: -14px;
+  right: 6px;
+  display: flex;
+  gap: 1px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px) scale(0.96);
+  transform-origin: right bottom;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    visibility 0s linear var(--dur-fast);
+}
+
+.chat-msg:hover .reaction-bar,
+.chat-msg:focus-within .reaction-bar {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition-delay: 0s;
+}
+
+.reaction-bar button {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.reaction-bar button:hover:not(:disabled) {
+  border: 0;
+  background: var(--hover);
+}
+
+.reaction-bar button.on,
+.reaction-bar button.on:hover:not(:disabled) {
+  background: var(--accent-tint);
+}
+
+/* 마우스가 없는 기기: 막대를 글 아래에 늘 보인다 */
+@media (hover: none) {
+  .reaction-bar {
+    position: static;
+    width: fit-content;
+    margin-top: 4px;
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    box-shadow: none;
+  }
+}
+
+/* ------------------------------------------------------------------ 팝오버(누가 달았나·미리보기) */
+.chat-pop {
+  position: fixed;
+  z-index: 50;
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px);
+  padding: 8px 10px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 8px 24px rgba(29, 33, 41, 0.16);
+  font-size: 13px;
+  line-height: 1.45;
+  pointer-events: none;
+  transform-origin: top left;
+  animation: mm-pop-in var(--dur-fast) var(--ease-out);
+}
+
+.chat-pop.above {
+  transform-origin: bottom left;
+}
+
+.chat-who {
+  width: 212px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.chat-who-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.chat-who-head .emoji {
+  font-size: 15px;
+}
+
+.chat-who-head b {
+  color: var(--ink);
+}
+
+.chat-who-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-who-list li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.chat-badge {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--chip);
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.chat-badge.me {
+  background: var(--ok-soft);
+  color: var(--ok-ink);
+}
+
+.chat-who-hint {
+  padding-top: 6px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chat-pop.chat-preview {
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.chat-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+}
+
+.chat-preview-head b {
+  color: var(--ink);
+}
+
+.chat-preview-head .addr {
+  color: var(--accent-ink);
+  font-family: ui-monospace, Consolas, Menlo, monospace;
+}
+
+.chat-preview-head .size {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.chat-preview-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.chat-preview-table .tr {
+  display: flex;
+}
+
+.chat-preview-table .tr + .tr {
+  border-top: 1px solid var(--line-soft);
+}
+
+.chat-preview-table .tr.head {
+  background: var(--head);
+  color: var(--ink-2);
+}
+
+.chat-preview-table .n {
+  width: 26px;
+  flex: none;
+  padding: 3px 0;
+  text-align: center;
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.chat-preview-table .tr.head .n {
+  background: transparent;
+}
+
+.chat-preview-table .td {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-preview-table .td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-preview-table .letter {
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, Menlo, monospace;
+}
+
+.chat-preview-table .td.empty,
+.chat-preview-table .tr.hidden .td {
+  color: var(--muted);
+}
+
+/* 남의 행: 값을 감추고 빗금 */
+.chat-preview-table .tr.hidden {
+  background: repeating-linear-gradient(135deg, var(--others-bg) 0 6px, var(--line-soft) 6px 12px);
+}
+
+.chat-preview-one {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.chat-preview-one .label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.chat-preview-one b {
+  font-size: 16px;
+}
+
+.chat-preview-note {
+  font-size: 11px;
+  color: var(--muted);
+}

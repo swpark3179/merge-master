@@ -131,7 +131,7 @@ test("다른 시트의 강조와 채팅 #시트!칸 참조는 그 시트로 데�
   const side = a.locator(".side-panel");
   if (!(await side.isVisible())) await a.getByRole("button", { name: /^사이드바/ }).click();
   await side.getByRole("tab", { name: /^채팅/ }).click();
-  await side.getByRole("button", { name: "#인력계획!F7" }).click();
+  await side.getByRole("button", { name: "인력계획!F7" }).click();
   await expect(tab(a, "인력계획")).toHaveAttribute("aria-selected", "true");
 });
 

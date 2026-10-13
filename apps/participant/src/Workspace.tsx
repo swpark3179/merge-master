@@ -1339,6 +1339,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 onReveal={revealRange}
                 onRef={revealRef}
                 onChatSeen={onChatSeen}
+                chatSeen={chatSeen}
               />
             )}
           </div>
