@@ -1,6 +1,6 @@
 import type { GridSelection } from "@mm/grid";
 import { selectionRange, buildLayout, withLineSize } from "@mm/grid";
-import type { CellRange, ConfigEdit, ConfigView, FormatEdit, HostEvent, SheetModel } from "@mm/shared";
+import type { CellRange, ConfigEdit, ConfigView, FormatEdit, HostEvent, SheetModel, StructureEdit } from "@mm/shared";
 import { decodeFlags } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -129,6 +129,19 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
     [run, sheet, viewer],
   );
 
+  /** 표 구조 바꾸기(오른쪽 클릭 메뉴). 행·열을 지웠으면 선택을 푼다(좌표가 당겨졌다). 됐으면 `true`. */
+  const structure = useCallback(
+    async (edit: StructureEdit) => {
+      const r = await run(() => api.sheetStructure(sheet, edit, viewer));
+      if (!r) return false;
+      setModel(r.model);
+      setView(r.view);
+      if (edit.op === "deleteRows" || edit.op === "deleteCols") setSelection(null);
+      return true;
+    },
+    [run, sheet, viewer],
+  );
+
   /** 호스트가 칸 내용을 바꾼다: 바로 그리고, 세션에 보낸 뒤 설정 보기(범례·명단·열 이름)를 새로 읽는다. */
   const setCells = useCallback(
     async (cells: CellWrite[]) => {
@@ -172,6 +185,7 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
     layout,
     apply,
     format,
+    structure,
     setCells,
     setError,
     busy,

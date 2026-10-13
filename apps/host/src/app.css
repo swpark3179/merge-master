@@ -2715,3 +2715,20 @@ button.save-btn {
 .list-url .muted {
   flex: none;
 }
+
+/* 1h: 지운 행·열에 있던 칸의 기록 */
+.hrow.gone {
+  color: var(--muted);
+  cursor: default;
+}
+
+.hrow.gone > .mono:not(.small) {
+  text-decoration: line-through;
+}
+
+.gone-tag {
+  margin-left: 4px;
+  background: var(--cancel-bg);
+  color: var(--cancel-ink);
+  text-decoration: none;
+}

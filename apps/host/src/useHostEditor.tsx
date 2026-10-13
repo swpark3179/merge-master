@@ -223,6 +223,8 @@ export function useHostEditor(o: HostEditorOptions) {
     onKey,
     onCellDoubleClick,
     onSelectionChange,
+    /** 편집 중이면 확정한다(오른쪽 클릭 메뉴를 열 때). */
+    leave: () => finish(null),
     /** 편집 중인 칸과 글(수식 줄에 보인다). */
     editing: editor ? { at: editor.at, text: editor.state.text } : null,
   };
