@@ -9,8 +9,8 @@ export { effectiveColumn, filterOptions, withHiddenRows } from "@mm/grid";
  * 병합 영역은 그리드가 보이는 행만으로 다시 그리므로(높이 합) 따로 쪼개지 않아도 된다.
  */
 export interface RowFilter {
-  /** 열 → 고른 값(표시 글자). 없으면 전체. */
-  values: Record<number, string>;
+  /** 열 → 고른 값들(표시 글자, 그중 하나면 보인다). 없거나 비면 전체. */
+  values: Record<number, readonly string[]>;
   mineOnly: boolean;
   missingOnly: boolean;
 }
@@ -18,7 +18,7 @@ export interface RowFilter {
 export const NO_FILTER: RowFilter = { values: {}, mineOnly: false, missingOnly: false };
 
 export function isFiltering(f: RowFilter): boolean {
-  return f.mineOnly || f.missingOnly || Object.keys(f.values).length > 0;
+  return f.mineOnly || f.missingOnly || Object.values(f.values).some((v) => v.length > 0);
 }
 
 /** 행마다 '내 행'인지(행 담당자이거나 내가 입력할 칸이 있는 행). */
@@ -49,16 +49,14 @@ export function missingOf(model: SheetModel, flags: Uint8Array, row: number): nu
 export function filteredOut(model: SheetModel, flags: Uint8Array, myRows: Uint8Array, f: RowFilter): Set<number> {
   const out = new Set<number>();
   if (!isFiltering(f)) return out;
-  const cols = Object.entries(f.values).map(([c, v]) => ({
-    col: Number(c),
-    want: v,
-    values: effectiveColumn(model, Number(c)),
-  }));
+  const cols = Object.entries(f.values)
+    .filter(([, v]) => v.length > 0)
+    .map(([c, v]) => ({ col: Number(c), want: new Set(v), values: effectiveColumn(model, Number(c)) }));
   for (let r = model.headerRows; r < model.rows; r++) {
     const keep =
       (!f.mineOnly || myRows[r] === 1) &&
       (!f.missingOnly || missingOf(model, flags, r) > 0) &&
-      cols.every((c) => cellText(model, c.values[r], r, c.col) === c.want);
+      cols.every((c) => c.want.has(cellText(model, c.values[r], r, c.col)));
     if (!keep) out.add(r);
   }
   return out;
@@ -68,4 +66,21 @@ export function filteredOut(model: SheetModel, flags: Uint8Array, myRows: Uint8A
 export function matchOptions(options: readonly string[], query: string): string[] {
   const q = query.trim().toLocaleLowerCase();
   return q ? options.filter((o) => o.toLocaleLowerCase().includes(q)) : [...options];
+}
+
+/** 조회조건 값 하나를 고르거나 뺀다(고른 순서 그대로). */
+export function toggleValue(value: readonly string[], v: string): string[] {
+  return value.includes(v) ? value.filter((x) => x !== v) : [...value, v];
+}
+
+/** 검색 결과를 모두 고른다. 이미 모두 골랐으면 검색 결과만 뺀다(다른 고른 값은 그대로). */
+export function toggleHits(value: readonly string[], hits: readonly string[]): string[] {
+  if (hits.every((h) => value.includes(h))) return value.filter((x) => !hits.includes(x));
+  return [...value, ...hits.filter((h) => !value.includes(h))];
+}
+
+/** 조회조건 단추 글자: 없으면 '전체', 하나면 그 값, 여럿이면 '재무팀 외 2'. */
+export function selectionLabel(value: readonly string[]): string {
+  if (value.length === 0) return "전체";
+  return value.length === 1 ? value[0]! : `${value[0]} 외 ${value.length - 1}`;
 }

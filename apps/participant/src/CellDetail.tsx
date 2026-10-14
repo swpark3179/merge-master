@@ -1,6 +1,7 @@
 import type { CellRef, CellValue, ColumnRule } from "@mm/shared";
 import { a1, displayValue, editText, FLAG, normalize } from "@mm/shared";
-import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { sameValue } from "./edits";
 import type { SessionState } from "./useSession";
@@ -18,7 +19,15 @@ interface Props {
   /** '끝나면 알려 주기'를 걸어 두었다. */
   waiting: boolean;
   onWait: () => void;
+  /** 다른 칸·시트로 옮기기 전에 Workspace가 부른다([`CellLeave`]). */
+  leaveRef: RefObject<CellLeave | null>;
 }
+
+/**
+ * 고르는 칸이 `to`(다른 시트면 `null`)로 바뀌기 전에: 고치던 것을 지금 칸에 저장한다. 형식이 맞지 않으면 취소하고 알릴 글을
+ * 돌려준다(그리드 편집기와 같이). 그리드는 누르는 순간 선택을 바꿔서, 칸을 벗어날 때(blur)의 저장은 이미 새 칸을 가리킨다.
+ */
+export type CellLeave = (to: CellRef | null) => string | null;
 
 function formatTag(rule: ColumnRule | undefined): string {
   switch (rule?.format.kind) {
@@ -38,7 +47,7 @@ function formatTag(rule: ColumnRule | undefined): string {
  * 보고 고친다. 입력할 수 있는 칸이면 고친 뒤 칸을 벗어나거나 Ctrl+Enter로 저장, Esc로 취소한다. 고치기 시작하면 그 칸을
  * 잠가 다른 사람에게 '입력 중'으로 보인다.
  */
-export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, waiting, onWait }: Props) {
+export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, waiting, onWait, leaveRef }: Props) {
   const sheet = s.sheet!;
   const model = sheet.model;
   const rule = at ? columns[at.col] : undefined;
@@ -54,6 +63,8 @@ export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, wai
   /** 이 패널에서 잠근 칸(고치기 시작할 때 잡고, 저장·취소하면 놓는다). */
   const locked = useRef<CellRef | null>(null);
   const key = at ? `${at.row}:${at.col}` : "";
+  /** 고친 글이 어느 칸 것인지(`key`). 다른 칸으로 옮긴 뒤 늦게 온 저장이 새 칸에 들어가지 않게 한다. */
+  const draftKey = useRef("");
 
   // 다른 칸을 고르면 새로 시작한다. 고치는 중이 아니면 남이 바꾼 값도 따라간다.
   useEffect(() => {
@@ -89,6 +100,45 @@ export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, wai
   // 칸을 바꾸거나 패널을 닫을 때 잡은 잠금을 놓는다.
   useEffect(() => () => release(), [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const where = at ? a1(model.origin.row + at.row, model.origin.col + at.col) : "";
+
+  /** `text`를 지금 칸에 저장한다. 형식이 맞지 않으면 그 오류(고친 것은 남긴다). */
+  const store = (text: string): string | null => {
+    if (!at) return null;
+    const n = normalize(rule?.format ?? { kind: "text" }, text);
+    if (!n.ok) return n.error;
+    setDirty(false);
+    setError(null);
+    if (!sameValue(value, n.value) && s.edit([{ row: at.row, col: at.col, value: n.value }])) {
+      locked.current = null; // 서버가 저장하면서 잠금을 푼다
+    } else {
+      release();
+    }
+    return null;
+  };
+
+  const cancel = () => {
+    setDraft(original);
+    setDirty(false);
+    setError(null);
+    release();
+  };
+
+  const leave: CellLeave = (to) => {
+    if (!at || !dirty || draftKey.current !== key || (to && to.row === at.row && to.col === at.col)) return null;
+    const err = store(draft);
+    if (!err) return null;
+    cancel();
+    return `${where}: ${err} — 입력을 취소했습니다`;
+  };
+  // 그릴 때마다 바꿔 끼워 Workspace가 부를 때 지금 칸·고친 글을 본다. 패널을 닫으면 뺀다.
+  useLayoutEffect(() => {
+    leaveRef.current = leave;
+    return () => {
+      leaveRef.current = null;
+    };
+  });
+
   if (!at || !cell) {
     return <div className="side-body muted small">칸을 고르면 그 칸의 내용이 여기에 보입니다.</div>;
   }
@@ -98,6 +148,7 @@ export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, wai
       s.lock(at);
       locked.current = at;
     }
+    draftKey.current = key;
     setDraft(text);
     setDirty(true);
     setError(null);
@@ -105,31 +156,14 @@ export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, wai
 
   /** `text`로 저장한다. 형식이 맞지 않으면 오류를 보이고 고친 것은 남긴다. */
   const commit = (text: string): boolean => {
-    const n = normalize(rule?.format ?? { kind: "text" }, text);
-    if (!n.ok) {
-      setError(n.error);
-      return false;
-    }
-    setDirty(false);
-    setError(null);
-    if (!sameValue(value, n.value) && s.edit([{ row: at.row, col: at.col, value: n.value }])) {
-      locked.current = null; // 서버가 저장하면서 잠금을 푼다
-    } else {
-      release();
-    }
-    return true;
+    const err = store(text);
+    setError(err);
+    return err === null;
   };
 
-  const save = () => (dirty ? commit(draft) : (release(), true));
+  // 고친 글이 다른 칸 것이면(옮기기 전에 저장했거나 취소했다) 새 칸에 넣지 않는다.
+  const save = () => (dirty && draftKey.current === key ? commit(draft) : (release(), true));
 
-  const cancel = () => {
-    setDraft(original);
-    setDirty(false);
-    setError(null);
-    release();
-  };
-
-  const where = a1(model.origin.row + at.row, model.origin.col + at.col);
   const lines = draft === "" ? 0 : draft.split("\n").length;
   const shown = displayValue(value, model.styles[cell.s]?.numberFormat ?? "", rule?.format);
   const items = rule?.format.kind === "list" ? rule.format.items : null;

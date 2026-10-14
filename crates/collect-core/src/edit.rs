@@ -271,7 +271,7 @@ fn data_area(model: &SheetModel) -> Option<CellRange> {
 mod tests {
     use super::*;
     use crate::access::{Access, Viewer};
-    use crate::config::tests::budget;
+    use crate::config::tests::{budget, configured};
     use crate::{CellRef, config::FormatPolicy};
 
     fn r(a: &str) -> CellRange {
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn role_brush_on_some_cells_sets_whole_columns_and_keeps_exceptions() {
         let m = budget();
-        let mut cfg = CollectConfig::suggest(&m);
+        let mut cfg = configured(&m);
         assert_eq!(cfg.columns[4].role, ColumnRole::Locked);
         // 칸 하나만 골라도 그 열 전체가 입력 열이 된다(셀 예외를 만들지 않는다).
         brush(&mut cfg, &m, "E4", Brush::Input);

@@ -6,7 +6,7 @@
   "scripts": {
     "dev:host": "pnpm --filter @mm/host dev",
     "dev:participant": "pnpm --filter @mm/participant dev",
-    "dev:server": "cargo run -p collect-server --bin collect-dev-server -- --fixture fixtures/budget.sheet.json --required F --dev-admin",
+    "dev:server": "cargo run -p collect-server --bin collect-dev-server -- --fixture fixtures/budget.sheet.json --required F --locked A,B,C,D,E,G --dev-admin",
     "build:participant": "pnpm --filter @mm/participant build",
     "tauri": "tauri",
     "app:dev": "pnpm build:participant && tauri dev",

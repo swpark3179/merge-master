@@ -6,10 +6,14 @@ import {
   effectiveColumn,
   filteredOut,
   filterOptions,
+  isFiltering,
   matchOptions,
   missingOf,
   myRowsOf,
   NO_FILTER,
+  selectionLabel,
+  toggleHits,
+  toggleValue,
   withHiddenRows,
 } from "./filters";
 
@@ -64,7 +68,11 @@ describe("filters", () => {
     expect(missingOf(m, flags, 2)).toBe(0);
 
     expect(filteredOut(m, flags, mine, NO_FILTER).size).toBe(0);
-    expect([...filteredOut(m, flags, mine, { ...NO_FILTER, values: { 0: "영업" } })]).toEqual([1, 2]);
+    expect([...filteredOut(m, flags, mine, { ...NO_FILTER, values: { 0: ["영업"] } })]).toEqual([1, 2]);
+    // 여러 개 고르면 그중 하나면 보인다. 비어 있으면 전체.
+    expect([...filteredOut(m, flags, mine, { ...NO_FILTER, values: { 0: ["영업", "경영지원"] } })]).toEqual([]);
+    expect(filteredOut(m, flags, mine, { ...NO_FILTER, values: { 0: [] } }).size).toBe(0);
+    expect(isFiltering({ ...NO_FILTER, values: { 0: [] } })).toBe(false);
     expect([...filteredOut(m, flags, mine, { ...NO_FILTER, mineOnly: true })]).toEqual([3, 4]);
     expect([...filteredOut(m, flags, mine, { ...NO_FILTER, missingOnly: true })]).toEqual([2, 3, 4]);
   });
@@ -86,5 +94,17 @@ describe("조회조건 검색", () => {
     expect(matchOptions(items, " it ")).toEqual(["IT운영팀"]);
     expect(matchOptions(items, "")).toEqual(items);
     expect(matchOptions(items, "없음")).toEqual([]);
+  });
+
+  it("여러 개 고르기: 하나씩 고르고 빼기, 검색 결과 모두 선택", () => {
+    expect(toggleValue([], "재무팀")).toEqual(["재무팀"]);
+    expect(toggleValue(["재무팀", "인사팀"], "재무팀")).toEqual(["인사팀"]);
+    const hits = matchOptions(items, "팀");
+    expect(toggleHits(["경영지원본부", "인사팀"], hits)).toEqual(["경영지원본부", "인사팀", "재무팀", "IT운영팀"]);
+    // 이미 모두 골랐으면 검색 결과만 뺀다.
+    expect(toggleHits(["경영지원본부", ...hits], hits)).toEqual(["경영지원본부"]);
+    expect(selectionLabel([])).toBe("전체");
+    expect(selectionLabel(["재무팀"])).toBe("재무팀");
+    expect(selectionLabel(["재무팀", "인사팀", "IT운영팀"])).toBe("재무팀 외 2");
   });
 });

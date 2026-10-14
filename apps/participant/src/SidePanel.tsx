@@ -2,9 +2,10 @@ import type { CellPick, ColorOf, PreviewOf, TimelineItem } from "@mm/chat";
 import { buildRefPreview, ChatBubble, ChatComposer, ChatText, ChatTimeline, ReactionChips } from "@mm/chat";
 import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
 import { a1, displayValue, personColor, sheetPrefix } from "@mm/shared";
-import type { KeyboardEvent, PointerEvent } from "react";
+import type { KeyboardEvent, PointerEvent, RefObject } from "react";
 import { useEffect, useRef } from "react";
 
+import type { CellLeave } from "./CellDetail";
 import { CellDetail } from "./CellDetail";
 import { sameValue } from "./edits";
 import type { SessionState } from "./useSession";
@@ -57,6 +58,8 @@ interface Props {
   /** 고른 칸에 '끝나면 알려 주기'를 걸어 두었다. */
   waiting: boolean;
   onWait: () => void;
+  /** '셀 내용'에서 고치던 것을 칸을 옮기기 전에 저장한다(Workspace가 부른다). */
+  cellLeave: RefObject<CellLeave | null>;
   unreadChat: number;
   /** 그 시트(없으면 지금 시트)의 모델 좌표 범위로 간다. `highlight`가 있으면 확인으로 표시한다. */
   onReveal: (range: CellRange, highlight?: number, sheet?: number) => void;
@@ -196,6 +199,7 @@ export function SidePanel(props: Props) {
           locker={props.locker}
           waiting={props.waiting}
           onWait={props.onWait}
+          leaveRef={props.cellLeave}
         />
       )}
       {tab === "alerts" && (

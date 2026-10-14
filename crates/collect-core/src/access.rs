@@ -405,7 +405,7 @@ pub struct ProgressStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::tests::{assigned, budget};
+    use crate::config::tests::{assigned, budget, configured};
     use crate::config::{CellException, RangeAssignment};
 
     fn at(a: &str) -> CellRef {
@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn without_any_assignment_everyone_can_edit_every_input_cell() {
         let m = budget();
-        let mut cfg = CollectConfig::suggest(&m);
+        let mut cfg = configured(&m);
         cfg.assignment.extra_people = vec!["가".into(), "나".into()];
         cfg.permissions.others_rows = crate::config::OthersRows::Hidden;
         let a = Access::compile(&m, &cfg);

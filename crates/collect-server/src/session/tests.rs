@@ -11,6 +11,10 @@ use super::*;
 pub(super) fn fixture() -> SessionInit {
     let model: SheetModel = serde_json::from_slice(include_bytes!("../../../../fixtures/budget.sheet.json")).unwrap();
     let mut config = CollectConfig::suggest(&model);
+    // 처음엔 모든 열이 입력: 호스트가 1b에서 하듯 키·실적 열(A~E)과 수식 열(G)을 잠근다.
+    for c in [0, 1, 2, 3, 4, 6] {
+        config.columns[c].role = ColumnRole::Locked;
+    }
     config.assignment.key_col = suggested_key_col(&model); // C 담당자
     config.requester = "박지훈".into();
     config.columns[5].required = true; // F 신청 금액
