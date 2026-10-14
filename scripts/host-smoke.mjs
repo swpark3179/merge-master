@@ -229,10 +229,10 @@ try {
     await expect(assignTab).toContainText(`${letter}열 기준`);
     await cfg.getByRole("tab", { name: "열 역할" }).click();
   };
-  await expect(legend).toContainText("쓸 수 있음 · 3열");
+  await expect(legend).toContainText("쓸 수 있음 · 9열");
   check(
-    (await legend.textContent()).includes("보기만 가능 · 6열") && (await legend.textContent()).includes("조회조건 3열"),
-    "기본 제안: 입력 3열(F·H·I) · 입력 금지 6열 · 조회 3열",
+    (await legend.textContent()).includes("보기만 가능 · 0열") && (await legend.textContent()).includes("조회조건 3열"),
+    "기본 제안: 모든 열 입력(9열) · 잠금 없음 · 조회 3열",
   );
   const headCell = (col) => cfg.locator(`.mmg-cell[data-r="1"][data-c="${col}"]`);
   check(
@@ -267,6 +267,18 @@ try {
       (await roleBar.getByRole("button", { name: "지우개" }).count()) === 0,
     "역할 줄: 입력/잠금 · 조회조건(필수·담당자 배정·지우개 버튼 없음)",
   );
+  /** 처음엔 모든 열이 입력: 호스트가 키·실적 열(A~E, Shift로 함께)과 수식 열(G)을 잠근다. */
+  const lockKeyColumns = async () => {
+    const lock = roleBar.getByRole("button", { name: "잠금", exact: true });
+    await colHead("A").click();
+    await colHead("E").click({ modifiers: ["Shift"] });
+    await lock.click();
+    await colHead("G").click();
+    await lock.click();
+    await expect(legend).toContainText("보기만 가능 · 6열");
+  };
+  await lockKeyColumns();
+  check((await legend.textContent()).includes("쓸 수 있음 · 3열"), "A~E·G열을 잠그면 입력 3열(F·H·I) · 잠금 6열");
   await colHead("F").click();
   await expect(formula.locator(".addr")).toHaveText("F3:F1002");
   await expect(formula.locator(".value")).toHaveText("1,000개 셀 선택됨 · 입력 · 숫자(천원)");
@@ -474,7 +486,8 @@ try {
   await expect(page.getByLabel("데이터 범위")).toHaveValue("A1:I1002", { timeout: 30_000 });
   await waitRead();
   await commitButton.click();
-  await expect(cfg.locator(".legend")).toContainText("쓸 수 있음 · 3열", { timeout: 10_000 });
+  await expect(cfg.locator(".legend")).toContainText("쓸 수 있음 · 9열", { timeout: 10_000 });
+  await lockKeyColumns();
   await setKeyColumn("C");
   await colHead("F").click();
   await columnPanel.getByLabel("필수").click();

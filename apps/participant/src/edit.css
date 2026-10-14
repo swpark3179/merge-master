@@ -296,7 +296,7 @@ button.link:hover:not(:disabled) {
   font: inherit;
 }
 
-/* 조회조건 검색 콤보: 단추는 예전 드롭다운 모양, 펼치면 검색 칸 + 목록 */
+/* 조회조건 검색 콤보: 단추는 예전 드롭다운 모양, 펼치면 검색 칸 + 체크 목록(여러 개 고르기) */
 .filter-bar .filter {
   display: inline-flex;
   align-items: center;
@@ -368,12 +368,52 @@ button.link:hover:not(:disabled) {
 }
 
 .search-select-pop li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 5px 8px;
   border-radius: 4px;
   cursor: pointer;
+}
+
+.search-select-pop li .text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 체크 상자: 고르면 파란 바탕에 흰 ✓, 검색 결과 일부만 골랐으면 가로줄 */
+.search-select-pop li .box {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--field);
+  border-radius: 3px;
+  background: #fff;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.search-select-pop li[aria-selected="true"] .box {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.search-select-pop li[aria-selected="true"] .box::after {
+  content: "✓";
+}
+
+.search-select-pop li.some .box::after {
+  content: "";
+  width: 6px;
+  height: 2px;
+  background: var(--accent);
 }
 
 .search-select-pop li.all {
@@ -387,6 +427,15 @@ button.link:hover:not(:disabled) {
 .search-select-pop li[aria-selected="true"] {
   color: var(--accent-ink);
   font-weight: 600;
+}
+
+.search-select-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+  padding: 4px 8px 0;
+  border-top: 1px solid var(--line);
 }
 
 .search-select-pop li.empty {

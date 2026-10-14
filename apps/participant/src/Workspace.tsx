@@ -44,6 +44,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTitleAlert } from "./attention";
 import type { BenchResult } from "./bench";
 import { runScrollBench } from "./bench";
+import type { CellLeave } from "./CellDetail";
 import { DeadlineClock } from "./DeadlineClock";
 import type { RowFilter } from "./filters";
 import { filteredOut, filterOptions, isFiltering, myRowsOf, NO_FILTER, withHiddenRows } from "./filters";
@@ -147,6 +148,9 @@ function rectOf(sel: GridSelection): CellRange {
 
 /** 채팅 참조로 간 범위를 표시해 두는 시간(ms): 그리드의 `mm-ping`(900ms)이 끝난 뒤 뗀다. */
 const PING_MS = 1000;
+
+/** 조회조건을 고르지 않은 열·항목이 없는 열(렌더마다 새 배열을 만들지 않게). */
+const NO_VALUES: readonly string[] = [];
 
 /** 범위를 시트 안으로 줄인다(채팅에 적힌 주소가 시트보다 클 수 있다). 시트 밖이면 `null`. */
 function clampTo(model: Pick<SheetModel, "rows" | "cols">, r: CellRange): CellRange | null {
@@ -285,6 +289,8 @@ export function Workspace({ s }: { s: SessionState }) {
   }, [ping]);
   const editorRef = useRef<ActiveEdit | null>(null);
   editorRef.current = editor;
+  /** 사이드바 '셀 내용'에서 고치던 것을 칸을 옮기기 전에 저장한다(패널이 열려 있을 때만 있다). */
+  const cellLeave = useRef<CellLeave | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const grid = useRef<SheetGridHandle>(null);
   const gridHost = useRef<HTMLDivElement>(null);
@@ -453,10 +459,21 @@ export function Workspace({ s }: { s: SessionState }) {
     }
   }, [cancel, commit, model.origin, notify]);
 
+  /** 사이드바 '셀 내용'에서 고치던 것을 지금 칸에 저장한다(`to`는 새로 고를 칸, 다른 시트면 `null`). */
+  const leaveDetail = useCallback(
+    (to: CellRef | null) => {
+      const error = cellLeave.current?.(to);
+      if (error) notify(error, "error");
+    },
+    [notify],
+  );
+
   const onSelection = useCallback(
     (sel: GridSelection) => {
       const e = editorRef.current;
       if (e && (sel.anchor.row !== e.at.row || sel.anchor.col !== e.at.col)) leave();
+      // 그리드는 누르는 순간 선택을 바꾼다: 사이드바에서 고치던 것은 바뀌기 전에 그 칸에 넣는다.
+      leaveDetail(sel.anchor);
       setSelection(sel);
       s.cursor(sel.anchor);
       // 강조된 칸을 보러 왔으면 확인으로 표시한다.
@@ -474,7 +491,7 @@ export function Workspace({ s }: { s: SessionState }) {
           s.ackHighlight(h.id);
       }
     },
-    [leave, s, active],
+    [leave, leaveDetail, s, active],
   );
 
   /** 채팅의 '@ 셀 선택': 지금 시트에서 범위를 골라 `#시트!범위`로 넣는다(시트 탭을 바꿔도 이어진다). */
@@ -980,6 +997,7 @@ export function Workspace({ s }: { s: SessionState }) {
   const switchSheet = (to: number) => {
     if (to === active || !s.sheets[to]) return;
     if (editorRef.current) leave(); // 확정·취소는 지금 시트로 간다
+    leaveDetail(null);
     memory.current.set(active, { selection, filter });
     const back = memory.current.get(to);
     setSelection(back?.selection ?? null);
@@ -1452,14 +1470,16 @@ export function Workspace({ s }: { s: SessionState }) {
                 {labels[c] || `열 ${c + 1}`}:
                 <SearchSelect
                   label={labels[c] ?? ""}
-                  value={filter.values[c] ?? ""}
-                  options={options.get(c) ?? []}
-                  onChange={(v) => {
-                    const values = { ...filter.values };
-                    if (v) values[c] = v;
-                    else delete values[c];
-                    setFilter({ ...filter, values });
-                  }}
+                  value={filter.values[c] ?? NO_VALUES}
+                  options={options.get(c) ?? NO_VALUES}
+                  onChange={(v) =>
+                    setFilter((f) => {
+                      const values = { ...f.values };
+                      if (v.length > 0) values[c] = v;
+                      else delete values[c];
+                      return { ...f, values };
+                    })
+                  }
                 />
               </span>
             ))}
@@ -1561,6 +1581,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 locker={locker}
                 waiting={at !== null && waitFree.has(`${active}:${idx(at.row, at.col)}`)}
                 onWait={() => at && setWaitFree((set) => new Set(set).add(`${active}:${idx(at.row, at.col)}`))}
+                cellLeave={cellLeave}
                 unreadChat={unreadChat}
                 onReveal={revealRange}
                 onRef={revealRef}

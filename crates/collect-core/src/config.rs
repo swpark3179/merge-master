@@ -222,9 +222,9 @@ impl CollectConfig {
     ///
     /// - 제목: 엑셀 파일 이름(확장자 제외).
     /// - 행 배정 기준: 정하지 않는다(호스트가 '담당자 배정'에서 고른다). 후보 1순위([`suggested_key_col`])는 아래 판단에만 쓴다.
-    /// - 입력 금지: 수식 열, 배정 기준 후보 열, 데이터가 거의 다 채워진 열(본부·부서·비목 같은 키).
-    /// - 입력 영역: 30% 이상 비어 있는 열.
-    /// - 조회조건: 입력 금지인 글자 열 중 값이 2~50가지로 반복되는 열(배정 기준 후보 열 제외).
+    /// - 열 역할: 모두 입력 영역. 잠글 열은 호스트가 1b에서 정한다(수식 칸은 열 역할과 상관없이 입력할 수 없다).
+    /// - 조회조건: 데이터가 거의 다 채워진 글자 열 중 값이 2~50가지로 반복되는 열(본부·부서·비목 같은 키,
+    ///   수식 열·배정 기준 후보 열 제외).
     /// - 형식: 목록 유효성 → 목록, 숫자가 있거나 숫자 표시 형식 → 숫자(머리글 괄호 안을 단위로), 날짜 형식 → 날짜.
     pub fn suggest(model: &SheetModel) -> Self {
         let index = MergeIndex::new(model);
@@ -262,8 +262,7 @@ impl CollectConfig {
                 let is_formula = formulas * 2 > n;
                 let is_key = key_col == Some(c);
                 let mostly_empty = (n - filled.min(n)) * 10 >= n * 3;
-                let role = if is_formula || is_key || !mostly_empty { ColumnRole::Locked } else { ColumnRole::Input };
-                let filter = role == ColumnRole::Locked
+                let filter = !mostly_empty
                     && !is_key
                     && !is_formula
                     && numbers == 0
@@ -271,7 +270,7 @@ impl CollectConfig {
                     && texts.len() < text_count;
                 let format = suggest_format(model, c, numbers > 0, &header_texts(model, &index, c));
                 let hint = default_hint(&format);
-                ColumnRule { role, required: false, filter, format, hint }
+                ColumnRule { role: ColumnRole::Input, required: false, filter, format, hint }
             })
             .collect();
 
@@ -487,9 +486,18 @@ pub(crate) mod tests {
         }
     }
 
-    /// 설정 초안 + 행 배정 기준을 추천 열(C 담당자)로 정한 것(배정이 필요한 시험용).
-    pub(crate) fn assigned(m: &SheetModel) -> CollectConfig {
+    /// 설정 초안에서 호스트가 와이어프레임 1b처럼 키·실적 열(A~E)과 수식 열(G)을 잠근 것(잠금 열이 필요한 시험용).
+    pub(crate) fn configured(m: &SheetModel) -> CollectConfig {
         let mut cfg = CollectConfig::suggest(m);
+        for c in [0, 1, 2, 3, 4, 6] {
+            cfg.columns[c].role = ColumnRole::Locked;
+        }
+        cfg
+    }
+
+    /// [`configured`] + 행 배정 기준을 추천 열(C 담당자)로 정한 것(배정이 필요한 시험용).
+    pub(crate) fn assigned(m: &SheetModel) -> CollectConfig {
+        let mut cfg = configured(m);
         cfg.assignment.key_col = suggested_key_col(m);
         cfg
     }
@@ -501,10 +509,8 @@ pub(crate) mod tests {
         assert_eq!(cfg.title, "budget");
         assert_eq!(cfg.assignment.key_col, None); // 담당자 배정은 호스트가 정한다
         assert_eq!(suggested_key_col(&m), Some(2));
-        let roles: Vec<_> = cfg.columns.iter().map(|c| c.role).collect();
-        use ColumnRole::*;
-        // A~E 키·실적은 입력 금지, F 신청 금액 입력, G 수식 금지, H 산출 근거·I 집행 시기 입력
-        assert_eq!(roles, [Locked, Locked, Locked, Locked, Locked, Input, Locked, Input, Input]);
+        // 처음엔 모든 열이 입력(잠글 열은 호스트가 정한다). G 수식 칸은 열 역할과 상관없이 입력할 수 없다.
+        assert!(cfg.columns.iter().all(|c| c.role == ColumnRole::Input));
         let filters: Vec<u32> = (0..9).filter(|&c| cfg.columns[c as usize].filter).collect();
         assert_eq!(filters, [0, 1, 3]); // 본부·부서·비목 (담당자는 배정 기준이라 제외)
         assert_eq!(cfg.columns[5].format, InputFormat::Number { unit: "천원".into() });

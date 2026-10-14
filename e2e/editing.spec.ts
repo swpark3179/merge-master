@@ -259,16 +259,33 @@ test("행 단위 폼(1g): 형식별 입력·자동 저장·이력·다음 미입
 test("조회조건·내 담당만·필수 미입력만 필터", async ({ browser }) => {
   const a = await open(browser, "최도윤");
   await expect(a.getByTestId("row-count")).toContainText("행 · 내 담당");
-  // 조회조건 콤보는 펼치면 검색 칸이 있다(항목이 많아도 찾기 쉽게).
-  await a.getByRole("combobox", { name: "부서 조회조건" }).click();
+  // 조회조건 콤보는 펼치면 검색 칸이 있다(항목이 많아도 찾기 쉽게). 검색해서 여러 개를 고를 수 있다.
+  const combo = a.getByRole("combobox", { name: "부서 조회조건" });
+  const count = async () => Number((await a.getByTestId("row-count").textContent())!.match(/표시 ([\d,]+)행/)![1]);
+  await combo.click();
   await a.getByLabel("부서 검색").fill("재무");
-  await expect(a.getByRole("option")).toHaveText(["재무팀"]);
+  await expect(a.getByRole("option")).toHaveText(["검색 결과 모두 선택 (1)", "재무팀"]);
   await a.getByRole("option", { name: "재무팀" }).click();
-  await expect(a.getByRole("combobox", { name: "부서 조회조건" })).toHaveText(/재무팀/);
+  await expect(a.getByRole("option", { name: "재무팀" })).toHaveAttribute("aria-selected", "true");
+  await expect(combo).toHaveText(/재무팀/);
   await expect(a.getByTestId("row-count")).toContainText("표시");
+  const one = await count();
   const shown = await a.locator(".mmg-left .mmg-rowhead").count();
   expect(shown).toBeLessThan(40);
+  // 목록은 열린 채로: 검색어를 지우고 하나 더 고르면 두 부서가 함께 보인다.
+  await a.getByLabel("부서 검색").fill("");
+  const second = (await a.getByRole("option").allTextContents()).find((o) => o !== "전체" && o !== "재무팀")!;
+  await a.getByRole("option", { name: second, exact: true }).click();
+  await expect(combo).toHaveText(/재무팀 외 1/);
+  await expect.poll(count).toBeGreaterThan(one);
+  // 다시 누르면 뺀다. Esc로 닫는다.
+  await a.getByRole("option", { name: second, exact: true }).click();
+  await expect.poll(count).toBe(one);
+  await a.keyboard.press("Escape");
+  await expect(a.getByRole("listbox")).toHaveCount(0);
+  await expect(combo).toHaveText(/재무팀/);
   await a.getByRole("button", { name: "필터 지우기" }).click();
+  await expect(combo).toHaveText(/전체/);
   // 담당자 없는 행도 '내 담당'에 든다는 것을 이름에서 알린다.
   await expect(a.locator(".filter-bar")).toContainText("내 담당만 (담당자 없는 행 포함)");
   await a.getByLabel("내 담당만").check();
@@ -442,6 +459,35 @@ test("Alt+Enter 여러 줄은 그리드에 줄을 나눠 보이고, 사이드바
   await expect(a.locator(".side-panel")).toHaveCount(0);
   await a.getByRole("button", { name: /^사이드바/ }).click();
   await expect(a.locator(".side-panel")).toBeVisible();
+});
+
+test("사이드바 '셀 내용'에서 고치다 다른 칸을 누르면 누른 칸이 아니라 고치던 칸에 들어간다", async ({ browser }) => {
+  const a = await open(browser, "오세린");
+  const b = await open(browser, "최도윤");
+  const panel = a.locator(".side-panel");
+  const box = panel.getByLabel("셀 내용 편집");
+  const before = await text(a, 31, H).textContent();
+  await cell(a, 27, H).click();
+  await expect(panel.locator(".cell-detail .addr")).toHaveText("H28");
+  await box.fill("사이드바에서 쓴 근거");
+  await expect(mark(b, 27, H).locator(".lock-tag")).toHaveText("오세린");
+  // 저장하지 않고 그리드의 다른 칸을 누른다.
+  await cell(a, 31, H).click();
+  await expect(panel.locator(".cell-detail .addr")).toHaveText("H32");
+  await expect(text(a, 27, H)).toHaveText("사이드바에서 쓴 근거");
+  await expect(text(b, 27, H)).toHaveText("사이드바에서 쓴 근거");
+  await expect(text(a, 31, H)).toHaveText(before ?? "");
+  await expect(text(b, 31, H)).toHaveText(before ?? "");
+  await expect(mark(b, 27, H).locator(".lock-tag")).toHaveCount(0);
+
+  // 형식이 맞지 않으면(숫자 열에 글자) 그 칸은 취소하고 알린다. 누른 칸에도 들어가지 않는다.
+  const beforeF = await text(a, 31, F).textContent();
+  await cell(a, 27, F).click();
+  await box.fill("숫자 아님");
+  await cell(a, 31, F).click();
+  await expect(a.locator(".toast", { hasText: "F28" })).toContainText("입력을 취소했습니다");
+  await expect(text(a, 27, F)).toHaveText("");
+  await expect(text(a, 31, F)).toHaveText(beforeF ?? "");
 });
 
 test("크기 조절: 호스트가 허용하면 참여자가 머리글 경계를 끌어 열 너비를 바꾸고 모두에게 보인다", async ({
