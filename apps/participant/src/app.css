@@ -27,18 +27,30 @@ body {
   height: 100%;
 }
 
+/* 작업 화면 머리: 업무 이름(왼쪽)과 내 진행·접속자·마감(오른쪽). 호스트 앱처럼 얇은 선으로 나눈다. */
 .top {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 14px;
-  padding: 8px 16px;
-  border-bottom: 1.5px solid var(--ink);
+  gap: 8px 18px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.top-title {
+  min-width: 0;
 }
 
 .top h1 {
   margin: 0;
-  font-size: 20px;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.top .back-link {
+  font-size: 12px;
 }
 
 .eyebrow {
@@ -252,16 +264,52 @@ button.link {
 }
 
 /* ---------------------------------------------------------------- 1f 작업 화면 */
+/* 내 필수 입력: 라벨 · 채운/전체 · 가는 진행바(다 채우면 초록) · 퍼센트 */
 .mine-progress {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: 13px;
   white-space: nowrap;
+}
+
+.mine-progress .label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mine-progress b {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
 }
 
 .mine-progress .bar {
   width: 120px;
+  height: 6px;
+  border: 0;
+  border-radius: 3px;
+  background: var(--head);
+}
+
+.mine-progress .bar > span {
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.mine-progress.done .bar > span {
+  background: var(--ok);
+}
+
+.mine-progress .pct {
+  min-width: 34px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.mine-progress.done .pct {
+  color: var(--ok-ink);
+  font-weight: 700;
 }
 
 .avatars {
@@ -273,29 +321,45 @@ button.link {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
   line-height: 1.25;
   white-space: nowrap;
 }
 
+.deadline-left .eyebrow {
+  font-size: 11px;
+}
+
 .deadline-left b {
-  font-size: 15px;
+  font-size: 14px;
+}
+
+.deadline-left.urgent {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
 }
 
 .deadline-left.urgent b {
   color: var(--warn);
 }
 
+/* 접속자: 사람 색 테두리 + 흰 고리로 겹친다(호스트는 진한 테두리) */
 .avatar {
-  width: 30px;
-  height: 30px;
-  margin-left: -6px;
+  width: 28px;
+  height: 28px;
+  margin-left: -5px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: 2px solid var(--ink);
   border-radius: 50%;
   background: #fff;
-  font-size: 13px;
+  box-shadow: 0 0 0 2px #fff;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .avatar:first-child {

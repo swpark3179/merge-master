@@ -57,8 +57,15 @@ export interface Notice {
   id: number;
   text: string;
   tone: "info" | "warn" | "error";
-  /** 알림 안 버튼(예: 강조한 셀로 이동). `sheet`가 있으면 그 시트로 가서. */
-  action?: { label: string; range: CellRange; highlight?: number; sheet?: number };
+  /** 알림 안 버튼: 강조한 셀로 이동(`sheet`가 있으면 그 시트로 가서), 또는 채팅 탭 열기. */
+  action?: { label: string; range: CellRange; highlight?: number; sheet?: number } | { label: string; chat: true };
+  /** 채팅 알림(보낸 사람: 글 앞부분)은 두 줄에서 자른다. */
+  kind?: "chat";
+}
+
+/** 브라우저 탭 제목(업무 여럿을 탭으로 열어 둘 때 가려 보기). */
+export function pageTitle(title: string | undefined): string {
+  return title ? `${title} · 엑셀 취합` : "엑셀 취합";
 }
 
 /** 편집 잠금 알림: 내가 잡은 결과(받음·남이 쓰는 중), 또는 어떤 칸의 잠금이 풀렸다(남이 끝냄·호스트가 풂). */
@@ -183,10 +190,13 @@ export function useSession(slug: string) {
     return true;
   }, []);
 
-  const notify = useCallback((text: string, tone: Notice["tone"] = "info", action?: Notice["action"]) => {
-    const id = ++noticeSeq.current;
-    setNotices((list) => [...list.slice(-3), { id, text, tone, action }]);
-  }, []);
+  const notify = useCallback(
+    (text: string, tone: Notice["tone"] = "info", action?: Notice["action"], kind?: Notice["kind"]) => {
+      const id = ++noticeSeq.current;
+      setNotices((list) => [...list.slice(-3), { id, text, tone, action, kind }]);
+    },
+    [],
+  );
 
   const dismiss = useCallback((id: number) => setNotices((list) => list.filter((n) => n.id !== id)), []);
 
@@ -435,8 +445,8 @@ export function useSession(slug: string) {
           }
           break;
         case "notice":
+          // 확인할 때까지 화면 위 공지 막대에 남는다(작업 화면 NoticeBanners). 토스트로는 띄우지 않는다.
           setAnnouncements((list) => [...list.filter((n) => n.id !== msg.id), msg]);
-          if (!msg.important) notify(`공지: ${msg.text}`, "info");
           break;
         case "highlight": {
           setHighlights((list) => [...list.filter((h) => h.id !== msg.id), msg]);
@@ -565,7 +575,7 @@ export function useSession(slug: string) {
   // 브라우저 탭에 업무명을 보인다(업무 여럿을 탭으로 열어 둘 때 가려 보기).
   const title = info?.title;
   useEffect(() => {
-    document.title = title ? `${title} · 엑셀 취합` : "엑셀 취합";
+    document.title = pageTitle(title);
   }, [title]);
 
   const join = useCallback(

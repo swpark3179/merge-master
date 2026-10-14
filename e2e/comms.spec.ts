@@ -47,12 +47,43 @@ test("중요 공지는 확인할 때까지 위에 고정되고 읽음이 집계�
   const notice = comms.notices.find((n: { text: string }) => n.text.startsWith("오늘 17시까지"));
   expect(notice.read).toEqual(["김민지"]);
 
-  // 일반 공지는 알림으로 뜨고 사이드바 '알림' 탭에 남는다(안 읽은 수는 사이드바 버튼에 보인다).
-  await request.post("/__dev/notice", { data: { text: "참고: 양식 갱신", target: { kind: "all" } } });
-  await expect(a.locator(".toast", { hasText: "공지: 참고: 양식 갱신" })).toBeVisible();
-  await expect(a.getByRole("button", { name: /^사이드바/ }).locator(".badge")).toBeVisible();
+  // 일반 공지도 확인할 때까지 위 파란 막대에 남고(토스트로 흘려보내지 않는다) 사이드바 '알림' 탭에도 있다.
+  // 안 읽은 수는 도구바 '알림'에 보인다.
+  await request.post("/__dev/notice", {
+    data: { text: "참고: 양식 갱신", target: { kind: "people", names: ["김민지"] } },
+  });
+  const plain = a.locator(".notice-bar", { hasText: "참고: 양식 갱신" });
+  await expect(plain).toBeVisible();
+  await expect(plain).toContainText("박지훈");
+  await expect(a.locator(".toast", { hasText: "참고: 양식 갱신" })).toHaveCount(0);
+  await expect(a.getByRole("button", { name: /^알림/ }).locator(".badge")).toBeVisible();
   await a.locator(".side-panel").getByRole("tab", { name: /^알림/ }).click();
   await expect(a.locator(".side-panel")).toContainText("참고: 양식 갱신");
+  await plain.getByRole("button", { name: "확인" }).click();
+  await expect(plain).toHaveCount(0);
+  await expect
+    .poll(async () => {
+      const c = await (await request.get("/__dev/comms")).json();
+      return c.notices.find((n: { text: string }) => n.text === "참고: 양식 갱신").read;
+    })
+    .toEqual(["김민지"]);
+});
+
+test("확인하지 않은 공지가 여럿이면 중요한 것부터 위에 쌓이고 '모두 확인'으로 한 번에 확인한다", async ({
+  browser,
+  request,
+}) => {
+  const a = await open(browser, "한지우");
+  const target = { kind: "people", names: ["한지우"] };
+  await request.post("/__dev/notice", { data: { text: "일반 공지 하나", target } });
+  await request.post("/__dev/notice", { data: { text: "중요한 공지 하나", important: true, target } });
+  const stack = a.getByLabel("확인하지 않은 공지");
+  await expect(stack.locator(".important-bar, .notice-bar")).toHaveCount(2);
+  await expect(stack.locator(".important-bar, .notice-bar").first()).toContainText("중요한 공지 하나");
+  // 화면을 연 뒤에 온 공지는 눈길을 끄는 동작과 함께 내려온다.
+  await expect(stack.locator(".important-bar")).toHaveClass(/fresh/);
+  await stack.getByRole("button", { name: "모두 확인" }).click();
+  await expect(a.locator(".notice-stack")).toHaveCount(0);
 });
 
 test("여러 줄 공지는 중요 공지 막대·알림 탭에 적은 그대로 보인다", async ({ browser, request }) => {
@@ -101,6 +132,76 @@ test("셀 강조: 노란 표시·말풍선과 '셀로 이동', 확인 집계, �
   const plain = (await (await request.get("/__dev/comms")).json()).highlights.at(-1).id;
   await request.post("/__dev/highlight/clear", { data: { id: plain } });
   await expect(cell(a, 20, H)).not.toHaveClass(/deco-highlight/);
+});
+
+test("강조 메모: 칸·말풍선 오른쪽 클릭으로 숨기고(새로 고쳐도 유지) 다시 본다", async ({ browser, request }) => {
+  const a = await open(browser, "정하늘");
+  const ok = await request.post("/__dev/highlight", {
+    data: { range: "H19", note: "근거를 한 줄로 적어 주세요", audience: "owners" },
+  });
+  expect(ok.ok()).toBe(true);
+  const head = cell(a, 18, H);
+  const bubble = head.locator(".callout");
+  await expect(bubble).toHaveText("근거를 한 줄로 적어 주세요");
+  // 말풍선은 클릭이 아래 칸으로 지나가지만, 오른쪽 클릭하면 그 강조의 메뉴가 뜬다.
+  await bubble.click({ button: "right", force: true });
+  const menu = a.getByRole("menu", { name: "칸 메뉴" });
+  await expect(menu).toContainText("H19 강조 메모");
+  await menu.getByRole("menuitem", { name: "메모 숨기기" }).click();
+  await expect(a.locator(".callout")).toHaveCount(0);
+  await expect(head).toHaveClass(/deco-highlight/); // 노란 강조는 남는다
+  await expect(head.locator(".note-mark")).toHaveCount(1);
+  // 이 브라우저에 기억한다.
+  await a.reload();
+  await expect(head).toHaveClass(/deco-highlight/);
+  await expect(a.locator(".callout")).toHaveCount(0);
+  // 칸을 오른쪽 클릭해 다시 보인다.
+  await head.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "메모 다시 보기" }).click();
+  await expect(bubble).toHaveText("근거를 한 줄로 적어 주세요");
+  // 알림 탭에서도 숨기고 보인다. 메뉴의 '셀 이력 보기'는 그 칸의 이력을 연다.
+  const panel = a.locator(".side-panel");
+  await panel.getByRole("tab", { name: /^알림/ }).click();
+  const item = panel.locator(".alert-item", { hasText: "근거를 한 줄로 적어 주세요" });
+  await item.getByRole("button", { name: "메모 숨기기" }).click();
+  await expect(a.locator(".callout")).toHaveCount(0);
+  await item.getByRole("button", { name: "메모 다시 보기" }).click();
+  await expect(bubble).toBeVisible();
+  await head.click({ button: "right" });
+  await menu.getByRole("menuitem", { name: "셀 이력 보기" }).click();
+  await expect(panel.getByRole("tab", { name: "셀 이력" })).toHaveAttribute("aria-selected", "true");
+  const id = (await (await request.get("/__dev/comms")).json()).highlights.at(-1).id;
+  await request.post("/__dev/highlight/clear", { data: { id } });
+  await expect(head).not.toHaveClass(/deco-highlight/);
+});
+
+test("채팅 탭을 보고 있지 않을 때 온 남의 글은 토스트로 알리고, 누르면 채팅 탭이 열린다", async ({
+  browser,
+  request,
+}) => {
+  // 다른 시험의 안 읽은 수를 흔들지 않게 이 시험에서만 쓰는 사람에게 1:1로 보낸다.
+  const a = await open(browser, "이서연");
+  const to = { kind: "person", name: "이서연" };
+  const panel = a.locator(".side-panel");
+  await expect(panel.getByRole("tab", { name: "셀 내용" })).toHaveAttribute("aria-selected", "true");
+  await request.post("/__dev/chat", { data: { to, text: "모두 17시까지 부탁드립니다" } });
+  const toast = a.locator(".toast.chat", { hasText: "모두 17시까지 부탁드립니다" });
+  await expect(toast).toContainText("박지훈(나에게)");
+  await expect(a.getByRole("button", { name: /^채팅\s*\d+$/ }).locator(".badge")).toBeVisible();
+  await toast.getByRole("button", { name: "채팅 열기" }).click();
+  await expect(panel.getByRole("tab", { name: /^채팅/ })).toHaveAttribute("aria-selected", "true");
+  await expect(a.getByLabel("채팅 내용")).toContainText("모두 17시까지 부탁드립니다");
+  // 채팅 탭을 보고 있으면 토스트 없이 목록에만 들어온다.
+  await request.post("/__dev/chat", { data: { to, text: "확인 감사합니다" } });
+  await expect(a.getByLabel("채팅 내용")).toContainText("확인 감사합니다");
+  await expect(a.locator(".toast.chat", { hasText: "확인 감사합니다" })).toHaveCount(0);
+  // 초안은 탭을 바꾸거나 사이드바를 닫아도 남는다.
+  await a.getByLabel("채팅 입력").fill("쓰다 만 글");
+  await panel.getByRole("tab", { name: "셀 내용" }).click();
+  await a.getByRole("button", { name: /^사이드바/ }).click();
+  await a.getByRole("button", { name: /^사이드바/ }).click();
+  await panel.getByRole("tab", { name: /^채팅/ }).click();
+  await expect(a.getByLabel("채팅 입력")).toHaveValue("쓰다 만 글");
 });
 
 test("채팅: 전체·호스트에게, 호스트의 1:1 답장과 #셀 참조", async ({ browser, request }) => {
@@ -333,4 +434,31 @@ test("채팅 탭을 열면 새 메시지 구분선, 위로 올려 읽는 중에 
   await jump.click();
   await expect(jump).toHaveCount(0);
   await expect.poll(() => list.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(48);
+});
+
+test("짧은 남의 글에도 리액션 막대가 채팅 목록 안에 다 보여 맨 앞(👌)도 누를 수 있다", async ({ browser, request }) => {
+  // 받는 사람 표시가 없는(전체) 짧은 글이라야 말풍선이 좁다. 전체 글을 쓰는 시험이므로 맨 뒤에 둔다.
+  const a = await open(browser, "이서연");
+  await a.locator(".side-panel").getByRole("tab", { name: /^채팅/ }).click();
+  await request.post("/__dev/chat", { data: { to: { kind: "all" }, text: "굿" } });
+  const list = a.getByLabel("채팅 내용");
+  const msg = list
+    .locator(".chat-msg")
+    .filter({ has: a.locator(".chat-text", { hasText: /^굿$/ }) })
+    .last();
+  await msg.hover();
+  const bar = msg.getByRole("group", { name: "리액션 달기" });
+  await expect(bar).toBeVisible();
+  // 막대 전체가 목록 폭 안에 있다(전에는 짧은 글에서 왼쪽이 목록 밖으로 나가 잘렸다).
+  await expect
+    .poll(async () => {
+      const [b, l] = [await bar.boundingBox(), await list.boundingBox()];
+      return !!b && !!l && b.x >= l.x && b.x + b.width <= l.x + l.width;
+    })
+    .toBe(true);
+  await bar.getByRole("button", { name: "OK" }).click();
+  await expect(msg.locator(".chat-reactions").getByRole("button", { name: "OK 1" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 });

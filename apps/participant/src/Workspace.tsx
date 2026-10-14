@@ -41,6 +41,7 @@ import {
 import type { ClipboardEvent, CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { useTitleAlert } from "./attention";
 import type { BenchResult } from "./bench";
 import { runScrollBench } from "./bench";
 import { DeadlineClock } from "./DeadlineClock";
@@ -48,12 +49,15 @@ import type { RowFilter } from "./filters";
 import { filteredOut, filterOptions, isFiltering, myRowsOf, NO_FILTER, withHiddenRows } from "./filters";
 import type { BulkResult, EditContext } from "./gridOps";
 import { canEdit, clearRange, copyRange, pasteRange } from "./gridOps";
+import { loadHiddenNotes, pruneHidden, saveHiddenNotes, toggleHidden } from "./hiddenNotes";
+import { NoticeBanners } from "./NoticeBanners";
 import { RowForm } from "./RowForm";
 import { SearchSelect } from "./SearchSelect";
 import type { PanelTab } from "./SidePanel";
 import { clampSideWidth, SIDE_WIDTH, SidePanel } from "./SidePanel";
 import { storageSlug } from "./slug";
 import type { Notice, SessionState } from "./useSession";
+import { pageTitle } from "./useSession";
 
 const FILLS: { label: string; rgb: number | null }[] = [
   { label: "노랑", rgb: 0xfff3b0 },
@@ -93,11 +97,33 @@ function AlignIcon({ lines, anchor }: { lines: number[]; anchor: "start" | "midd
   );
 }
 
-/** 오른쪽 클릭 메뉴(행·열 머리글). `confirm`: 값이 있는 행을 지우기 전 확인 중(지울 칸 수). */
+/** 도구바 선 그림(24×24 경로). */
+function ToolIcon({ d, size = 16 }: { d: string; size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d={d} />
+    </svg>
+  );
+}
+
+/**
+ * 오른쪽 클릭 메뉴: 행·열 머리글, 또는 메모가 있는 강조 칸(메모 숨기기·셀 이력). `confirm`: 값이 있는 행을 지우기 전
+ * 확인 중(지울 칸 수).
+ */
 interface HeaderMenu {
   x: number;
   y: number;
-  hit: Exclude<GridHit, { kind: "cell" }>;
+  hit: GridHit;
   confirm?: number;
 }
 
@@ -219,8 +245,36 @@ export function Workspace({ s }: { s: SessionState }) {
     [setSideOpen],
   );
   const [chatSeen, setChatSeen] = useState(0);
+  /** 채팅 초안·'님에게만'(탭을 바꾸거나 사이드바를 닫아도 남는다). */
+  const [chatDraft, setChatDraft] = useState("");
+  const [chatToHost, setChatToHost] = useState(false);
   const [menu, setMenu] = useState<HeaderMenu | null>(null);
   const onChatSeen = useCallback((id: number) => setChatSeen((x) => Math.max(x, id)), []);
+  /** 탭을 보고 있지 않을 때 온 채팅·공지를 탭 제목 깜빡임으로 알린다. */
+  const titleAlert = useTitleAlert(pageTitle(w.session.title));
+
+  /** 내가 숨긴 강조 메모(이 브라우저에만, 업무마다). */
+  const job = w.session.job ?? "";
+  const [hiddenNotes, setHiddenNotes] = useState(() => loadHiddenNotes(job));
+  const notesJob = useRef(job);
+  useEffect(() => {
+    if (notesJob.current === job) return;
+    notesJob.current = job;
+    setHiddenNotes(loadHiddenNotes(job));
+  }, [job]);
+  // 호스트가 해제한 강조는 잊는다.
+  useEffect(
+    () =>
+      setHiddenNotes((ids) =>
+        pruneHidden(
+          ids,
+          s.highlights.map((h) => h.id),
+        ),
+      ),
+    [s.highlights],
+  );
+  useEffect(() => saveHiddenNotes(notesJob.current, hiddenNotes), [hiddenNotes]);
+  const toggleNote = useCallback((id: number) => setHiddenNotes((ids) => toggleHidden(ids, id)), []);
   /** 채팅 참조·강조로 간 범위: 테두리가 두 번 깜빡인다(`PING_MS` 뒤에 뗀다). */
   const [ping, setPing] = useState<{ sheet: number; range: CellRange; seq: number } | null>(null);
   const pingSeq = useRef(0);
@@ -238,6 +292,54 @@ export function Workspace({ s }: { s: SessionState }) {
   const { notify } = s;
   const idx = (r: number, c: number) => r * model.cols + c;
   const addr = (at: CellRef) => a1(model.origin.row + at.row, model.origin.col + at.col);
+
+  // 새로 온 남의 채팅: 채팅 탭이 안 보이면 토스트(누르면 채팅 탭), 이 탭을 보고 있지 않으면 제목 깜빡임.
+  // 들어올 때 이미 있던 글에는 알리지 않는다(업무가 바뀌면 다시 센다: 글 번호는 업무마다 새로 시작한다).
+  const chatTop = useRef<{ job: string; id: number } | null>(null);
+  const lastChat = s.chat[s.chat.length - 1]?.id ?? 0;
+  const chatVisible = sideOpen && mode === "grid" && panel === "chat";
+  useEffect(() => {
+    const top = chatTop.current;
+    if (!top || top.job !== job) {
+      chatTop.current = { job, id: lastChat };
+      return;
+    }
+    if (lastChat <= top.id) return;
+    const fresh = s.chat.filter((m) => m.id > top.id && !(m.from === w.name && !m.host));
+    top.id = lastChat;
+    if (fresh.length === 0) return;
+    if (!chatVisible) {
+      const m = fresh[fresh.length - 1]!;
+      const text = m.text.replace(/\s+/g, " ").trim();
+      const who = `${m.from}${m.to.kind === "person" ? "(나에게)" : ""}`;
+      const head = fresh.length > 1 ? `새 채팅 ${fresh.length}개 · ` : "";
+      notify(
+        `${head}${who}: ${text.length > 120 ? `${text.slice(0, 120)}…` : text}`,
+        "info",
+        { label: "채팅 열기", chat: true },
+        "chat",
+      );
+    }
+    for (let i = 0; i < fresh.length; i++) titleAlert("chat");
+    // 마지막 글 번호가 바뀔 때만(그때의 탭 상태를 본다).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastChat, job]);
+
+  // 새로 온 공지: 위 막대가 알리고, 이 탭을 보고 있지 않으면 제목도 깜빡인다.
+  const noticeTop = useRef<{ job: string; id: number } | null>(null);
+  const lastNotice = s.announcements.reduce((m, n) => Math.max(m, n.id), 0);
+  useEffect(() => {
+    const top = noticeTop.current;
+    if (!top || top.job !== job) {
+      noticeTop.current = { job, id: lastNotice };
+      return;
+    }
+    if (lastNotice <= top.id) return;
+    if (s.announcements.some((n) => n.id > top.id && !n.read)) titleAlert("notice");
+    top.id = lastNotice;
+    // 마지막 공지 번호가 바뀔 때만.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastNotice, job]);
 
   const myRows = useMemo(() => myRowsOf(model, flags, sv.rowOwner, w.color), [model, flags, sv.rowOwner, w.color]);
   const myRowCount = useMemo(() => myRows.reduce((n, x) => n + x, 0), [myRows]);
@@ -627,9 +729,33 @@ export function Workspace({ s }: { s: SessionState }) {
   /** 내가 추가한 행인가(지울 수 있는 행). */
   const mine = (r: number) => (model.addedRows ?? []).some((a) => a.row === r && a.by === w.name);
 
-  // 칸 오른쪽 클릭 → 셀 이력. 행·열 머리글 → 크기·행 추가·행 삭제·취소 표시 메뉴(할 수 있는 것이 있을 때만).
+  /** 강조 메모 메뉴(메모 숨기기·그 칸의 셀 이력)를 연다. `at`: 누른 칸(말풍선이면 강조의 머리 칸). */
+  const openNoteMenu = (at: CellRef, e: ReactMouseEvent) => {
+    e.preventDefault();
+    if (editorRef.current) leave();
+    setMenu({ x: e.clientX, y: e.clientY, hit: { kind: "cell", ...at } });
+  };
+
+  /**
+   * 말풍선 위 오른쪽 클릭: 말풍선은 클릭이 아래(옆 칸·그리드 밖 빈 곳)로 지나가므로 위치로 찾아, 그리드보다 먼저
+   * (capture) 메모 메뉴를 연다.
+   */
+  const onBubbleContext = (e: ReactMouseEvent) => {
+    for (const b of gridHost.current?.querySelectorAll<HTMLElement>(".callout[data-hl]") ?? []) {
+      const r = b.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) continue;
+      const h = [...highlighted.values()].find((x) => x.id === Number(b.dataset.hl));
+      if (!h) continue;
+      e.stopPropagation();
+      return openNoteMenu(h.at, e);
+    }
+  };
+
+  // 칸 오른쪽 클릭 → 셀 이력(메모가 있는 강조 칸이면 메모 숨기기·셀 이력 메뉴). 행·열 머리글 → 크기·행 추가·행 삭제·
+  // 취소 표시 메뉴(할 수 있는 것이 있을 때만).
   const onGridContext = (hit: GridHit, e: ReactMouseEvent) => {
     if (hit.kind === "cell") {
+      if (highlighted.get(`${hit.row}:${hit.col}`)?.note) return openNoteMenu(hit, e);
       e.preventDefault();
       grid.current?.reveal({ row: hit.row, col: hit.col });
       showPanel("history");
@@ -651,6 +777,36 @@ export function Workspace({ s }: { s: SessionState }) {
   const headerMenu = (m: HeaderMenu) => {
     const close = () => setMenu(null);
     const r = selection ? rectOf(selection) : null;
+    if (m.hit.kind === "cell") {
+      const at = { row: m.hit.row, col: m.hit.col };
+      const note = highlighted.get(`${at.row}:${at.col}`);
+      if (!note) return null; // 메뉴를 연 사이에 호스트가 해제했다
+      const hidden = hiddenNotes.has(note.id);
+      return (
+        <ContextMenu x={m.x} y={m.y} onClose={close} label="칸 메뉴">
+          <MenuNote title>{addr(note.at)} 강조 메모</MenuNote>
+          <MenuItem
+            title={hidden ? "말풍선을 다시 보입니다" : "이 화면에서만 말풍선을 숨깁니다(노란 강조는 남습니다)"}
+            onClick={() => {
+              close();
+              toggleNote(note.id);
+            }}
+          >
+            {hidden ? "메모 다시 보기" : "메모 숨기기"}
+          </MenuItem>
+          <MenuSep />
+          <MenuItem
+            onClick={() => {
+              close();
+              grid.current?.reveal(at);
+              showPanel("history");
+            }}
+          >
+            셀 이력 보기
+          </MenuItem>
+        </ContextMenu>
+      );
+    }
     if (m.hit.kind === "col") {
       const c = m.hit.col;
       const count = r && r.cols > 1 && c >= r.col && c < r.col + r.cols ? r.cols : 1;
@@ -801,14 +957,15 @@ export function Workspace({ s }: { s: SessionState }) {
     return () => window.clearTimeout(id);
   }, [mineHint]);
 
-  // 강조된 칸: 칸 → (메모, 왼쪽 위 칸인지)
+  // 강조된 칸: 칸 → (강조 번호, 메모, 왼쪽 위 칸인지)
   const highlighted = useMemo(() => {
-    const map = new Map<string, { note: string; head: boolean }>();
+    const map = new Map<string, { id: number; note: string; head: boolean; at: CellRef }>();
     for (const h of s.highlights) {
       if (h.sheet !== active) continue;
+      const at = { row: h.range.row, col: h.range.col };
       for (let r = h.range.row; r < h.range.row + h.range.rows; r++)
         for (let c = h.range.col; c < h.range.col + h.range.cols; c++)
-          map.set(`${r}:${c}`, { note: h.note, head: r === h.range.row && c === h.range.col });
+          map.set(`${r}:${c}`, { id: h.id, note: h.note, head: r === at.row && c === at.col, at });
     }
     return map;
   }, [s.highlights, active]);
@@ -905,10 +1062,17 @@ export function Workspace({ s }: { s: SessionState }) {
     const hl = highlighted.get(`${r}:${c}`);
     if (hl) {
       cls.push("deco-highlight");
-      // 메모가 있으면 왼쪽 위 칸에 말풍선으로 보인다(없으면 강조색만).
+      // 메모가 있으면 왼쪽 위 칸에 말풍선으로 보인다(없으면 강조색만). 내가 숨긴 메모는 모서리 표시만 남긴다.
       if (hl.head && hl.note) {
-        cls.push("deco-overflow");
-        adornment = <span className="callout">{hl.note}</span>;
+        if (hiddenNotes.has(hl.id)) adornment = <span className="note-mark" aria-hidden />;
+        else {
+          cls.push("deco-overflow");
+          adornment = (
+            <span className="callout" data-hl={hl.id}>
+              {hl.note}
+            </span>
+          );
+        }
       }
     }
     // 다른 사람이 방금 바꾼 칸은 그 사람 색으로 잠깐 물든다(내 편집에는 쓰지 않는다).
@@ -991,10 +1155,14 @@ export function Workspace({ s }: { s: SessionState }) {
 
   const unreadAlerts = s.highlights.filter((h) => !h.acked).length + s.announcements.filter((n) => !n.read).length;
   const unreadChat = s.chat.filter((m) => m.id > chatSeen && !(m.from === w.name && !m.host)).length;
-  // 열려 있는 탭의 것은 이미 보고 있다.
-  const unread =
-    (sideOpen && mode === "grid" && panel === "alerts" ? 0 : unreadAlerts) +
-    (sideOpen && mode === "grid" && panel === "chat" ? 0 : unreadChat);
+  /** 사이드바에 그 탭이 보이고 있다. */
+  const tabShown = (t: PanelTab) => sideOpen && mode === "grid" && panel === t;
+  /** 도구바의 알림·채팅: 그 탭을 연다(이미 보고 있으면 사이드바를 닫는다). */
+  const openTab = (t: PanelTab) => {
+    if (mode !== "grid") setMode("grid");
+    showPanel(t);
+  };
+  const jumpTo = (t: PanelTab) => (tabShown(t) ? setSideOpen(false) : openTab(t));
   const others = s.presence.filter((p) => p.name !== w.name);
   const p = s.progress ?? { name: w.name, rows: 0, required: 0, filled: 0 };
   const pct = p.required > 0 ? Math.round((p.filled / p.required) * 100) : 100;
@@ -1049,7 +1217,7 @@ export function Workspace({ s }: { s: SessionState }) {
   return (
     <div className="page">
       <header className="top">
-        <div>
+        <div className="top-title">
           <div className="eyebrow">
             <a className="back-link" href="/" title="호스트가 공개한 다른 취합 업무">
               업무 목록
@@ -1061,23 +1229,24 @@ export function Workspace({ s }: { s: SessionState }) {
         </div>
         <span className="spacer" />
         {p.required > 0 && (
-          <span className="mine-progress">
-            내 필수 입력{" "}
+          <span className={`mine-progress${pct >= 100 ? " done" : ""}`} title="내가 채워야 할 필수 칸">
+            <span className="label">내 필수 입력</span>
             <b>
               {p.filled.toLocaleString()} / {p.required.toLocaleString()}
             </b>
             <span className="bar">
               <span style={{ width: `${pct}%` }} />
             </span>
+            <span className="pct">{pct}%</span>
           </span>
         )}
         <span className="avatars" aria-label="접속 중">
           {others.map((x) => (
             <span
               key={x.name}
-              className={`avatar${x.status === "away" ? " away" : ""}`}
+              className={`avatar${x.status === "away" ? " away" : ""}${x.host ? " host" : ""}`}
               title={`${x.name}${x.host ? " (호스트)" : ""}${x.status === "away" ? " · 자리 비움" : ""}`}
-              style={{ borderColor: x.host ? "#222" : personColor(x.color) }}
+              style={{ borderColor: x.host ? "var(--ink)" : personColor(x.color) }}
             >
               {x.name.slice(0, 1)}
             </span>
@@ -1098,142 +1267,176 @@ export function Workspace({ s }: { s: SessionState }) {
           {s.readOnlyReason ?? "마감되었습니다"} — 읽기 전용입니다. 입력한 값은 호스트가 취합합니다.
         </div>
       )}
-      {s.announcements
-        .filter((n) => n.important && !n.read)
-        .map((n) => (
-          <div key={n.id} className="important-bar" role="alert">
-            <b>중요 공지</b>
-            <span className="muted small">{clock(n.atMs).slice(0, 5)}</span>
-            <span className="grow">{n.text}</span>
-            <button className="small" onClick={() => s.ackNotice(n.id)}>
-              확인
-            </button>
-          </div>
-        ))}
+      <NoticeBanners key={job} notices={s.announcements} onAck={s.ackNotice} />
 
       <div className="toolbar">
-        <button className="ghost" onClick={undo} disabled={!sheet.canUndo()} title="내 변경 되돌리기 (Ctrl+Z)">
-          ↶ 실행 취소
-        </button>
+        <div className="tool-group">
+          <button className="ghost tool" onClick={undo} disabled={!sheet.canUndo()} title="내 변경 되돌리기 (Ctrl+Z)">
+            <ToolIcon d="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+            실행 취소
+          </button>
+        </div>
         <span className="sep" />
-        <button
-          className={`ghost icon${curStyle?.bold ? " on" : ""}`}
-          aria-label="굵게"
-          disabled={policy !== "all" || s.readOnly || mode !== "grid"}
-          onClick={() => applyFormat({ bold: !curStyle?.bold })}
-        >
-          <b>B</b>
-        </button>
-        <button
-          className={`ghost icon${curStyle?.italic ? " on" : ""}`}
-          aria-label="기울임"
-          disabled={policy !== "all" || s.readOnly || mode !== "grid"}
-          onClick={() => applyFormat({ italic: !curStyle?.italic })}
-        >
-          <i>I</i>
-        </button>
-        <details className={`fill-menu${policy === "none" || s.readOnly || mode !== "grid" ? " disabled" : ""}`}>
-          <summary aria-label="채우기">채우기 ▾</summary>
-          <div className="swatches">
-            {FILLS.map((x) => (
-              <button
-                key={x.label}
-                className="swatch"
-                title={x.rgb === null ? x.label : `${x.label} ${rgbHex(x.rgb)}`}
-                aria-label={x.label}
-                style={{ background: x.rgb === null ? "#fff" : rgbHex(x.rgb) }}
-                onClick={(e) => {
-                  (e.currentTarget.closest("details") as HTMLDetailsElement).open = false;
-                  applyFormat({ fill: x.rgb === null ? { kind: "none" } : { kind: "color", rgb: x.rgb } });
-                }}
-              >
-                {x.rgb === null ? "✕" : ""}
-              </button>
-            ))}
-          </div>
-        </details>
-        <details
-          className={`fill-menu text-color${policy !== "all" || s.readOnly || mode !== "grid" ? " disabled" : ""}`}
-        >
-          <summary aria-label="글자색" title="글자색">
-            <span className="text-color-mark" style={{ borderColor: rgbHex(curStyle?.color ?? 0) }}>
-              가
-            </span>{" "}
-            ▾
-          </summary>
-          <div className="swatches">
-            {TEXT_COLORS.map((x) => (
-              <button
-                key={x.label}
-                className="swatch text-swatch"
-                title={`${x.label} ${rgbHex(x.rgb)}`}
-                aria-label={`글자 ${x.label}`}
-                style={{ color: rgbHex(x.rgb) }}
-                onClick={(e) => {
-                  (e.currentTarget.closest("details") as HTMLDetailsElement).open = false;
-                  applyFormat({ color: x.rgb });
-                }}
-              >
+        <div className="tool-group" role="group" aria-label="서식">
+          <button
+            className={`ghost icon${curStyle?.bold ? " on" : ""}`}
+            aria-label="굵게"
+            disabled={policy !== "all" || s.readOnly || mode !== "grid"}
+            onClick={() => applyFormat({ bold: !curStyle?.bold })}
+          >
+            <b>B</b>
+          </button>
+          <button
+            className={`ghost icon${curStyle?.italic ? " on" : ""}`}
+            aria-label="기울임"
+            disabled={policy !== "all" || s.readOnly || mode !== "grid"}
+            onClick={() => applyFormat({ italic: !curStyle?.italic })}
+          >
+            <i>I</i>
+          </button>
+          <details className={`fill-menu${policy === "none" || s.readOnly || mode !== "grid" ? " disabled" : ""}`}>
+            <summary aria-label="채우기">채우기 ▾</summary>
+            <div className="swatches">
+              {FILLS.map((x) => (
+                <button
+                  key={x.label}
+                  className="swatch"
+                  title={x.rgb === null ? x.label : `${x.label} ${rgbHex(x.rgb)}`}
+                  aria-label={x.label}
+                  style={{ background: x.rgb === null ? "#fff" : rgbHex(x.rgb) }}
+                  onClick={(e) => {
+                    (e.currentTarget.closest("details") as HTMLDetailsElement).open = false;
+                    applyFormat({ fill: x.rgb === null ? { kind: "none" } : { kind: "color", rgb: x.rgb } });
+                  }}
+                >
+                  {x.rgb === null ? "✕" : ""}
+                </button>
+              ))}
+            </div>
+          </details>
+          <details
+            className={`fill-menu text-color${policy !== "all" || s.readOnly || mode !== "grid" ? " disabled" : ""}`}
+          >
+            <summary aria-label="글자색" title="글자색">
+              <span className="text-color-mark" style={{ borderColor: rgbHex(curStyle?.color ?? 0) }}>
                 가
+              </span>{" "}
+              ▾
+            </summary>
+            <div className="swatches">
+              {TEXT_COLORS.map((x) => (
+                <button
+                  key={x.label}
+                  className="swatch text-swatch"
+                  title={`${x.label} ${rgbHex(x.rgb)}`}
+                  aria-label={`글자 ${x.label}`}
+                  style={{ color: rgbHex(x.rgb) }}
+                  onClick={(e) => {
+                    (e.currentTarget.closest("details") as HTMLDetailsElement).open = false;
+                    applyFormat({ color: x.rgb });
+                  }}
+                >
+                  가
+                </button>
+              ))}
+            </div>
+          </details>
+          {ALIGNS.map((x) => {
+            const on = curStyle?.hAlign === x.value;
+            return (
+              <button
+                key={x.value}
+                className={`ghost icon${on ? " on" : ""}`}
+                aria-label={x.label}
+                aria-pressed={on}
+                title={`${x.label}${on ? " (다시 누르면 일반)" : ""}`}
+                disabled={policy !== "all" || s.readOnly || mode !== "grid"}
+                onClick={() => applyFormat({ hAlign: on ? "general" : x.value })}
+              >
+                {x.icon}
               </button>
-            ))}
-          </div>
-        </details>
-        {ALIGNS.map((x) => {
-          const on = curStyle?.hAlign === x.value;
-          return (
-            <button
-              key={x.value}
-              className={`ghost icon${on ? " on" : ""}`}
-              aria-label={x.label}
-              aria-pressed={on}
-              title={`${x.label}${on ? " (다시 누르면 일반)" : ""}`}
-              disabled={policy !== "all" || s.readOnly || mode !== "grid"}
-              onClick={() => applyFormat({ hAlign: on ? "general" : x.value })}
-            >
-              {x.icon}
-            </button>
-          );
-        })}
-        <span className="muted small">
-          {policy === "none" ? "서식은 호스트가 관리합니다" : policy === "fillOnly" ? "배경색만 바꿀 수 있습니다" : ""}
-        </span>
+            );
+          })}
+        </div>
+        {policy !== "all" && (
+          <span
+            className="tool-hint"
+            title={policy === "none" ? "서식은 호스트가 관리합니다" : "배경색만 바꿀 수 있습니다"}
+          >
+            <ToolIcon d="M7 11V8a5 5 0 0 1 10 0v3M5 11h14v10H5z" size={13} />
+            <span className="text">
+              {policy === "none" ? "서식은 호스트가 관리합니다" : "배경색만 바꿀 수 있습니다"}
+            </span>
+          </span>
+        )}
         <span className="sep" />
-        <button
-          className={`ghost small cancel-toggle${activeCancelled ? " on" : ""}`}
-          aria-pressed={activeCancelled}
-          disabled={s.readOnly || activeRow === null || activeRow < model.headerRows}
-          title={
-            activeCancelled
-              ? "고른 행의 취소 표시를 풉니다"
-              : "고른 행 전체를 취소선·회색으로 표시합니다(필수 칸으로 세지 않습니다)"
-          }
-          onClick={() => toggleCancel(!activeCancelled)}
-        >
-          <s>취소 행</s>
-        </button>
+        <div className="tool-group">
+          <button
+            className={`ghost tool cancel-toggle${activeCancelled ? " on" : ""}`}
+            aria-pressed={activeCancelled}
+            disabled={s.readOnly || activeRow === null || activeRow < model.headerRows}
+            title={
+              activeCancelled
+                ? "고른 행의 취소 표시를 풉니다"
+                : "고른 행 전체를 취소선·회색으로 표시합니다(필수 칸으로 세지 않습니다)"
+            }
+            onClick={() => toggleCancel(!activeCancelled)}
+          >
+            <s>취소 행</s>
+          </button>
+        </div>
         <span className="spacer" />
-        <button
-          className={`ghost small side-toggle${sideOpen && mode === "grid" ? " on" : ""}`}
-          aria-pressed={sideOpen && mode === "grid"}
-          aria-label={`사이드바${unread > 0 ? ` (안 읽은 알림·채팅 ${unread})` : ""}`}
-          title="오른쪽 사이드바: 셀 내용 · 알림 · 채팅 · 셀 이력"
-          onClick={() => {
-            if (mode !== "grid") {
-              setMode("grid");
-              setSideOpen(true);
-            } else setSideOpen(!sideOpen);
-          }}
-        >
-          ☰ 사이드바
-          {unread > 0 && <span className="badge">{unread}</span>}
-        </button>
         <div className="mode-tabs" role="tablist" aria-label="입력 방식">
           <button role="tab" aria-selected={mode === "grid"} onClick={() => setMode("grid")}>
             그리드
           </button>
           <button role="tab" aria-selected={mode === "form"} onClick={openForm}>
             행 단위
+          </button>
+        </div>
+        <span className="sep" />
+        <div className="tool-group" role="group" aria-label="사이드바">
+          <button
+            className={`ghost tool jump${tabShown("alerts") ? " on" : ""}`}
+            aria-pressed={tabShown("alerts")}
+            title="강조된 셀 · 공지"
+            onClick={() => jumpTo("alerts")}
+          >
+            <ToolIcon d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.9 1.9 0 0 0 3.4 0" />
+            알림
+            {unreadAlerts > 0 && (
+              <span key={unreadAlerts} className="badge">
+                {unreadAlerts}
+              </span>
+            )}
+          </button>
+          <button
+            className={`ghost tool jump${tabShown("chat") ? " on" : ""}`}
+            aria-pressed={tabShown("chat")}
+            title="채팅(전체 · 호스트에게)"
+            onClick={() => jumpTo("chat")}
+          >
+            <ToolIcon d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1.1-4.4A8 8 0 1 1 21 12z" />
+            채팅
+            {unreadChat > 0 && !tabShown("chat") && (
+              <span key={unreadChat} className="badge">
+                {unreadChat}
+              </span>
+            )}
+          </button>
+          <button
+            className={`ghost tool icon side-toggle${sideOpen && mode === "grid" ? " on" : ""}`}
+            aria-pressed={sideOpen && mode === "grid"}
+            aria-label="사이드바"
+            title="오른쪽 사이드바 열기·닫기: 셀 내용 · 알림 · 채팅 · 셀 이력"
+            onClick={() => {
+              if (mode !== "grid") {
+                setMode("grid");
+                setSideOpen(true);
+              } else setSideOpen(!sideOpen);
+            }}
+          >
+            <ToolIcon d="M4 4h16v16H4zM15 4v16" />
           </button>
         </div>
       </div>
@@ -1305,6 +1508,7 @@ export function Workspace({ s }: { s: SessionState }) {
               onCopy={(e) => onCopy(e, false)}
               onCut={(e) => onCopy(e, true)}
               onPaste={onPaste}
+              onContextMenuCapture={onBubbleContext}
             >
               <SheetGrid
                 key={active}
@@ -1363,6 +1567,12 @@ export function Workspace({ s }: { s: SessionState }) {
                 onChatSeen={onChatSeen}
                 chatSeen={chatSeen}
                 pick={pick}
+                chatDraft={chatDraft}
+                onChatDraft={setChatDraft}
+                chatToHost={chatToHost}
+                onChatToHost={setChatToHost}
+                hiddenNotes={hiddenNotes}
+                onToggleNote={toggleNote}
               />
             )}
           </div>
@@ -1416,7 +1626,7 @@ export function Workspace({ s }: { s: SessionState }) {
             key={n.id}
             notice={n}
             onDone={s.dismiss}
-            onAction={(a) => revealRange(a.range, a.highlight, a.sheet ?? active)}
+            onAction={(a) => ("chat" in a ? openTab("chat") : revealRange(a.range, a.highlight, a.sheet ?? active))}
           />
         ))}
       </div>
@@ -1520,7 +1730,7 @@ function Toast({
   onDone: (id: number) => void;
   onAction: (a: NonNullable<Notice["action"]>) => void;
 }) {
-  const { id, text, tone, action } = notice;
+  const { id, text, tone, action, kind } = notice;
   // 시간이 지나 사라질 때는 잠깐(LEAVE_MS) 흐려진 뒤 없앤다. 누르면 바로 없앤다.
   const [leaving, setLeaving] = useState(false);
   useEffect(() => {
@@ -1533,7 +1743,10 @@ function Toast({
     return () => window.clearTimeout(t);
   }, [leaving, id, onDone]);
   return (
-    <div className={`toast ${tone}${leaving ? " leaving" : ""}`} role={tone === "error" ? "alert" : "status"}>
+    <div
+      className={`toast ${tone}${kind ? ` ${kind}` : ""}${leaving ? " leaving" : ""}`}
+      role={tone === "error" ? "alert" : "status"}
+    >
       <span className="toast-text">{text}</span>
       {action && (
         <button

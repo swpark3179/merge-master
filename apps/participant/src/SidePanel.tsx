@@ -3,7 +3,7 @@ import { buildRefPreview, ChatBubble, ChatComposer, ChatText, ChatTimeline, Reac
 import type { CellRange, CellRef, CellValue, ChatTo, ColumnRule } from "@mm/shared";
 import { a1, displayValue, personColor, sheetPrefix } from "@mm/shared";
 import type { KeyboardEvent, PointerEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 import { CellDetail } from "./CellDetail";
 import { sameValue } from "./edits";
@@ -67,6 +67,27 @@ interface Props {
   chatSeen: number;
   /** 채팅의 '@ 셀 선택'(그리드와 함께 쓴다). */
   pick: CellPick;
+  /** 채팅 초안·'님에게만'(탭을 바꾸거나 닫아도 남도록 위에서 받는다). */
+  chatDraft: string;
+  onChatDraft: (text: string) => void;
+  chatToHost: boolean;
+  onChatToHost: (on: boolean) => void;
+  /** 내가 숨긴 강조 메모(말풍선)와 그 토글. */
+  hiddenNotes: Set<number>;
+  onToggleNote: (id: number) => void;
+}
+
+/** 탭 이름 옆 개수(알약). 접근성 이름은 '알림 3'처럼 이어진다. */
+function TabCount({ n }: { n: number }) {
+  if (n <= 0) return null;
+  return (
+    <>
+      {" "}
+      <span key={n} className="tab-count">
+        {n}
+      </span>
+    </>
+  );
 }
 
 /** 1f 오른쪽 사이드바: 셀 내용(고른 칸의 위치·내용 보기·고치기), 알림(강조된 셀·공지), 채팅(전체·취합을 연 사람에게), 셀 이력. */
@@ -143,21 +164,24 @@ export function SidePanel(props: Props) {
         onDoubleClick={() => onWidth(clampSideWidth(SIDE_WIDTH))}
         onKeyDown={resizeKey}
       />
-      <div className="side-tabs" role="tablist">
-        <button role="tab" aria-selected={tab === "cell"} onClick={() => onTab("cell")}>
-          셀 내용
-        </button>
-        <button role="tab" aria-selected={tab === "alerts"} onClick={() => onTab("alerts")}>
-          알림{unreadAlerts > 0 ? ` ${unreadAlerts}` : ""}
-        </button>
-        <button role="tab" aria-selected={tab === "chat"} onClick={() => onTab("chat")}>
-          채팅{props.unreadChat > 0 && tab !== "chat" ? ` ${props.unreadChat}` : ""}
-        </button>
-        <button role="tab" aria-selected={tab === "history"} onClick={() => onTab("history")}>
-          셀 이력
-        </button>
-        <span className="spacer" />
-        <button className="ghost small" aria-label="패널 닫기" onClick={onClose}>
+      <div className="side-head">
+        <div className="side-tabs" role="tablist" aria-label="사이드바 탭">
+          <button role="tab" aria-selected={tab === "cell"} onClick={() => onTab("cell")}>
+            셀 내용
+          </button>
+          <button role="tab" aria-selected={tab === "alerts"} onClick={() => onTab("alerts")}>
+            알림
+            <TabCount n={unreadAlerts} />
+          </button>
+          <button role="tab" aria-selected={tab === "chat"} onClick={() => onTab("chat")}>
+            채팅
+            <TabCount n={tab === "chat" ? 0 : props.unreadChat} />
+          </button>
+          <button role="tab" aria-selected={tab === "history"} onClick={() => onTab("history")}>
+            셀 이력
+          </button>
+        </div>
+        <button className="ghost side-close" aria-label="패널 닫기" title="사이드바 닫기" onClick={onClose}>
           ✕
         </button>
       </div>
@@ -174,7 +198,15 @@ export function SidePanel(props: Props) {
           onWait={props.onWait}
         />
       )}
-      {tab === "alerts" && <Alerts s={s} addr={sheetAddr} onReveal={onReveal} />}
+      {tab === "alerts" && (
+        <Alerts
+          s={s}
+          addr={sheetAddr}
+          onReveal={onReveal}
+          hiddenNotes={props.hiddenNotes}
+          onToggleNote={props.onToggleNote}
+        />
+      )}
       {tab === "chat" && (
         <Chat
           s={s}
@@ -184,6 +216,10 @@ export function SidePanel(props: Props) {
           seen={props.chatSeen}
           onSeen={onChatSeen}
           pick={props.pick}
+          text={props.chatDraft}
+          setText={props.onChatDraft}
+          toHost={props.chatToHost}
+          setToHost={props.onChatToHost}
         />
       )}
       {tab === "history" && <CellHistory s={s} at={at} addr={addr} labels={labels} canEdit={canEdit} />}
@@ -191,48 +227,98 @@ export function SidePanel(props: Props) {
   );
 }
 
+/** 확인하지 않은 것을 먼저, 그 안에서는 최근 것부터. */
+function unreadFirst<T extends { id: number }>(list: T[], done: (x: T) => boolean): T[] {
+  return [...list].sort((a, b) => Number(done(a)) - Number(done(b)) || b.id - a.id);
+}
+
+/** 알림 탭: 강조된 셀과 공지를 카드로(확인하지 않은 것 먼저). 강조 메모는 말풍선을 숨기거나 다시 보인다. */
 function Alerts({
   s,
   addr,
   onReveal,
+  hiddenNotes,
+  onToggleNote,
 }: {
   s: SessionState;
   addr: (sheet: number, r: CellRef) => string;
   onReveal: Props["onReveal"];
+  hiddenNotes: Set<number>;
+  onToggleNote: (id: number) => void;
 }) {
-  const highlights = [...s.highlights].reverse();
-  const notices = [...s.announcements].reverse();
+  const highlights = unreadFirst(s.highlights, (h) => h.acked);
+  const notices = unreadFirst(s.announcements, (n) => n.read);
+  const unreadNotices = notices.filter((n) => !n.read);
   return (
-    <div className="side-body">
-      {highlights.length > 0 && <b className="small">강조된 셀</b>}
+    <div className="side-body alerts">
+      {highlights.length > 0 && (
+        <div className="side-section-head">
+          <b>강조된 셀</b>
+          <span className="count">{highlights.length}</span>
+        </div>
+      )}
       {highlights.map((h) => (
         <div key={`h${h.id}`} className={`alert-item highlight${h.acked ? " done" : ""}`}>
-          <div className="small">
-            <span className="mono">{addr(h.sheet, h.range)}</span> · {h.from} · {time(h.atMs)}
-            {h.acked && <span className="muted"> · 확인함</span>}
+          <div className="alert-meta">
+            <span className="mono addr">{addr(h.sheet, h.range)}</span>
+            <span>
+              {h.from} · {time(h.atMs)}
+            </span>
+            {h.acked ? <span className="state">확인함</span> : <span className="state new">새 강조</span>}
           </div>
           {h.note && <div className="alert-text">{h.note}</div>}
-          <button className="link" onClick={() => onReveal(h.range, h.id, h.sheet)}>
-            셀로 이동 →
-          </button>
+          <div className="alert-actions">
+            <button className="link" onClick={() => onReveal(h.range, h.id, h.sheet)}>
+              셀로 이동 →
+            </button>
+            {h.note && (
+              <button
+                className="link subtle"
+                title="그리드 위 말풍선만 숨깁니다(이 브라우저에만, 노란 강조는 남습니다)"
+                onClick={() => onToggleNote(h.id)}
+              >
+                {hiddenNotes.has(h.id) ? "메모 다시 보기" : "메모 숨기기"}
+              </button>
+            )}
+          </div>
         </div>
       ))}
-      {notices.length > 0 && <b className="small">공지</b>}
-      {notices.map((n) => (
-        <div key={`n${n.id}`} className={`alert-item${n.important ? " important" : ""}${n.read ? " done" : ""}`}>
-          <div className="small">
-            {n.important && <span className="tag tag-required">중요</span>} {time(n.atMs)} · {n.from}
-            {n.read && <span className="muted"> · 확인함</span>}
-          </div>
-          <div className="alert-text">{n.text}</div>
-          {!n.read && (
-            <button className="ghost small" onClick={() => s.ackNotice(n.id)}>
-              확인
+      {notices.length > 0 && (
+        <div className="side-section-head">
+          <b>공지</b>
+          <span className="count">{notices.length}</span>
+          <span className="spacer" />
+          {unreadNotices.length > 1 && (
+            <button className="link" onClick={() => unreadNotices.forEach((n) => s.ackNotice(n.id))}>
+              모두 확인
             </button>
           )}
         </div>
+      )}
+      {notices.map((n) => (
+        <div key={`n${n.id}`} className={`alert-item notice${n.important ? " important" : ""}${n.read ? " done" : ""}`}>
+          <div className="alert-meta">
+            {n.important && <span className="tag tag-required">중요</span>}
+            <span>
+              {n.from} · {time(n.atMs)}
+            </span>
+            {n.read && <span className="state">확인함</span>}
+          </div>
+          <div className="alert-text">{n.text}</div>
+          {!n.read && (
+            <div className="alert-actions">
+              <button className="ghost small" onClick={() => s.ackNotice(n.id)}>
+                확인
+              </button>
+            </div>
+          )}
+        </div>
       ))}
-      {highlights.length === 0 && notices.length === 0 && <div className="muted small">받은 알림이 없습니다.</div>}
+      {highlights.length === 0 && notices.length === 0 && (
+        <div className="side-empty muted small">
+          받은 알림이 없습니다. 호스트가 공지하거나 셀을 강조하면 여기에 모입니다.
+        </div>
+      )}
     </div>
   );
 }
@@ -248,6 +334,10 @@ function Chat({
   seen,
   onSeen,
   pick,
+  text,
+  setText,
+  toHost,
+  setToHost,
 }: {
   s: SessionState;
   me: string;
@@ -257,10 +347,12 @@ function Chat({
   seen: number;
   onSeen: (id: number) => void;
   pick: CellPick;
+  text: string;
+  setText: (text: string) => void;
+  toHost: boolean;
+  setToHost: (on: boolean) => void;
 }) {
   const w = s.welcome!;
-  const [toHost, setToHost] = useState(false);
-  const [text, setText] = useState("");
   const send = () => {
     const to: ChatTo = toHost ? { kind: "host" } : { kind: "all" };
     if (!text.trim()) return;
