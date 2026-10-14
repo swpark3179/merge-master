@@ -1330,20 +1330,18 @@ function ChatPanel(props: {
         placeholder="메시지 · @로 셀 선택"
         pick={pick}
         options={
-          <>
-            <label className="chat-to">
-              <span className="muted small">받는 사람</span>
-              <select aria-label="받는 사람" value={to} onChange={(e) => setTo(e.target.value)}>
-                <option value="">전체</option>
-                {roster.map((n) => (
-                  <option key={n} value={n}>
-                    {n} (1:1)
-                  </option>
-                ))}
-              </select>
-            </label>
-            <span className="muted small">@ 셀 선택 · Shift+Enter 줄바꿈</span>
-          </>
+          // 받는 사람만(안내는 입력 칸 자리표시가 한다).
+          <label className="chat-to">
+            <span className="muted small">받는 사람</span>
+            <select aria-label="받는 사람" value={to} onChange={(e) => setTo(e.target.value)}>
+              <option value="">전체</option>
+              {roster.map((n) => (
+                <option key={n} value={n}>
+                  {n} (1:1)
+                </option>
+              ))}
+            </select>
+          </label>
         }
       />
     </div>

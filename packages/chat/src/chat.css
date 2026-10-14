@@ -90,6 +90,8 @@ button.chat-jump:hover:not(:disabled) {
 
 /* ------------------------------------------------------------------ 한 통 */
 .chat-msg {
+  /* 리액션 막대의 기준: 말풍선이 아니라 줄 전체(짧은 글에서도 막대가 목록 밖으로 잘리지 않게) */
+  position: relative;
   display: flex;
   gap: 7px;
   align-items: flex-start;
@@ -120,7 +122,6 @@ button.chat-jump:hover:not(:disabled) {
 }
 
 .chat-bubble {
-  position: relative;
   min-width: 0;
   max-width: calc(100% - 31px);
   padding: 6px 9px 7px;
@@ -250,7 +251,10 @@ button.chat-ref .sheet,
   animation: mm-count var(--dur-fast) var(--ease-out);
 }
 
-/* 고르는 막대: 남의 글에 마우스를 올리거나 초점이 오면 말풍선 오른쪽 위에서 떠오른다 */
+/*
+ * 고르는 막대: 남의 글에 마우스를 올리거나 초점이 오면 그 줄 오른쪽 위에서 떠오른다. 말풍선에 붙이면 짧은 글에서
+ * 왼쪽으로 삐져나가 목록(스크롤) 경계에서 잘렸다(그리드 쪽으로 가려져 앞 버튼을 누를 수 없었다).
+ */
 .reaction-bar {
   position: absolute;
   z-index: 2;

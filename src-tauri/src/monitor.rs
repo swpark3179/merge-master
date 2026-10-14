@@ -61,11 +61,32 @@ pub(crate) fn forward_events(app: &AppHandle, job: &str, session: &SessionHandle
     let mut comms = session.subscribe_comms();
     let (app3, name) = (app.clone(), event("comms", job));
     tauri::async_runtime::spawn(async move {
+        // 붙을 때 이미 있던 글(되살린 기록)에는 알리지 않는다.
+        let mut last_chat = last_participant_chat(&comms.borrow());
         while comms.changed().await.is_ok() {
             let snap = comms.borrow_and_update().clone();
+            let newest = last_participant_chat(&snap);
+            if newest > last_chat {
+                last_chat = newest;
+                request_attention(&app3);
+            }
             let _ = app3.emit(&name, snap);
         }
     });
+}
+
+/// 참여자가 보낸 마지막 채팅 번호(없으면 0).
+fn last_participant_chat(comms: &CommsSnapshot) -> u32 {
+    comms.chat.iter().filter(|m| !m.host).map(|m| m.id).max().unwrap_or(0)
+}
+
+/// 참여자 채팅이 왔는데 창이 뒤에 있으면 작업 표시줄 단추를 깜빡인다(Windows: 창이 앞으로 올 때까지).
+fn request_attention(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main")
+        && !window.is_focused().unwrap_or(false)
+    {
+        let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+    }
 }
 
 /// 그 시트의 지금 값과 호스트 시점 설정 보기.
