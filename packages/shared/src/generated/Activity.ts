@@ -9,4 +9,8 @@ page: HistoryPage,
 /**
  * 그 시트에서 최근 1시간 안에 지워져 지금도 빈 칸이 있는 행('최근 삭제된 셀' 필터).
  */
-deletedRows: Array<number>, };
+deletedRows: Array<number>, 
+/**
+ * 그 시트에서 행 담당자가 없는 행 중 사람마다(명단 인덱스) 그 사람이 넣은 값이 남아 있는 행('담당자별' 필터).
+ */
+openRowsBy: Array<Array<number>>, };

@@ -115,6 +115,8 @@ pub struct Activity {
     pub page: HistoryPage,
     /// 그 시트에서 최근 1시간 안에 지워져 지금도 빈 칸이 있는 행('최근 삭제된 셀' 필터).
     pub deleted_rows: Vec<u32>,
+    /// 그 시트에서 행 담당자가 없는 행 중 사람마다(명단 인덱스) 그 사람이 넣은 값이 남아 있는 행('담당자별' 필터).
+    pub open_rows_by: Vec<Vec<u32>>,
 }
 
 /// 실시간 활동 피드: 최근 묶음(빨간 묶음 = 삭제가 든 여러 칸·큰 묶음). `sheet`는 '최근 삭제된 셀'을 볼 시트.
@@ -144,7 +146,7 @@ pub async fn monitor_activity(
                 .collect();
             rows.sort_unstable();
             rows.dedup();
-            Activity { page, deleted_rows: rows }
+            Activity { page, deleted_rows: rows, open_rows_by: s.open_rows_by(sheet) }
         })
         .await
 }

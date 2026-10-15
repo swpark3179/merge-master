@@ -1,9 +1,9 @@
-import type { CellValue, SheetModel } from "@mm/shared";
+import type { CellRange, CellValue, SheetModel } from "@mm/shared";
 import { formatValue } from "@mm/shared";
 
 /**
  * 행 필터 공용 도구(참여자 1f 조회조건, 호스트 1d 모니터링). 걸러진 데이터 행은 높이 0(숨김)으로 그린다.
- * 병합 영역은 그리드가 보이는 행만으로 다시 그리므로(높이 합) 따로 쪼개지 않아도 된다.
+ * 병합 영역은 그리드가 보이는 행만으로 다시 그리므로(높이 합) 따로 쪼개지 않아도 된다(왼쪽 위 칸이 걸러져도 값이 보인다).
  */
 
 /** 병합을 고려한 열 값(병합 영역 안이면 왼쪽 위 칸의 값). */
@@ -58,6 +58,39 @@ export function withHiddenRows(model: SheetModel, hide: Set<number>): SheetModel
   const rowHeights = model.rowHeights.map((h, r) => (hide.has(r) ? 0 : h));
   const hiddenRows = [...new Set([...model.hiddenRows, ...hide])].sort((a, b) => a - b);
   return { ...model, rowHeights, hiddenRows };
+}
+
+/**
+ * 걸러진 행(`hide`) 때문에 일부 행만 보이는 병합 영역(왼쪽 위 칸 인덱스 → 영역). 그리드는 보이는 행만으로 병합 칸을
+ * 그리지만, 가려진 행까지 걸친 칸이라 보는 쪽에서 읽기 전용으로 다룬다. 원래 숨긴 행(`model.hiddenRows`)만 빠진 병합은 넣지 않는다.
+ */
+export function partlyShownMerges(model: SheetModel, hide: Set<number>): Map<number, CellRange> {
+  const out = new Map<number, CellRange>();
+  if (hide.size === 0) return out;
+  const hiddenBefore = new Set(model.hiddenRows);
+  for (const m of model.merges) {
+    let filtered = false;
+    let shown = false;
+    for (let r = m.row; r < Math.min(m.row + m.rows, model.rows); r++) {
+      if (hide.has(r)) filtered = true;
+      else if (!hiddenBefore.has(r)) shown = true;
+    }
+    if (filtered && shown) out.set(m.row * model.cols + m.col, m);
+  }
+  return out;
+}
+
+/** 병합 영역의 값이 든 칸(인덱스): 왼쪽 위 칸에 값이 있으면 그 칸, 비었으면 영역 안에서 처음 값이 있는 칸, 모두 비면 왼쪽 위 칸. */
+export function mergeValueCell(model: SheetModel, m: CellRange): number {
+  const blank = (v: CellValue | undefined) => v === undefined || v === null || v === "";
+  const top = m.row * model.cols + m.col;
+  if (!blank(model.cells[top]?.v)) return top;
+  for (let r = m.row; r < Math.min(m.row + m.rows, model.rows); r++)
+    for (let c = m.col; c < Math.min(m.col + m.cols, model.cols); c++) {
+      const i = r * model.cols + c;
+      if (!blank(model.cells[i]?.v)) return i;
+    }
+  return top;
 }
 
 /** 줄바꿈 칸이 늘릴 수 있는 최대 줄 수(더 긴 내용은 셀 상세에서 본다). */

@@ -1,7 +1,7 @@
 import type { SheetModel } from "@mm/shared";
 import { describe, expect, it } from "vitest";
 
-import { fitRowHeights, withHiddenRows } from "./rows";
+import { fitRowHeights, mergeValueCell, partlyShownMerges, withHiddenRows } from "./rows";
 
 function model(values: (string | number | null)[][], merges: SheetModel["merges"] = []): SheetModel {
   const rows = values.length;
@@ -72,5 +72,52 @@ describe("fitRowHeights", () => {
   it("caps very long text", () => {
     const m = model([[Array.from({ length: 40 }, (_, i) => `줄 ${i}`).join("\n")]]);
     expect(fitRowHeights(m, 8).rowHeights[0]).toBe(104);
+  });
+});
+
+describe("partlyShownMerges", () => {
+  // A1:A3 · B1:B2 · B3:B4 병합, 3행은 원래 숨긴 행
+  const m = {
+    ...model(
+      [
+        ["기획", "가"],
+        [null, null],
+        [null, "나"],
+        ["c", null],
+      ],
+      [
+        { row: 0, col: 0, rows: 3, cols: 1 },
+        { row: 0, col: 1, rows: 2, cols: 1 },
+        { row: 2, col: 1, rows: 2, cols: 1 },
+      ],
+    ),
+    hiddenRows: [2],
+  };
+
+  it("finds merges that the filter cuts, keyed by the top-left cell", () => {
+    expect(partlyShownMerges(m, new Set())).toEqual(new Map());
+    // 1행을 거르면 A1:A3(2행이 보인다)·B1:B2만 걸친다. B3:B4는 그대로 다 보인다(3행은 원래 숨김).
+    expect([...partlyShownMerges(m, new Set([0])).keys()]).toEqual([0, 1]);
+    // 2행을 거르면 A1:A3·B1:B2가 일부만 보인다.
+    expect([...partlyShownMerges(m, new Set([1])).keys()]).toEqual([0, 1]);
+    // 4행을 거르면 B3:B4는 원래 숨긴 3행만 남아 보이는 데가 없다.
+    expect(partlyShownMerges(m, new Set([3]))).toEqual(new Map());
+    // 다 거르면 보이는 데가 없다.
+    expect(partlyShownMerges(m, new Set([0, 1, 3]))).toEqual(new Map());
+  });
+
+  it("takes the value from the cell that has one", () => {
+    expect(mergeValueCell(m, m.merges[0]!)).toBe(0); // 왼쪽 위 칸
+    expect(mergeValueCell(m, m.merges[2]!)).toBe(5); // B3
+    const loose = model(
+      [
+        [null, null],
+        [null, 7],
+      ],
+      [{ row: 0, col: 0, rows: 2, cols: 2 }],
+    );
+    expect(mergeValueCell(loose, loose.merges[0]!)).toBe(3); // 왼쪽 위가 비면 영역 안에서 값이 있는 칸
+    const empty = model([[null], [null]], [{ row: 0, col: 0, rows: 2, cols: 1 }]);
+    expect(mergeValueCell(empty, empty.merges[0]!)).toBe(0);
   });
 });
