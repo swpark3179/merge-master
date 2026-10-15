@@ -10,7 +10,16 @@ import {
   useCellPick,
 } from "@mm/chat";
 import type { CellDecoration, GridHit, GridMark, GridSelection, SheetGridHandle } from "@mm/grid";
-import { filterOptions, rowsNotMatching, selectForMenu, SheetGrid, withHiddenRows, withLineSize } from "@mm/grid";
+import {
+  filterOptions,
+  mergeValueCell,
+  partlyShownMerges,
+  rowsNotMatching,
+  selectForMenu,
+  SheetGrid,
+  withHiddenRows,
+  withLineSize,
+} from "@mm/grid";
 import type {
   Activity,
   Axis,
@@ -101,6 +110,9 @@ interface Filter {
 }
 
 const NO_FILTER: Filter = { values: {}, missingOnly: false, recentDeleted: false, person: null, column: null };
+
+/** 필터로 일부 행만 보이는 병합 칸을 고치려 할 때(그 칸은 읽기 전용). */
+const PARTIAL_MERGE = "필터로 일부 행만 보이는 병합 칸은 읽기 전용입니다(필터를 지우거나 설정 화면에서 고치세요)";
 
 /** 채팅 참조로 간 범위를 표시해 두는 시간(ms): 그리드의 `mm-ping`(900ms)이 끝난 뒤 뗀다. */
 const PING_MS = 1000;
@@ -371,8 +383,10 @@ function SheetMonitor({
     if (!model || !view) return out;
     for (const r of rowsNotMatching(model, filter.values)) out.add(r);
     const deleted = new Set(activity?.deletedRows ?? []);
+    // 담당자별: 맡은 행 + 담당자 없는(누구나 입력하는) 행 중 그 사람이 넣은 값이 남아 있는 행.
+    const wrote = new Set(filter.person !== null ? (activity?.openRowsBy[filter.person] ?? []) : []);
     for (let r = model.headerRows; r < model.rows; r++) {
-      if (filter.person !== null && view.rowOwner[r] !== filter.person) out.add(r);
+      if (filter.person !== null && view.rowOwner[r] !== filter.person && !wrote.has(r)) out.add(r);
       if (filter.recentDeleted && !deleted.has(r)) out.add(r);
       const missingIn = (c: number) => {
         const i = r * model.cols + c;
@@ -386,8 +400,13 @@ function SheetMonitor({
       }
     }
     return out;
-    // 값이 바뀔 때는 다시 계산하지 않는다(activity는 '최근 삭제' 필터를 걸 때의 것을 쓴다).
+    // 값이 바뀔 때는 다시 계산하지 않는다(activity는 '최근 삭제'·담당자별 필터를 걸 때의 것을 쓴다).
   }, [model, view, flags, filter]);
+  /** 필터로 일부 행만 보이는 병합 칸(왼쪽 위 칸 인덱스 → 영역): 값이 든 칸의 값을 보이고 여기서는 고치지 않는다. */
+  const partial = useMemo(
+    () => (model ? partlyShownMerges(model, hidden) : new Map<number, CellRange>()),
+    [model, hidden],
+  );
 
   const shown = model ? model.rows - model.headerRows - [...hidden].filter((r) => r >= model.headerRows).length : 0;
   const viewModel = useMemo(() => (model ? withHiddenRows(model, hidden) : null), [model, hidden]);
@@ -514,6 +533,7 @@ function SheetMonitor({
     selection,
     setSelection,
     blockedBy: (r, c) => {
+      if (model && partial.has(r * model.cols + c)) return PARTIAL_MERGE;
       const who = editing.get(`${r}:${c}`);
       return who ? `${who} 님이 입력 중인 칸입니다` : null;
     },
@@ -594,13 +614,25 @@ function SheetMonitor({
     const key = `${r}:${c}`;
     const cls: string[] = [];
     if (f & FLAG.HEADER) return undefined;
-    if (!(f & FLAG.INPUT)) cls.push("deco-locked");
+    const part = partial.has(i);
+    if (!(f & FLAG.INPUT) || part) cls.push("deco-locked");
     if (f & FLAG.REQUIRED && isEmpty(model.cells[i]?.v)) cls.push("deco-missing");
     if (highlighted.has(key)) cls.push("deco-highlight");
-    return { className: cls.join(" ") };
+    return {
+      className: cls.join(" "),
+      adornment: part ? <span className="partial-merge" title={PARTIAL_MERGE} /> : undefined,
+    };
   };
 
-  const cellText = (_r: number, c: number, cell: { v?: unknown } | undefined, nf: string) => {
+  const cellText = (r: number, c: number, cell: { v?: unknown } | undefined, nf: string) => {
+    // 일부 행만 보이는 병합 칸: 영역 안에서 값이 든 칸의 값을 그 칸의 표시 형식대로.
+    const part = model && partial.get(r * model.cols + c);
+    if (model && part) {
+      const i = mergeValueCell(model, part);
+      const src = model.cells[i];
+      const format = columns[i % model.cols]?.format;
+      return displayValue(src?.v, model.styles[src?.s ?? 0]?.numberFormat ?? "", format);
+    }
     const format = columns[c]?.format;
     return format?.kind === "date" ? displayValue(cell?.v as never, nf, format) : undefined;
   };
@@ -807,7 +839,7 @@ function SheetMonitor({
                   key={x.name}
                   className={`mon-person${filter.person === x.color ? " on" : ""}`}
                   onClick={() => setFilter({ ...NO_FILTER, person: filter.person === x.color ? null : x.color })}
-                  title={many ? "모든 시트 합 · 누르면 이 시트에서 이 사람 행만 봅니다" : "누르면 이 사람 행만 봅니다"}
+                  title={`${many ? "모든 시트 합 · 누르면 이 시트에서" : "누르면"} 이 사람이 맡은 행과 담당자 없는 행 중 이 사람이 입력한 행만 봅니다`}
                 >
                   <span style={{ color: personColor(x.color) }}>{symbol}</span>
                   <span className="grow">{x.name}</span>

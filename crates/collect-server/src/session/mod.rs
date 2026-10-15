@@ -397,6 +397,31 @@ impl Shared<'_> {
         self.rt.get(sheet).map(|r| &r.progress)
     }
 
+    /// 1d '담당자별': 그 시트에서 행 담당자가 없는 행(누구나 입력하는 행) 중 사람마다(합집합 명단 인덱스) 그 사람이
+    /// 넣은 값이 지금 남아 있는 행(칸마다 마지막으로 바꾼 사람 기준, 오름차순). 명단 밖 이름(호스트·Excel 값 유지)은 뺀다.
+    pub fn open_rows_by(&self, sheet: usize) -> Vec<Vec<u32>> {
+        let (Some(slot), Some(rt)) = (self.sheets.get(sheet), self.rt.get(sheet)) else { return Vec::new() };
+        let model = &slot.model;
+        let mut out = vec![Vec::new(); rt.access.roster().len()];
+        for (&i, name) in &rt.writer {
+            let at = rt.cell_of(i, model.cols);
+            if at.row < model.header_rows || rt.access.row_owner(at.row).is_some() {
+                continue;
+            }
+            if model.cell(at).is_none_or(|c| c.v.is_empty()) {
+                continue;
+            }
+            if let Some(rows) = rt.access.person(name).and_then(|p| out.get_mut(p)) {
+                rows.push(at.row);
+            }
+        }
+        for rows in &mut out {
+            rows.sort_unstable();
+            rows.dedup();
+        }
+        out
+    }
+
     /// 셀 변경 기록(오래된 것부터).
     pub fn history(&self) -> &[ChangeEntry] {
         self.history

@@ -19,6 +19,8 @@ export {
   filterOptions,
   FIT_MAX_LINES,
   fitRowHeights,
+  mergeValueCell,
+  partlyShownMerges,
   rowsNotMatching,
   withHiddenRows,
 } from "./rows";

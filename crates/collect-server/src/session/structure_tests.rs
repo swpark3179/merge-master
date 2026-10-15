@@ -246,3 +246,38 @@ async fn stop_sharing_at_the_deadline_fires_once_per_deadline() {
     assert_eq!(feed.try_recv(), Ok(HostEvent::DeadlineClose));
     c[0].take();
 }
+
+#[tokio::test]
+async fn open_rows_by_lists_unassigned_rows_holding_each_persons_values() {
+    let (mut st, mut c) = setup(&["이서연", "최도윤"], |_| {});
+    let rows = st.sheets[0].model.rows;
+    assert_eq!(host_get(&mut st, |s| s.structure(0, StructureEdit::AddRows { count: 3 })), Ok(()));
+    let seo = st.rt[0].access.person("이서연").unwrap();
+    let choi = st.rt[0].access.person("최도윤").unwrap();
+    let own = st.rt[0].access.rows_of(seo)[0];
+    assert!(st.rt[0].access.row_owner(rows).is_none(), "호스트가 붙인 행은 담당자 없음");
+
+    // 담당자 없는 행에 넣은 값만 센다(제 행은 행 담당자로 이미 보인다).
+    set(&mut st, &c[0], "a", rows, H, text("이서연 입력"), None);
+    set(&mut st, &c[0], "b", own, H, text("제 행"), None);
+    // 남이 덮어쓴 칸은 덮어쓴 사람 것, 지운 칸은 아무의 것도 아니다.
+    set(&mut st, &c[1], "c", rows + 1, H, text("최도윤 입력"), None);
+    set(&mut st, &c[0], "d", rows + 1, H, text("이서연이 고침"), None);
+    set(&mut st, &c[1], "e", rows + 2, H, text("잠깐"), None);
+    set(&mut st, &c[1], "f", rows + 2, H, CellValue::Empty, None);
+    // 호스트(명단 밖 이름)가 넣은 값은 사람별로 세지 않는다.
+    host(&mut st, move |s| {
+        let user = s.host_name().to_string();
+        s.host_set(&user, BatchOrigin::Edit, 0, vec![(CellRef::new(rows + 2, H), text("호스트"))]);
+    });
+    for x in &mut c {
+        assert!(errors(&x.take()).is_empty());
+    }
+    assert_eq!(value(&st, rows + 2, H), text("호스트"));
+
+    let by = host_get(&mut st, |s| s.open_rows_by(0));
+    assert_eq!(by.len(), st.rt[0].access.roster().len());
+    assert_eq!(by[seo], [rows, rows + 1]);
+    assert!(by[choi].is_empty());
+    assert!(host_get(&mut st, |s| s.open_rows_by(9)).is_empty(), "없는 시트");
+}

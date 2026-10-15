@@ -145,6 +145,12 @@
   min-height: 0;
 }
 
+/* 필터로 일부 행만 보이는 병합 칸(빗금 = 여기서는 읽기 전용): 칸 어디에 올려도 까닭이 보이게 칸을 덮는다. */
+.mon-grid .partial-merge {
+  position: absolute;
+  inset: 0;
+}
+
 .mon-right {
   min-height: 0;
   display: flex;
