@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::a1::{CellRange, CellRef};
-use crate::config::{CollectConfig, ColumnRole, ExceptionKind};
+use crate::config::{CollectConfig, ColumnRole, ExceptionKind, OthersRows};
 use crate::sheet::{CellValue, MergeIndex, SheetModel};
 
 /// 셀 상태 비트. TS(`packages/shared`)에도 같은 값을 둔다.
@@ -45,6 +45,8 @@ pub struct Access {
     row_owner: Vec<i32>,
     /// 범위 배정: (범위, 명단 인덱스).
     ranges: Vec<(CellRange, usize)>,
+    /// '남의 행: 편집 가능'이라 담당자와 상관없이 입력 영역이면 누구나 입력할 수 있다.
+    open_to_all: bool,
 }
 
 fn same_name(a: &str, b: &str) -> bool {
@@ -218,7 +220,8 @@ impl Access {
             .filter_map(|a| Some((a.range.intersect(&bounds)?, add(&a.person, &mut roster)?)))
             .collect();
 
-        Self { rows, cols, header_rows: model.header_rows, base, roster, row_owner, ranges }
+        let open_to_all = config.permissions.others_rows == OthersRows::Editable;
+        Self { rows, cols, header_rows: model.header_rows, base, roster, row_owner, ranges, open_to_all }
     }
 
     pub fn roster(&self) -> &[String] {
@@ -270,6 +273,7 @@ impl Access {
         }
         match viewer {
             Viewer::Host => true,
+            Viewer::Person(_) if self.open_to_all => true,
             Viewer::Person(p) => match self.row_owner(at.row) {
                 Some(owner) => owner == p || self.ranges.iter().any(|(r, q)| *q == p && r.contains(at)),
                 // 행 담당자가 없으면: 내 범위 배정이거나, 아무 범위 배정에도 걸리지 않은 칸(누구나).
@@ -529,6 +533,25 @@ mod tests {
         assert_eq!(a.rows_of(a.person("이서연").unwrap()), [2, 3, 6, 7]);
         // 담당자 없는 필수 칸(F7·F8·H7·H8)은 누구의 진행률에도 들지 않는다.
         assert_eq!(a.progress(&m).unassigned, 4);
+    }
+
+    #[test]
+    fn editable_mode_lets_everyone_edit_input_cells_but_keeps_owners() {
+        let (m, mut cfg) = setup();
+        cfg.permissions.others_rows = OthersRows::Editable;
+        cfg.assignment.ranges.push(RangeAssignment {
+            range: CellRange::parse("I7").unwrap(),
+            person: "최도윤".into(),
+            note: String::new(),
+        });
+        let a = Access::compile(&m, &cfg);
+        let lee = Viewer::Person(a.person("이서연").unwrap());
+        // 남의 행·남의 범위 배정 칸도 입력 영역이면 편집할 수 있다.
+        assert!(a.can_edit(lee, at("F7")) && a.can_edit(lee, at("I7")));
+        // 담당자 정보는 그대로(필터링용).
+        assert!(a.row_owner(6).is_some() && !a.is_open(at("F7")));
+        // 입력 금지·수식 칸은 여전히 아무도 못 쓴다.
+        assert!(!a.can_edit(lee, at("E7")) && !a.can_edit(lee, at("G7")));
     }
 
     #[test]

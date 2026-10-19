@@ -705,7 +705,7 @@ pub(crate) fn read_validations(sheet: &Sheet, bounds: CellRange) -> Result<Vec<V
 }
 
 /// 인접한 서로 다른 유효성은 Areas에서 한 영역으로 합쳐질 수 있다. 그때는 `Validation.Type`이 오류를 내므로
-/// 영역을 나눠 다시 읽는다.
+/// 영역을 나눠 다시 읽는다. 병합 영역에 덮인 칸은 읽을 수 없어 건너뛴다.
 fn read_validation_area(sheet: &Sheet, rel: CellRange, out: &mut Vec<Validation>) -> Result<()> {
     let v = sheet.range(rel)?.obj("Validation")?;
     let ty = match v.get("Type") {
@@ -716,6 +716,10 @@ fn read_validation_area(sheet: &Sheet, rel: CellRange, out: &mut Vec<Validation>
             }
             return Ok(());
         }
+        // 한 칸인데도 읽지 못하는 칸: 병합 영역에 덮인 칸(왼쪽 위 칸이 아닌 칸)은 Validation 속성이 모두 0x800A03EC로
+        // 실패한다. 병합 영역의 유효성은 왼쪽 위 칸에서 읽히므로 건너뛴다. 유효성은 보조 정보라서 원인을 알 수 없는
+        // 다른 칸 오류도 전체 읽기를 중단시키지 않고 그 칸만 건너뛴다.
+        Err(ExcelError::Call { .. }) => return Ok(()),
         Err(e) => return Err(e),
     };
     let formula1 = v.get("Formula1").ok().and_then(|f| f.as_string()).unwrap_or_default();

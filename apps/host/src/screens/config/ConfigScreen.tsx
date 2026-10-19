@@ -615,7 +615,8 @@ function ViewerBanner({ s }: { s: ConfigState }) {
   return (
     <div className="viewer-banner">
       <b>{s.viewer} 님 시점</b> 미리보기 · 입력 가능 {mine.toLocaleString()}칸 · 필수 {p?.filled ?? 0}/
-      {p?.required ?? 0} · 남의 행 {view.config.permissions.othersRows === "hidden" ? "숨김" : "읽기 전용"}
+      {p?.required ?? 0} · 남의 행{" "}
+      {{ hidden: "숨김", editable: "편집 가능", readOnly: "읽기 전용" }[view.config.permissions.othersRows]}
       <span className="spacer" />
       <button className="ghost small" onClick={() => void s.setViewer(null)}>
         시점 끄기

@@ -22,11 +22,18 @@ export function isFiltering(f: RowFilter): boolean {
 }
 
 /** 행마다 '내 행'인지(행 담당자이거나 내가 입력할 칸이 있는 행). */
-export function myRowsOf(model: SheetModel, flags: Uint8Array, rowOwner: number[], me: number): Uint8Array {
+export function myRowsOf(
+  model: SheetModel,
+  flags: Uint8Array,
+  rowOwner: number[],
+  me: number,
+  editableAll = false,
+): Uint8Array {
   const out = new Uint8Array(model.rows);
   for (let r = 0; r < model.rows; r++) {
     if (rowOwner[r] === me) out[r] = 1;
-    else for (let c = 0; c < model.cols; c++) if (flags[r * model.cols + c]! & FLAG.MINE) out[r] = 1;
+    // '누구나 편집' 모드에서는 입력 가능 칸이 곧 내 칸이 아니므로 담당자 열만 본다.
+    else if (!editableAll) for (let c = 0; c < model.cols; c++) if (flags[r * model.cols + c]! & FLAG.MINE) out[r] = 1;
   }
   return out;
 }

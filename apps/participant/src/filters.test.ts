@@ -64,6 +64,8 @@ describe("filters", () => {
     flags[7] = FLAG.INPUT | FLAG.REQUIRED;
     const mine = myRowsOf(m, flags, [-1, -1, -1, 0, 0], 2);
     expect([...mine]).toEqual([0, 1, 1, 0, 0]);
+    // 누구나 편집 모드: 입력 가능 칸이 아니라 담당자 열만 '내 행'을 정한다.
+    expect([...myRowsOf(m, flags, [-1, -1, -1, 0, 0], 2, true)]).toEqual([0, 0, 0, 0, 0]);
     expect(missingOf(m, flags, 1)).toBe(1);
     expect(missingOf(m, flags, 2)).toBe(0);
 
