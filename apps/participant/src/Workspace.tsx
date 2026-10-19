@@ -347,7 +347,10 @@ export function Workspace({ s }: { s: SessionState }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lastNotice, job]);
 
-  const myRows = useMemo(() => myRowsOf(model, flags, sv.rowOwner, w.color), [model, flags, sv.rowOwner, w.color]);
+  const myRows = useMemo(
+    () => myRowsOf(model, flags, sv.rowOwner, w.color, sv.permissions.othersRows === "editable"),
+    [model, flags, sv.rowOwner, w.color, sv.permissions.othersRows],
+  );
   const myRowCount = useMemo(() => myRows.reduce((n, x) => n + x, 0), [myRows]);
   // 필터는 걸 때 한 번 계산한다(입력하는 동안 행이 사라지지 않게).
   const hidden = useMemo(() => filteredOut(model, flags, myRows, filter), [model, flags, myRows, filter]);

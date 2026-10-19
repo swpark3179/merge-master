@@ -418,6 +418,7 @@ export function PermissionsPanel({ s }: { s: ConfigState }) {
             [
               ["readOnly", "읽기 전용"],
               ["hidden", "숨김"],
+              ["editable", "편집 가능"],
             ] as const
           ).map(([v, label]) => (
             <button key={v} className={p.othersRows === v ? "on" : ""} onClick={() => set({ othersRows: v })}>
