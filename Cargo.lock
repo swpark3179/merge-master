@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-protocol"
-version = "1.7.4"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "collect-core",
@@ -610,7 +610,7 @@ dependencies = [
 
 [[package]]
 name = "collect-agent"
-version = "1.7.4"
+version = "2.0.0"
 dependencies = [
  "agent-protocol",
  "axum",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "collect-core"
-version = "1.7.4"
+version = "2.0.0"
 dependencies = [
  "base64 0.23.1",
  "serde",
@@ -649,7 +649,7 @@ dependencies = [
 
 [[package]]
 name = "collect-excel"
-version = "1.7.4"
+version = "2.0.0"
 dependencies = [
  "collect-core",
  "collect-server",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "collect-server"
-version = "1.7.4"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "collect-store"
-version = "1.7.4"
+version = "2.0.0"
 dependencies = [
  "collect-core",
  "rusqlite",
@@ -1224,7 +1224,7 @@ dependencies = [
 
 [[package]]
 name = "excel-com"
-version = "1.7.4"
+version = "2.0.0"
 dependencies = [
  "collect-core",
  "serde",
@@ -2404,7 +2404,7 @@ dependencies = [
 
 [[package]]
 name = "merge-master"
-version = "1.7.4"
+version = "2.0.0"
 dependencies = [
  "agent-protocol",
  "chrono",
