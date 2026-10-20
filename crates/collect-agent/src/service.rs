@@ -121,7 +121,12 @@ impl Service {
             roster: snap.as_ref().map_or(last.roster, |s| s.roster),
             pending: snap
                 .as_ref()
-                .map(|s| s.pending.iter().map(|p| PendingPerson { name: p.name.clone(), ip: p.ip.clone() }).collect())
+                .map(|s| {
+                    s.pending
+                        .iter()
+                        .map(|p| PendingPerson { name: p.name.clone(), ip: p.ip.clone(), reason: p.reason })
+                        .collect()
+                })
                 .unwrap_or_default(),
             required: snap.as_ref().map_or(last.required, |s| s.required),
             filled: snap.as_ref().map_or(last.filled, |s| s.filled),

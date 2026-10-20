@@ -166,6 +166,10 @@ impl ServiceState {
 pub struct PendingPerson {
     pub name: String,
     pub ip: String,
+    /// 자동 승인인데도 기다리는 까닭(같은 이름이 접속 중, 호스트가 끊은 이름).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reason: Option<collect_server::protocol::PendingReason>,
 }
 
 /// 서비스 하나의 상태(호스트 앱 '에이전트에서 진행 중').

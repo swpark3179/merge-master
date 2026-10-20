@@ -63,8 +63,9 @@ export function JoinScreen({ s }: { s: SessionState }) {
           />
         </label>
         <div className="hint">
-          호스트가 승인하면 참여합니다. 호스트 명단과 같은 이름이면 담당 행이 자동으로 연결됩니다(호스트가 등록한 PC는
-          이름 없이 바로 들어갑니다).
+          {info?.autoApprove
+            ? "이름을 입력하면 바로 참여합니다. 호스트 명단과 같은 이름이면 담당 행이 자동으로 연결되니 본인 이름을 정확히 입력해 주세요(등록된 PC는 이름 없이 바로 들어갑니다)."
+            : "호스트가 승인하면 참여합니다. 호스트 명단과 같은 이름이면 담당 행이 자동으로 연결됩니다(호스트가 등록한 PC는 이름 없이 바로 들어갑니다)."}
         </div>
         {phase.kind === "name" && phase.error && <div className="error">{phase.error}</div>}
         <button type="submit" className="primary" disabled={busy || !name.trim() || !s.connected}>
@@ -100,8 +101,14 @@ export function JoinScreen({ s }: { s: SessionState }) {
         )}
         {phase.kind === "pending" && (
           <div className="state-card" role="status">
-            <b>호스트 승인 대기</b>
-            <div>‘{phase.name}’ 님, 호스트 승인을 기다리는 중입니다…</div>
+            <b>{phase.reason === "online" ? "같은 이름이 접속 중" : "호스트 승인 대기"}</b>
+            <div>
+              {phase.reason === "online"
+                ? `다른 기기에서 ‘${phase.name}’(으)로 접속 중입니다. 그 기기의 연결이 끊기면 바로 들어갑니다(호스트가 승인하면 그 기기는 끊깁니다).`
+                : phase.reason === "approval"
+                  ? `‘${phase.name}’ 님은 호스트 승인이 있어야 다시 참여할 수 있습니다. 호스트 승인을 기다리는 중입니다…`
+                  : `‘${phase.name}’ 님, 호스트 승인을 기다리는 중입니다…`}
+            </div>
             <div className="bar indeterminate">
               <span />
             </div>

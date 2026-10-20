@@ -3,7 +3,8 @@
 //! ```text
 //! cargo run -p collect-server --bin collect-dev-server -- --fixture fixtures/budget.sheet.json
 //!     [--fixture fixtures/staff.sheet.json …] [--port 8080] [--bind 0.0.0.0] [--slug q4] [--title 제목]
-//!     [--requester 박지훈] [--required F,H,2:C] [--locked A,B,2:A] [--others-hidden] [--add-rows] [--ip-names people.json]
+//!     [--requester 박지훈] [--required F,H,2:C] [--locked A,B,2:A] [--others-hidden] [--add-rows] [--auto-approve]
+//!     [--ip-names people.json]
 //!     [--dev-admin] [--session hr --fixture fixtures/staff.sheet.json --title "인력 계획 취합" …]
 //! ```
 //! `--fixture`를 여러 번 주면 그 순서대로 여러 시트를 함께 취합한다. `--required`·`--locked`의 `2:C`는 둘째 시트의 C열(번호가
@@ -11,13 +12,14 @@
 //! 더한다. `--locked`는 호스트가 1b에서 하듯 그 열을 잠근다.
 //!
 //! `--session <주소 경로>`는 같은 서버에 업무를 하나 더 연다(여러 업무 동시 진행). 그 뒤에 오는 `--fixture`·`--slug`·`--title`·
-//! `--requester`·`--required`·`--locked`·`--others-hidden`·`--add-rows`는 그 업무 것이고, 첫 `--session` 앞은 첫 업무(주소 경로
+//! `--requester`·`--required`·`--locked`·`--others-hidden`·`--add-rows`·`--auto-approve`는 그 업무 것이고, 첫 `--session` 앞은 첫 업무(주소 경로
 //! 기본 q4)다.
 //! `--port`·`--bind`·`--ip-names`·`--dev-admin`은 서버 공통.
 //!
 //! `--dev-admin`은 `/__dev/*`(승인·거절·연결 끊기·잠금 해제·설정·수식 결과·공개 멈추기)를 켠다. 업무가 여럿이면 `?s=<주소 경로>`로 고른다.
 //! `--ip-names`는 IP별 이름 JSON(`{"192.168.0.11": "이서연"}`): 그 IP에서 열면 이름 없이 바로 들어온다. 없으면 모두 이름 + 승인
-//! (`--dev-admin`이면 `POST /__dev/approve`).
+//! (`--dev-admin`이면 `POST /__dev/approve`). `--auto-approve`면 에이전트 PC처럼 명단 밖에서도 입력한 이름 그대로 바로
+//! 들어온다.
 
 use std::net::IpAddr;
 
@@ -37,6 +39,7 @@ struct JobSpec {
     locked: Vec<String>,
     others_hidden: bool,
     add_rows: bool,
+    auto_approve: bool,
 }
 
 impl JobSpec {
@@ -50,6 +53,7 @@ impl JobSpec {
             locked: Vec::new(),
             others_hidden: false,
             add_rows: false,
+            auto_approve: false,
         }
     }
 
@@ -82,6 +86,7 @@ impl JobSpec {
             rule.required = false;
         }
         let session = SessionHandle::spawn(SessionInit::multi(sheets));
+        session.set_auto_approve(self.auto_approve);
         // 호스트 앱처럼 업무 id를 둔다(참여자가 같은 주소의 다른 업무를 알아본다).
         let id = format!("dev-{}", self.slug);
         session.with(move |s| s.set_meta(META_JOB, &id)).await.map_err(anyhow::Error::msg)?;
@@ -114,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
             "--dev-admin" => server.dev_admin = true,
             "--others-hidden" => job.others_hidden = true,
             "--add-rows" => job.add_rows = true,
+            "--auto-approve" => job.auto_approve = true,
             _ => {
                 let value = args.next().with_context(|| format!("{flag} 값이 없습니다"))?;
                 match flag.as_str() {

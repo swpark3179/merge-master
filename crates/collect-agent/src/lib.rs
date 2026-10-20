@@ -2,10 +2,11 @@
 //! 창 없이 Windows 트레이에서 돈다(`merge-master-agent.exe`).
 //!
 //! - 포트 하나(기본 8090)에 참여자 서버(`/`, `/{slug}`, `/ws` …)와 관리 API(`/agent/*`, [`api`])를 함께 둔다.
-//! - 데이터 폴더(`%LOCALAPPDATA%\merge-master-agent`): `agent.json`(설정), `services\<id>\`(서비스마다 기록 파일·원본·상태),
-//!   `logs\`, `calc\`(Excel 계산 사본).
+//! - 데이터 폴더(`%LOCALAPPDATA%\merge-master-agent`): `agent.json`(설정), `ip-names.json`(에이전트 PC의 IP 명단),
+//!   `services\<id>\`(서비스마다 기록 파일·원본·상태), `logs\`, `calc\`(Excel 계산 사본), `webview\`(IP 명단 창).
 //! - 플랫폼과 상관없는 부분(관리 API·서비스·마감·되살리기·경로)은 Linux에서도 시험한다([`FakeEngine`]).
 
+pub mod admin;
 pub mod agent;
 pub mod api;
 pub mod engine;

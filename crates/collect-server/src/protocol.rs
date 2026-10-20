@@ -282,6 +282,20 @@ pub struct SessionInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub job: Option<String>,
+    /// IP 명단 밖에서도 입력한 이름 그대로 바로 들어온다(에이전트 PC에서 서비스 — 관리자가 승인하지 못할 수 있다).
+    #[serde(default)]
+    pub auto_approve: bool,
+}
+
+/// 자동 승인(에이전트 PC)인데도 승인을 기다리는 까닭.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum PendingReason {
+    /// 같은 이름이 다른 기기에서 접속 중이다(그 연결이 끊기면 바로 들어온다, 호스트가 승인하면 그 기기는 끊긴다).
+    Online,
+    /// 호스트 승인이 있어야 한다(호스트가 연결을 끊었거나 거절한 이름, 또는 명단이 너무 많다).
+    Approval,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -418,9 +432,12 @@ pub enum ServerMsg {
     Known {
         name: String,
     },
-    /// IP 명단 밖에서 접속: 호스트 승인을 기다린다.
+    /// IP 명단 밖에서 접속: 호스트 승인을 기다린다. 에이전트 PC(자동 승인)에서는 그럴 까닭이 있을 때만(`reason`).
     Pending {
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        reason: Option<PendingReason>,
     },
     /// 같은 이름이 다른 기기에서 접속 중.
     DupName {

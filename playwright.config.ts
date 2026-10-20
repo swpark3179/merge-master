@@ -7,6 +7,8 @@ export const HIDDEN_PORT = 8098;
 export const SHEETS_PORT = 8097;
 /** 업무 두 개(q4 예산 + hr 인력)를 한 포트로 서비스하는 네 번째 서버. */
 export const JOBS_PORT = 8096;
+/** 에이전트 PC처럼 명단 밖 참여자를 입력한 이름 그대로 들이는(자동 승인) 다섯 번째 서버. */
+export const AUTO_PORT = 8095;
 
 // 처음엔 모든 열이 입력이라 호스트가 1b에서 하듯 키 열을 잠근다(--locked): 예산신청서 A~E(키·실적)·G(수식), 인력계획 A~D.
 const server = (port: number, extra: string) => ({
@@ -38,5 +40,6 @@ export default defineConfig({
       JOBS_PORT,
       '--session hr --fixture fixtures/staff.sheet.json --locked A,B,C,D --title "2026 인력 계획 취합" --requester 김팀장',
     ),
+    server(AUTO_PORT, "--auto-approve"),
   ],
 });

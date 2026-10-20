@@ -70,6 +70,26 @@ impl IpNames {
         Ok(())
     }
 
+    /// 그 IP를 뺀다. 있었으면 `true`.
+    pub fn remove(&mut self, ip: IpAddr) -> bool {
+        self.0.remove(&canonical(ip)).is_some()
+    }
+
+    /// `other`에서 이 명단에 없는 IP만 더한다(이 명단이 이긴다, [`MAX_ENTRIES`]까지). 더한 수.
+    pub fn merge_missing(&mut self, other: &IpNames) -> usize {
+        let mut added = 0;
+        for (ip, name) in &other.0 {
+            if self.0.len() >= MAX_ENTRIES {
+                break;
+            }
+            if !self.0.contains_key(ip) {
+                self.0.insert(*ip, name.clone());
+                added += 1;
+            }
+        }
+        added
+    }
+
     /// 화면에서 고친 목록. 빈 줄은 건너뛰고, 같은 IP가 여러 번이면 마지막 것을 쓴다.
     pub fn from_entries(entries: &[IpEntry]) -> Result<Self, String> {
         let mut map = BTreeMap::new();
@@ -163,5 +183,17 @@ mod tests {
         // 빈 줄은 건너뛴다(화면에서 추가만 하고 비워 둔 줄).
         let blank = IpEntry { ip: " ".into(), name: String::new() };
         assert!(IpNames::from_entries(&[blank]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn merge_keeps_own_entries_and_remove() {
+        let mut mine = IpNames::parse_json(r#"{"10.0.0.1": "이서연"}"#).unwrap();
+        let theirs = IpNames::parse_json(r#"{"10.0.0.1": "다른이름", "10.0.0.2": "최도윤"}"#).unwrap();
+        assert_eq!(mine.merge_missing(&theirs), 1);
+        assert_eq!(mine.get("10.0.0.1".parse().unwrap()), Some("이서연"), "이 명단이 이긴다");
+        assert_eq!(mine.get("10.0.0.2".parse().unwrap()), Some("최도윤"));
+        assert!(mine.remove("::ffff:10.0.0.2".parse().unwrap()));
+        assert!(!mine.remove("10.0.0.2".parse().unwrap()));
+        assert_eq!(mine.len(), 1);
     }
 }

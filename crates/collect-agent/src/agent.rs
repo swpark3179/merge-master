@@ -5,6 +5,9 @@
 //! - 1초마다([`Agent::tick`]): 마감이 된 서비스는 저장하고 끝낸다. 실패하면 1분 뒤 다시(모두 3번), 그래도 안 되면
 //!   '저장 실패'로 두고 공유를 닫는다(데이터는 남아 다시 저장할 수 있다).
 //! - 다시 켜면([`Agent::restore`]): 서비스 중이던 것은 다시 공개하고, 꺼진 사이 마감이 지났으면 바로 저장한다.
+//! - 참여자: 명단 밖에서도 입력한 이름 그대로 들어온다(자동 승인 — 관리자가 승인하지 못할 수 있다).
+//! - IP 명단: 에이전트 PC의 명단(`ip-names.json`, 트레이 'IP 명단 관리')이 이긴다. 서비스마다 넘겨받은 명단은 에이전트
+//!   명단에 없는 IP만 그 서비스에서 쓴다(에이전트 명단에 섞지 않는다).
 
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
@@ -108,7 +111,13 @@ pub struct Agent {
     creating: tokio::sync::Mutex<()>,
     port: AtomicU16,
     changes: watch::Sender<u64>,
+    /// 에이전트 PC의 IP 명단(`ip-names.json`).
+    ip_names: RwLock<IpNames>,
+    ip_names_path: PathBuf,
 }
+
+/// 에이전트 PC의 IP 명단 파일 이름(데이터 폴더).
+pub const IP_NAMES_FILE: &str = "ip-names.json";
 
 impl Agent {
     pub fn new(opts: AgentOptions) -> Arc<Agent> {
@@ -118,6 +127,14 @@ impl Agent {
             tracing::warn!("기본 저장 폴더({})를 만들 수 없습니다: {e}", settings.base_dir.display());
         }
         let port = settings.port;
+        let ip_names_path = opts.data_dir.join(IP_NAMES_FILE);
+        let ip_names = match std::fs::read_to_string(&ip_names_path) {
+            Ok(text) => IpNames::parse_json(&text).unwrap_or_else(|e| {
+                tracing::warn!("IP 명단({})을 읽을 수 없습니다: {e}", ip_names_path.display());
+                IpNames::default()
+            }),
+            Err(_) => IpNames::default(),
+        };
         Arc::new(Agent {
             opts,
             settings_path,
@@ -127,6 +144,8 @@ impl Agent {
             creating: tokio::sync::Mutex::new(()),
             port: AtomicU16::new(port),
             changes: watch::channel(0).0,
+            ip_names: RwLock::new(ip_names),
+            ip_names_path,
         })
     }
 
@@ -196,6 +215,11 @@ impl Agent {
 
     fn all(&self) -> Vec<Arc<Service>> {
         self.services.lock().unwrap().values().cloned().collect()
+    }
+
+    /// 지금 받아 둔 서비스들(끝난 것 포함).
+    pub fn services_now(&self) -> Vec<Arc<Service>> {
+        self.all()
     }
 
     /// 서비스 주소들(`slug`가 비면 업무 목록 주소).
@@ -424,11 +448,12 @@ impl Agent {
         Ok(service)
     }
 
-    /// 세션에 넘겨받은 호스트 이름·IP 명단을 건다.
+    /// 세션에 넘겨받은 호스트 이름·IP 명단(에이전트 명단이 이긴다)을 걸고 자동 승인을 켠다(공개하기 전에).
     fn attach(&self, service: &Service, session: &SessionHandle) {
         let m = service.record().manifest;
         session.set_host_name(m.host_name.clone());
-        session.set_ip_names(ip_names_of(&m.ip_names));
+        session.set_ip_names(self.effective_ip_names(service));
+        session.set_auto_approve(true);
     }
 
     fn start_recalc(&self, service: &Arc<Service>, session: &SessionHandle, models: Vec<collect_core::SheetModel>) {
@@ -441,13 +466,81 @@ impl Agent {
         self.opts.engine.start_recalc(&service.id, session.clone(), models, service.source_path(), sheets, notify);
     }
 
-    /// 모든 서비스의 IP 명단을 합쳐 업무 목록('내 담당')에 쓴다(입장은 서비스마다 자기 명단으로).
+    // ------------------------------------------------------------------ IP 명단
+
+    /// 에이전트 PC의 IP 명단.
+    pub fn ip_names(&self) -> IpNames {
+        self.ip_names.read().unwrap().clone()
+    }
+
+    pub fn ip_names_path(&self) -> &Path {
+        &self.ip_names_path
+    }
+
+    /// 에이전트 명단을 바꾼다(파일에 남기고 서비스 중인 세션마다 다시 건다 — 기다리던 사람은 바로 들어온다).
+    pub fn set_ip_names(&self, names: IpNames) -> Result<(), String> {
+        crate::settings::write_atomic(&self.ip_names_path, names.to_json().as_bytes())
+            .map_err(|e| format!("IP 명단을 남길 수 없습니다: {e}"))?;
+        *self.ip_names.write().unwrap() = names;
+        self.refresh_ip_names();
+        self.changed();
+        Ok(())
+    }
+
+    /// 한 사람을 더하거나 이름을 바꾼다.
+    pub fn put_ip_name(&self, ip: &str, name: &str) -> Result<(), String> {
+        let mut names = self.ip_names();
+        names.put(ip, name)?;
+        self.set_ip_names(names)
+    }
+
+    /// 한 사람을 뺀다.
+    pub fn remove_ip_name(&self, ip: &str) -> Result<(), String> {
+        let ip: IpAddr = ip.trim().parse().map_err(|_| format!("IP 주소가 잘못되었습니다: {ip}"))?;
+        let mut names = self.ip_names();
+        names.remove(ip);
+        self.set_ip_names(names)
+    }
+
+    /// 그 서비스가 넘겨받은 명단에서 한 사람을 뺀다(그 서비스에서만 쓰던 것).
+    pub fn remove_received(&self, id: &str, ip: &str) -> Result<(), AgentError> {
+        let s = self.service(id).ok_or_else(AgentError::missing)?;
+        let target: IpAddr =
+            ip.trim().parse().map_err(|_| AgentError::bad(format!("IP 주소가 잘못되었습니다: {ip}")))?;
+        s.update(|r| {
+            r.manifest
+                .ip_names
+                .retain(|k, _| k.parse::<IpAddr>().map_or(true, |a| a.to_canonical() != target.to_canonical()))
+        });
+        self.refresh_ip_names();
+        self.changed();
+        Ok(())
+    }
+
+    /// 그 서비스가 넘겨받은 명단을 바꾼다(넘긴 호스트가 명단을 고쳤다).
+    pub fn set_received(&self, id: &str, names: BTreeMap<String, String>) -> Result<(), AgentError> {
+        let s = self.service(id).ok_or_else(AgentError::missing)?;
+        s.update(|r| r.manifest.ip_names = names);
+        self.refresh_ip_names();
+        self.changed();
+        Ok(())
+    }
+
+    /// 그 서비스에서 쓰는 명단: 에이전트 명단 + 넘겨받은 명단 중 에이전트 명단에 없는 IP.
+    pub fn effective_ip_names(&self, service: &Service) -> IpNames {
+        let mut names = self.ip_names();
+        names.merge_missing(&ip_names_of(&service.record().manifest.ip_names));
+        names
+    }
+
+    /// 서비스 중인 세션마다 명단을 다시 걸고, 업무 목록('내 담당')에는 모든 명단을 합쳐 쓴다(에이전트 명단이 이긴다).
     fn refresh_ip_names(&self) {
-        let mut all = IpNames::default();
+        let mut all = self.ip_names();
         for s in self.all().iter().filter(|s| !s.state().finished()) {
-            for (ip, name) in &s.record().manifest.ip_names {
-                let _ = all.put(ip, name);
+            if let Some(session) = s.session() {
+                session.set_ip_names(self.effective_ip_names(s));
             }
+            all.merge_missing(&ip_names_of(&s.record().manifest.ip_names));
         }
         self.hub.set_ip_names(all);
     }

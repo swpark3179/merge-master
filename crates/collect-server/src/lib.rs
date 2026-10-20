@@ -39,8 +39,9 @@ pub use ipnames::{IpEntry, IpNames, IpNamesView};
 pub use net::{LanAddress, lan_addresses};
 pub use protocol::{ClientMsg, ServerMsg};
 pub use session::{
-    CommsSnapshot, HighlightAudience, HighlightSummary, HostEvent, HostSnapshot, NoticeSummary, NoticeTarget,
-    RecalcRequest, RecalcStatus, SaveParts, SaveSheet, SessionHandle, SessionInit, Shared,
+    CalcLayout, CalcSheetLayout, CommsSnapshot, HighlightAudience, HighlightSummary, HostEvent, HostSnapshot,
+    NoticeSummary, NoticeTarget, ParticipantRow, ParticipantStatus, PendingRow, RecalcRequest, RecalcStatus, SaveParts,
+    SaveSheet, SessionHandle, SessionInit, Shared,
 };
 pub use session::{META_DISCARDED, META_ENDED, META_JOB, META_SERVER, Recovered, ServerMeta, recover};
 

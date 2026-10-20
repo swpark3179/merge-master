@@ -11,6 +11,7 @@ import type {
   HighlightView,
   KickReason,
   NoticeView,
+  PendingReason,
   PersonProgress,
   PresenceEntry,
   ServerMsg,
@@ -38,7 +39,8 @@ export type Phase =
   | { kind: "name"; error?: string }
   /** `known`: 이 PC가 호스트의 IP 명단에 있어 그 이름으로 바로 들어가는 중. */
   | { kind: "joining"; name: string; known?: boolean }
-  | { kind: "pending"; name: string }
+  /** `reason`: 자동 승인(에이전트 PC)인데도 기다리는 까닭. */
+  | { kind: "pending"; name: string; reason?: PendingReason }
   | { kind: "dup"; name: string }
   | { kind: "in" }
   | { kind: "kicked"; reason: KickReason }
@@ -348,7 +350,9 @@ export function useSession(slug: string) {
           break;
         }
         case "pending":
-          setPhase({ kind: "pending", name: msg.name });
+          setPhase(
+            msg.reason ? { kind: "pending", name: msg.name, reason: msg.reason } : { kind: "pending", name: msg.name },
+          );
           break;
         case "dupName":
           setPhase({ kind: "dup", name: msg.name });

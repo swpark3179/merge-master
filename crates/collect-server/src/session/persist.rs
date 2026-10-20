@@ -33,6 +33,8 @@ pub const META_ENDED: &str = "ended";
 pub const META_DISCARDED: &str = "discarded";
 /// 마감 동작 '공유 닫기'를 한 마감 시각(앱을 다시 켜거나 다시 공유해도 같은 마감으로는 다시 닫지 않는다).
 pub const META_DEADLINE_FIRED: &str = "deadlineFired";
+/// 자동 승인하지 않는 이름(호스트가 연결을 끊었거나 거절한 이름, JSON 배열). 호스트가 승인하면 빠진다.
+pub const META_HELD: &str = "held";
 
 /// 서비스 상태(메타 `server`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,7 +263,7 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     let changes = saved.changes.len();
     let store = Store::open(path).map_err(|e| e.to_string())?;
     // 호스트가 남긴 메타 중 다음 기록 파일(다시 확정)로 옮겨 갈 것.
-    let host_meta = [META_SERVER, META_JOB, META_DEADLINE_FIRED]
+    let host_meta = [META_SERVER, META_JOB, META_DEADLINE_FIRED, META_HELD]
         .into_iter()
         .filter_map(|k| Some((k.to_string(), meta.get(k)?.clone())))
         .collect();

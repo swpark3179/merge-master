@@ -215,6 +215,26 @@ async fn until(port: u16, id: &str, token: &str, want: ServiceState) -> ServiceS
     panic!("{id}이(가) {want:?}이(가) 되지 않았습니다");
 }
 
+type Ws = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// 참여자로 그 주소 경로에 접속해 이름으로 참여한다.
+async fn join_ws(port: u16, slug: &str, name: &str) -> Ws {
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws?s={slug}")).await.unwrap();
+    let join = ClientMsg::Join { name: name.into(), token: None, protocol: PROTOCOL_VERSION };
+    ws.send(Message::Text(serde_json::to_string(&join).unwrap().into())).await.unwrap();
+    ws
+}
+
+/// 다음 `welcome`(그 전 메시지는 건너뛴다).
+async fn next_welcome(ws: &mut Ws) -> Box<collect_server::protocol::Welcome> {
+    loop {
+        let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("연결이 끊겼습니다") };
+        if let Ok(ServerMsg::Welcome(w)) = serde_json::from_str::<ServerMsg>(&t) {
+            return w;
+        }
+    }
+}
+
 #[tokio::test]
 async fn hand_off_serve_approve_and_save() {
     let env = Env::new("flow");
@@ -247,10 +267,13 @@ async fn hand_off_serve_approve_and_save() {
     assert_eq!(session.status, 200);
     assert!(String::from_utf8_lossy(&session.body).contains("2026 예산"));
 
-    // 명단 밖 참여자 → 승인 대기 → 관리 API로 승인.
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws?s=q4")).await.unwrap();
-    let join = ClientMsg::Join { name: "정하늘".into(), token: None, protocol: PROTOCOL_VERSION };
-    ws.send(Message::Text(serde_json::to_string(&join).unwrap().into())).await.unwrap();
+    // 명단 밖 참여자는 입력한 이름 그대로 바로 들어온다(자동 승인).
+    assert!(String::from_utf8_lossy(&session.body).contains("\"autoApprove\":true"));
+    let mut ws = join_ws(port, "q4", "정하늘").await;
+    let welcome = next_welcome(&mut ws).await;
+    assert_eq!(welcome.name, "정하늘");
+    // 같은 이름이 접속 중이면 다른 기기는 기다린다(앞 기기를 저절로 끊지 않는다) → 관리 API로 승인하면 들어온다.
+    let mut ws2 = join_ws(port, "q4", "정하늘").await;
     let mut pending = Vec::new();
     for _ in 0..100 {
         pending = status(port, "svc-1", "svc-1-token").await.status.unwrap().pending;
@@ -260,17 +283,20 @@ async fn hand_off_serve_approve_and_save() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(pending[0].name, "정하늘");
+    assert_eq!(pending[0].reason, Some(collect_server::protocol::PendingReason::Online));
     let body = serde_json::json!({ "name": "정하늘" }).to_string();
     assert_eq!(api(port, "POST", "/agent/services/svc-1/approve", body.as_bytes(), Some("틀린 키")).await.status, 403);
     let ok = api(port, "POST", "/agent/services/svc-1/approve", body.as_bytes(), Some("svc-1-token")).await;
     assert_eq!(ok.status, 200, "{}", ok.message());
-    let welcome = loop {
+    assert_eq!(next_welcome(&mut ws2).await.name, "정하늘");
+    let kicked = loop {
         let Some(Ok(Message::Text(t))) = ws.next().await else { panic!("연결이 끊겼습니다") };
-        if let Ok(ServerMsg::Welcome(w)) = serde_json::from_str::<ServerMsg>(&t) {
-            break w;
+        if let Ok(m @ ServerMsg::Kicked { .. }) = serde_json::from_str::<ServerMsg>(&t) {
+            break m;
         }
     };
-    assert_eq!(welcome.name, "정하늘");
+    assert!(matches!(kicked, ServerMsg::Kicked { reason: collect_server::protocol::KickReason::SwitchedDevice }));
+    let mut ws = ws2;
     let s = status(port, "svc-1", "svc-1-token").await.status.unwrap();
     assert!(s.pending.is_empty() && s.online == 1);
     assert_eq!(s.state, ServiceState::Running);
@@ -479,4 +505,82 @@ async fn host_client_talks_to_the_agent() {
 
     // 꺼진 에이전트
     assert!(matches!(client.info().await, Err(ClientError::Unreachable(_))));
+}
+
+/// 참여자 연결의 첫 메시지(IP 명단에 있으면 `known`).
+async fn first_known(port: u16, slug: &str) -> Option<String> {
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws?s={slug}")).await.unwrap();
+    match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
+        Ok(Some(Ok(Message::Text(t)))) => match serde_json::from_str::<ServerMsg>(&t) {
+            Ok(ServerMsg::Known { name }) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn agent_ip_list_wins_and_received_lists_stay_per_service() {
+    use collect_agent::admin::{Request, handle, handle_json};
+
+    let env = Env::new("ipnames");
+    std::fs::write(env.data.join("ip-names.json"), r#"{"127.0.0.1": "이서연"}"#).unwrap();
+    let running = env.start().await;
+    let port = running.port();
+    let mut p = package(&env.data, "svc-i", "q4", "a.xlsx").await;
+    p.manifest.ip_names = [("127.0.0.1", "다른이름"), ("10.1.2.3", "최도윤")]
+        .into_iter()
+        .map(|(ip, n)| (ip.to_string(), n.to_string()))
+        .collect();
+    assert_eq!(create(port, &p).await.status, 200);
+    let agent = running.agent.clone();
+
+    // 에이전트 명단이 이긴다.
+    assert_eq!(first_known(port, "q4").await.as_deref(), Some("이서연"));
+    let v = handle(&agent, Request::State).await.unwrap();
+    assert_eq!(v.entries.len(), 1);
+    assert_eq!((v.entries[0].ip.as_str(), v.entries[0].name.as_str()), ("127.0.0.1", "이서연"));
+    let shadow: Vec<(String, bool)> = v.received.iter().map(|r| (r.ip.clone(), r.shadowed)).collect();
+    assert_eq!(shadow, [("10.1.2.3".to_string(), false), ("127.0.0.1".to_string(), true)]);
+
+    // 에이전트 명단에서 빼면 그 서비스는 넘겨받은 이름을 쓰고, 넘겨받은 명단에서도 빼면 이름을 묻는다.
+    handle(&agent, Request::Remove { ip: "127.0.0.1".into() }).await.unwrap();
+    assert_eq!(first_known(port, "q4").await.as_deref(), Some("다른이름"));
+    let v = handle(&agent, Request::RemoveReceived { service: "svc-i".into(), ip: "127.0.0.1".into() }).await.unwrap();
+    assert_eq!(v.received.len(), 1);
+    assert_eq!(first_known(port, "q4").await, None);
+    // 명단 밖 참여자(자동 승인)는 '명단 밖'에 보이고, 명단에 넣으면 그 이름으로 바로 들어온다.
+    let mut ws = join_ws(port, "q4", "새사람").await;
+    assert_eq!(next_welcome(&mut ws).await.name, "새사람");
+    let mut v = handle(&agent, Request::State).await.unwrap();
+    for _ in 0..50 {
+        if !v.outsiders.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        v = handle(&agent, Request::State).await.unwrap();
+    }
+    assert_eq!((v.outsiders[0].name.as_str(), v.outsiders[0].ip.as_str()), ("새사람", "127.0.0.1"));
+    handle(&agent, Request::Put { ip: "127.0.0.1".into(), name: "새사람".into() }).await.unwrap();
+    assert_eq!(first_known(port, "q4").await.as_deref(), Some("새사람"));
+    let file = std::fs::read_to_string(env.data.join("ip-names.json")).unwrap();
+    assert!(file.contains("새사람"), "{file}");
+    // 넘겨받은 명단을 에이전트 명단에 넣기(에이전트 명단에 있는 IP는 그대로).
+    let v = handle(&agent, Request::AdoptReceived { service: "svc-i".into(), ip: None }).await.unwrap();
+    assert_eq!(v.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["최도윤", "새사람"]);
+    // 잘못된 파일·요청.
+    assert!(handle(&agent, Request::ImportText { text: "{".into() }).await.unwrap_err().contains("JSON"));
+    let bad: serde_json::Value = serde_json::from_str(&handle_json(&agent, r#"{"op":"nope"}"#).await).unwrap();
+    assert_eq!(bad["ok"], false);
+    let ok: serde_json::Value = serde_json::from_str(&handle_json(&agent, r#"{"op":"state"}"#).await).unwrap();
+    assert_eq!(ok["view"]["entries"].as_array().map(Vec::len), Some(2));
+    drop(ws);
+    running.stop().await;
+
+    // 다시 켜도 에이전트 명단과 넘겨받은 명단(뺀 것 포함)이 그대로다.
+    let running = env.start().await;
+    assert_eq!(first_known(running.port(), "q4").await.as_deref(), Some("새사람"));
+    let v = handle(&running.agent, Request::State).await.unwrap();
+    assert_eq!((v.entries.len(), v.received.len()), (2, 1));
+    running.stop().await;
 }
