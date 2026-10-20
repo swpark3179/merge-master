@@ -417,6 +417,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "collect-excel"
+version = "1.7.4"
+dependencies = [
+ "collect-core",
+ "collect-server",
+ "excel-com",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "collect-server"
 version = "1.7.4"
 dependencies = [
@@ -2051,6 +2062,7 @@ version = "1.7.4"
 dependencies = [
  "chrono",
  "collect-core",
+ "collect-excel",
  "collect-server",
  "collect-store",
  "excel-com",

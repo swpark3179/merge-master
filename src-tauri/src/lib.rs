@@ -66,12 +66,7 @@ where
     R: Send + 'static,
     F: FnOnce(&mut Session) -> excel_com::Result<R> + Send + 'static,
 {
-    let excel = excel.clone();
-    tauri::async_runtime::spawn_blocking(move || excel.run(f))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    collect_excel::run_excel(excel, f).await
 }
 
 async fn on_excel<R, F>(state: &AppState, f: F) -> CmdResult<R>
@@ -223,7 +218,8 @@ async fn import_commit(
         let _ = session.with(|s| s.set_meta(collect_server::META_ENDED, "1")).await;
         return Err(jobs::NO_JOB.into());
     }
-    job.recalc.start(&app, state.excel.clone(), &job.id, session, &models, &workbook_id, &names);
+    let source = collect_excel::CalcSource::Workbook(workbook_id.clone());
+    job.recalc.start(state.excel.clone(), &job.id, session, &models, source, &names, recalc::notify(&app, &job.id));
     *job.source.lock().unwrap() = Some(save::Source { workbook_id, sheets: names });
     job.last_save.lock().unwrap().take();
     jobs::emit_jobs(&app);

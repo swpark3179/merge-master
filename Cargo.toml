@@ -9,6 +9,7 @@ license = "UNLICENSED"
 
 [workspace.dependencies]
 collect-core = { path = "crates/collect-core" }
+collect-excel = { path = "crates/collect-excel" }
 collect-server = { path = "crates/collect-server" }
 collect-store = { path = "crates/collect-store" }
 excel-com = { path = "crates/excel-com" }

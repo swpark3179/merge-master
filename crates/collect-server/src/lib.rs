@@ -40,7 +40,7 @@ pub use net::{LanAddress, lan_addresses};
 pub use protocol::{ClientMsg, ServerMsg};
 pub use session::{
     CommsSnapshot, HighlightAudience, HighlightSummary, HostEvent, HostSnapshot, NoticeSummary, NoticeTarget,
-    RecalcRequest, SessionHandle, SessionInit, Shared,
+    RecalcRequest, RecalcStatus, SaveParts, SaveSheet, SessionHandle, SessionInit, Shared,
 };
 pub use session::{META_DISCARDED, META_ENDED, META_JOB, META_SERVER, Recovered, ServerMeta, recover};
 
@@ -93,6 +93,12 @@ impl ServerHandle {
 }
 
 pub async fn start(config: ServerConfig, hub: Hub) -> Result<ServerHandle, ServerError> {
+    start_with(config, hub, Router::new()).await
+}
+
+/// [`start`]와 같고, 같은 포트에 `extra` 경로를 더한다(에이전트의 관리 API `/agent/*`). `extra`는 참여자 경로와
+/// 겹치지 않아야 한다(`/{slug}`는 한 조각만 받으므로 `/agent/...`처럼 두 조각 이상이면 된다).
+pub async fn start_with(config: ServerConfig, hub: Hub, extra: Router) -> Result<ServerHandle, ServerError> {
     let addr = SocketAddr::new(config.bind, config.port);
     let listener =
         tokio::net::TcpListener::bind(addr).await.map_err(|source| ServerError::Bind { port: config.port, source })?;
@@ -110,7 +116,7 @@ pub async fn start(config: ServerConfig, hub: Hub) -> Result<ServerHandle, Serve
     if state.config.dev_admin {
         close_at_deadline(&state);
     }
-    let app = router(state.clone());
+    let app = router(state.clone()).merge(extra);
     let mut stop = shutdown_rx;
     let join = tokio::spawn(async move {
         let serve = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())

@@ -15,6 +15,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { errorText, jobEvent } from "../../api";
+import { DeadlineInput } from "../../DeadlineInput";
 import { useApi, useJobId } from "../../job";
 import { useToast } from "../../frame";
 import { IpNamesPanel } from "./IpNamesPanel";
@@ -274,18 +275,16 @@ export function ServiceScreen(props: Props) {
                 />
               </label>
               <div className="two">
-                <label className="field">
+                <div className="field">
                   <span>
                     <b>입력 마감</b> <span className="muted">(선택)</span>
                   </span>
-                  <input
-                    aria-label="마감"
-                    type="datetime-local"
-                    value={config.deadline ?? ""}
-                    onChange={(e) => void saveMeta({ deadline: e.target.value || undefined })}
+                  <DeadlineInput
+                    value={config.deadline}
+                    onChange={(deadline) => void saveMeta({ deadline })}
+                    clock={<HostClock />}
                   />
-                  <HostClock />
-                </label>
+                </div>
                 <fieldset className="deadline-action" disabled={!config.deadline}>
                   <legend>마감 시각이 되면</legend>
                   {(

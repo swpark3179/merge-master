@@ -1,0 +1,13 @@
+[package]
+name = "collect-excel"
+description = "Excel 스레드 작업과 수식 재계산(계산 사본) — 호스트 앱·에이전트 공용"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+collect-core.workspace = true
+collect-server.workspace = true
+excel-com.workspace = true
+tokio.workspace = true
+tracing.workspace = true

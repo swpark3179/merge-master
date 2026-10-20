@@ -56,3 +56,57 @@ export function remaining(text: string | undefined | null, now: Date = new Date(
 export function remainingTick(dueMs: number | null | undefined, nowMs: number): number {
   return dueMs != null && dueMs - nowMs < 120_000 ? 1_000 : 15_000;
 }
+
+/** 마감 입력 칸의 조각: 날짜 `YYYY-MM-DD`, 시 `"00"`~`"23"`, 분 `"00"`~`"59"`. */
+export interface DeadlineParts {
+  date: string;
+  hour: string;
+  minute: string;
+}
+
+/** `"2026-10-10T18:00"` → 조각. 날짜만 있으면 그날 23:59(서버가 읽는 것과 같다). 형식이 틀리면 `null`. */
+export function splitDeadline(text: string | undefined | null): DeadlineParts | null {
+  if (!text) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2}):(\d{2}))?/.exec(text.trim());
+  if (!m || !parseDeadline(text)) return null;
+  const [, date = "", hour = "23", minute = "59"] = m;
+  return { date, hour, minute };
+}
+
+/** 조각 → `"YYYY-MM-DDTHH:MM"`. 하나라도 비었거나 틀렸으면 `null`(그때는 저장하지 않는다). */
+export function joinDeadline(date: string, hour: string, minute: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}$/.test(hour) || !/^\d{1,2}$/.test(minute)) return null;
+  const h = Number(hour);
+  const mi = Number(minute);
+  if (h > 23 || mi > 59) return null;
+  const text = `${date}T${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+  const d = parseDeadline(text);
+  // 2026-02-30처럼 없는 날은 Date가 다음 달로 넘기므로 되돌려 비교한다.
+  if (!d || toLocalDate(d) !== date) return null;
+  return text;
+}
+
+/** 분 고르기 칸의 선택지(`step`분 간격). 간격에 맞지 않는 지금 값(예: `"07"`)은 사라지지 않게 끼워 넣는다. */
+export function minuteOptions(step: number, current?: string | null): string[] {
+  const out: string[] = [];
+  for (let m = 0; m < 60; m += Math.max(1, step)) out.push(String(m).padStart(2, "0"));
+  if (current && /^\d{2}$/.test(current) && Number(current) < 60 && !out.includes(current)) {
+    out.push(current);
+    out.sort();
+  }
+  return out;
+}
+
+/** 이 기기 시각의 날짜 `YYYY-MM-DD`. */
+export function toLocalDate(d: Date): string {
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mo}-${day}`;
+}
+
+/** 이 기기 시각의 `YYYY-MM-DDTHH:MM`. */
+export function toLocalDeadline(d: Date): string {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${toLocalDate(d)}T${hh}:${mm}`;
+}

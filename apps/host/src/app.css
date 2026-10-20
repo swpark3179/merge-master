@@ -1000,6 +1000,10 @@ input.invalid {
   background: #fffafa;
 }
 
+select.invalid {
+  border-color: var(--danger);
+}
+
 input.invalid:focus {
   border-color: var(--danger);
   box-shadow: 0 0 0 3px var(--danger-tint);
@@ -1820,6 +1824,31 @@ button.link:hover:not(:disabled) {
   padding: 8px 10px;
   line-height: 1.5;
   resize: vertical;
+}
+
+/* 입력 마감: 날짜 칸 + 시·분 고르기 */
+.deadline-input {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deadline-parts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.deadline-parts input[type="date"] {
+  width: 150px;
+  cursor: pointer;
+  caret-color: transparent;
+}
+
+.deadline-parts select {
+  height: 36px;
+  min-width: 72px;
 }
 
 /* 마감 시각이 되면: 읽기 전용 / 공유 닫기 */

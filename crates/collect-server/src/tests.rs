@@ -396,3 +396,16 @@ async fn two_sessions_on_one_port() {
         ServerMsg::Closing { ended: false, .. }
     ));
 }
+
+#[tokio::test]
+async fn extra_routes_share_the_port_and_agent_is_reserved() {
+    let hub = Hub::new();
+    hub.publish("q4", init()).unwrap();
+    let extra = Router::new().route("/agent/info", get(|| async { "agent" }));
+    let server = start_with(config(false), hub.clone(), extra).await.unwrap();
+    let addr = server.local_addr;
+    assert!(http(addr, "GET", "/agent/info", "").await.ends_with("agent"));
+    assert!(http(addr, "GET", "/api/session?s=q4", "").await.starts_with("HTTP/1.1 200"));
+    assert!(validate_slug("agent").is_err() && validate_slug("Agent").is_err());
+    server.stop().await;
+}

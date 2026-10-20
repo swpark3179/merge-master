@@ -380,3 +380,16 @@ async fn host_is_shown_by_the_name_of_its_ip() {
     host(&mut st, |s| s.chat(ChatTo::All, "안녕하세요"));
     assert!(a.take().iter().any(|m| matches!(m, ServerMsg::Chat(c) if c.from == "정호스트" && c.host)));
 }
+
+#[tokio::test]
+async fn host_name_can_be_set_for_another_pc() {
+    // 에이전트 PC에서 서비스하면 그 PC의 IP로 이름을 찾지 않고 넘긴 호스트가 정한 이름을 쓴다.
+    let mut st = State::new(fixture());
+    st.host_ips = vec![IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5))];
+    st.handle(Command::SetIpNames(IpNames::parse_json(r#"{"10.0.0.5": "에이전트 PC"}"#).unwrap()));
+    assert_eq!(st.snapshot().host_name, "에이전트 PC");
+    st.handle(Command::SetHostName(Some("정호스트".into())));
+    assert_eq!(st.snapshot().host_name, "정호스트");
+    st.handle(Command::SetHostName(None));
+    assert_eq!(st.snapshot().host_name, "에이전트 PC");
+}

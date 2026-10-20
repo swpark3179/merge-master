@@ -2,6 +2,8 @@
 //!
 //! - [`Session::save_into`]: 원본 통합문서에 쓰고 저장한다.
 //! - [`Session::save_copy`]: 원본을 `SaveCopyAs`로 복사해 **별도의 숨은 Excel**에서 열고, 거기에 쓰고 저장한다(원본은 그대로).
+//! - [`Session::save_file_copy_multi`]: 원본 **파일**(에이전트 PC에 넘겨받은 사본)을 복사해 같은 방법으로 쓴다. 실행 중인
+//!   Excel(그 PC 사용자의 Excel)에는 열지 않는다.
 //!
 //! 쓰는 동안 화면 갱신·이벤트·자동 계산·경고를 끄고 끝나면 되돌린다. 값은 열마다 이어진 칸을 한 번에(`Value2` 배열) 쓰고,
 //! 저장한 뒤 다시 읽어 맞는지 확인한다. 수식 칸은 쓰지 않는다(계획에 들어 있지 않다).
@@ -494,37 +496,73 @@ impl Session {
             ));
         }
         source.call("SaveCopyAs", vec![Var::str(&full_text)])?;
+        write_copy(&full, plans, started)
+    }
 
-        let result = (|| -> Result<SaveReport> {
-            let app = create_excel()?;
-            let run = (|| -> Result<SaveReport> {
-                app.put("Visible", Var::bool(false))?;
-                app.put("DisplayAlerts", Var::bool(false))?;
-                let _ = app.put("AutomationSecurity", Var::i32(MSO_AUTOMATION_SECURITY_FORCE_DISABLE));
-                let book = app.obj("Workbooks")?.obj_call(
-                    "Open",
-                    vec![Var::str(&full_text), Var::i32(0) /* UpdateLinks: 안 함 */, Var::bool(false)],
-                )?;
-                let saved = (|| -> Result<SaveReport> {
-                    let mut report = SaveReport { path: full_text.clone(), ..Default::default() };
-                    write_and_save(&book, plans, &mut report)?;
-                    Ok(report)
-                })();
-                let _ = book.call("Close", vec![Var::bool(false)]);
-                saved
-            })();
-            let _ = app.call("Quit", vec![]);
-            run
-        })();
-        match result {
-            Ok(mut report) => {
-                report.ms = started.elapsed().as_millis() as u64;
+    /// 원본의 지금 상태를 `path`로 복사만 한다(에이전트 PC로 넘길 사본 — 저장하지 않은 Excel 변경도 든다). 원본이
+    /// 닫혔으면 다시 연다.
+    pub fn save_copy_as(&mut self, workbook_id: &str, path: &Path) -> Result<()> {
+        self.locate(workbook_id)?;
+        let full = std::path::absolute(path).map_err(|e| ExcelError::Type(e.to_string()))?;
+        self.workbook(workbook_id)?.call("SaveCopyAs", vec![Var::str(&full.to_string_lossy())])?;
+        Ok(())
+    }
+
+    /// 원본 파일 `source`를 `path`로 복사하고, 숨은 Excel에서 그 복사본의 시트들에 쓰고 저장한다([`Session::save_copy_multi`]와
+    /// 같은 결과). 원본 파일은 그대로 두고, 실행 중인 Excel에는 열지 않는다. 실패하면 만들다 만 파일은 지운다.
+    pub fn save_file_copy_multi(
+        &mut self,
+        source: &Path,
+        plans: &[(String, ExportPlan)],
+        path: &Path,
+    ) -> Result<SaveReport> {
+        let started = std::time::Instant::now();
+        let want = extension(&source.to_string_lossy());
+        let want = if want.is_empty() { "xlsx".to_string() } else { want };
+        if extension(&path.to_string_lossy()) != want {
+            return Err(ExcelError::Type(format!("원본과 같은 형식(.{want})으로 저장해야 합니다")));
+        }
+        let full = std::path::absolute(path).map_err(|e| ExcelError::Type(e.to_string()))?;
+        let src = std::path::absolute(source).map_err(|e| ExcelError::Type(e.to_string()))?;
+        if full.to_string_lossy().eq_ignore_ascii_case(&src.to_string_lossy()) {
+            return Err(ExcelError::Type("원본과 다른 파일 이름을 골라 주세요".into()));
+        }
+        std::fs::copy(&src, &full).map_err(|e| ExcelError::Type(format!("원본을 복사할 수 없습니다: {e}")))?;
+        write_copy(&full, plans, started)
+    }
+}
+
+/// 복사해 둔 파일(`full`)을 별도의 숨은 Excel에서 열어 쓰고 저장한다. 실패하면 그 파일을 지운다.
+fn write_copy(full: &Path, plans: &[(String, ExportPlan)], started: std::time::Instant) -> Result<SaveReport> {
+    let full_text = full.to_string_lossy().to_string();
+    let result = (|| -> Result<SaveReport> {
+        let app = create_excel()?;
+        let run = (|| -> Result<SaveReport> {
+            app.put("Visible", Var::bool(false))?;
+            app.put("DisplayAlerts", Var::bool(false))?;
+            let _ = app.put("AutomationSecurity", Var::i32(MSO_AUTOMATION_SECURITY_FORCE_DISABLE));
+            let book = app
+                .obj("Workbooks")?
+                .obj_call("Open", vec![Var::str(&full_text), Var::i32(0) /* UpdateLinks: 안 함 */, Var::bool(false)])?;
+            let saved = (|| -> Result<SaveReport> {
+                let mut report = SaveReport { path: full_text.clone(), ..Default::default() };
+                write_and_save(&book, plans, &mut report)?;
                 Ok(report)
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&full);
-                Err(e)
-            }
+            })();
+            let _ = book.call("Close", vec![Var::bool(false)]);
+            saved
+        })();
+        let _ = app.call("Quit", vec![]);
+        run
+    })();
+    match result {
+        Ok(mut report) => {
+            report.ms = started.elapsed().as_millis() as u64;
+            Ok(report)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(full);
+            Err(e)
         }
     }
 }

@@ -467,6 +467,51 @@ pub fn plan(
     }
 }
 
+/// 통합문서 저장 계획의 시트 하나(세션 안 순번 순서).
+pub struct SheetPlanInput<'a> {
+    /// Excel의 시트 이름(계획을 쓸 곳).
+    pub name: &'a str,
+    pub baseline: &'a SheetModel,
+    pub current: &'a SheetModel,
+    /// 열 이름(변경 이력 시트의 '항목').
+    pub labels: &'a [String],
+}
+
+/// 여러 시트를 한 번에 저장하는 계획: 시트마다 [`plan`]하고, '변경 이력' 시트는 첫 시트의 계획에 하나만 붙인다
+/// (시트가 둘 이상이면 '시트' 열). `keep`은 시트마다 쓰지 않을 칸('Excel 값 유지'), 짧으면 나머지 시트는 빈 것.
+pub fn plan_workbook(
+    sheets: &[SheetPlanInput<'_>],
+    history: &[ChangeEntry],
+    opts: ExportOptions,
+    offset_minutes: i32,
+    keep: &[HashSet<CellRef>],
+) -> Vec<(String, ExportPlan)> {
+    let none = HashSet::new();
+    let mut plans: Vec<(String, ExportPlan)> = sheets
+        .iter()
+        .enumerate()
+        .map(|(i, x)| {
+            let per_sheet = ExportOptions { history: false, ..opts };
+            let skip = keep.get(i).unwrap_or(&none);
+            (x.name.to_string(), plan(x.baseline, x.current, &[], &[], per_sheet, offset_minutes, skip))
+        })
+        .collect();
+    if opts.history && !history.is_empty() {
+        if let Some((_, first)) = plans.first_mut() {
+            let labels: Vec<SheetLabels> = sheets
+                .iter()
+                .map(|x| SheetLabels {
+                    name: x.current.sheet.clone(),
+                    origin: x.current.origin,
+                    labels: x.labels.to_vec(),
+                })
+                .collect();
+            first.history = Some(history_table(&labels, history, offset_minutes));
+        }
+    }
+    plans
+}
+
 /// 저장 직전에 Excel에서 그사이 직접 고친 칸.
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[ts(export)]
@@ -1117,6 +1162,49 @@ mod tests {
         let p = plan(&written, &now, &[], &[], only_cancel, 0, &HashSet::new());
         assert!(!p.styles.is_empty() && p.styles.iter().all(|b| !b.style.strike), "{:?}", p.styles);
         assert!(plan(&written, &now, &[], &[], off, 0, &HashSet::new()).styles.is_empty(), "끄면 그대로 둔다");
+    }
+
+    #[test]
+    fn workbook_plan_puts_one_history_sheet_on_the_first_plan() {
+        let base = budget();
+        let mut now = base.clone();
+        set(&mut now, "F3", CellValue::Number(1.0));
+        let mut base2 = budget();
+        base2.sheet = "인력 계획".into();
+        let mut now2 = base2.clone();
+        set(&mut now2, "F4", CellValue::Number(2.0));
+        set(&mut now2, "F5", CellValue::Number(3.0));
+        let labels = vec![String::new(); base.cols as usize];
+        let sheets = [
+            SheetPlanInput { name: "예산신청서", baseline: &base, current: &now, labels: &labels },
+            SheetPlanInput { name: "인력 계획", baseline: &base2, current: &now2, labels: &labels },
+        ];
+        let e = ChangeEntry {
+            seq: 1,
+            at_ms: 0,
+            user: "김민지".into(),
+            batch: "b".into(),
+            origin: BatchOrigin::Edit,
+            kind: ChangeKind::Input,
+            sheet: 1,
+            row: 3,
+            col: 5,
+            old: CellValue::Empty,
+            new: CellValue::Number(2.0),
+            gone: false,
+        };
+        // 둘째 시트의 F5는 'Excel 값 유지'
+        let keep = [HashSet::new(), HashSet::from([at("F5")])];
+        let plans = plan_workbook(&sheets, std::slice::from_ref(&e), opts(), 0, &keep);
+        assert_eq!(plans.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["예산신청서", "인력 계획"]);
+        assert_eq!(plans[0].1.cells, [at("F3")]);
+        assert_eq!(plans[1].1.cells, [at("F4")]);
+        let history = plans[0].1.history.as_ref().expect("첫 시트에 이력");
+        assert_eq!(history.header[2], "시트");
+        assert!(plans[1].1.history.is_none());
+        let plans = plan_workbook(&sheets, &[e], ExportOptions { history: false, ..opts() }, 0, &[]);
+        assert!(plans[0].1.history.is_none());
+        assert_eq!(plans[1].1.cells, [at("F4"), at("F5")], "keep이 없으면 모두 쓴다");
     }
 
     #[test]

@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { dday, formatDeadline, parseDeadline, remaining, remainingAt, remainingTick } from "./deadline";
+import {
+  dday,
+  formatDeadline,
+  joinDeadline,
+  minuteOptions,
+  parseDeadline,
+  remaining,
+  remainingAt,
+  remainingTick,
+  splitDeadline,
+  toLocalDeadline,
+} from "./deadline";
 
 describe("마감 표시", () => {
   it("로컬 시각 해석·표시", () => {
@@ -47,5 +58,36 @@ describe("remainingAt", () => {
     expect(remainingTick(due, due - 100_000)).toBe(1_000);
     expect(remainingTick(due, due - 10 * 60_000)).toBe(15_000);
     expect(remainingTick(null, due)).toBe(15_000);
+  });
+});
+
+describe("마감 입력 조각", () => {
+  it("나누기", () => {
+    expect(splitDeadline("2026-10-10T18:05")).toEqual({ date: "2026-10-10", hour: "18", minute: "05" });
+    expect(splitDeadline("2026-10-10")).toEqual({ date: "2026-10-10", hour: "23", minute: "59" });
+    expect(splitDeadline("")).toBeNull();
+    expect(splitDeadline("내일")).toBeNull();
+  });
+
+  it("합치기: 셋 다 있어야 하고 없는 날은 거절", () => {
+    expect(joinDeadline("2026-10-10", "18", "05")).toBe("2026-10-10T18:05");
+    expect(joinDeadline("2026-10-10", "9", "0")).toBe("2026-10-10T09:00");
+    expect(joinDeadline("", "18", "00")).toBeNull();
+    expect(joinDeadline("2026-10-10", "", "00")).toBeNull();
+    expect(joinDeadline("2026-10-10", "24", "00")).toBeNull();
+    expect(joinDeadline("2026-02-30", "18", "00")).toBeNull();
+  });
+
+  it("분 선택지: 간격 + 간격 밖 지금 값", () => {
+    expect(minuteOptions(5)).toHaveLength(12);
+    expect(minuteOptions(5)[1]).toBe("05");
+    const odd = minuteOptions(5, "07");
+    expect(odd).toHaveLength(13);
+    expect(odd.slice(1, 3)).toEqual(["05", "07"]);
+    expect(minuteOptions(5, "10")).toHaveLength(12);
+  });
+
+  it("이 기기 시각 글자", () => {
+    expect(toLocalDeadline(new Date(2026, 0, 2, 3, 4))).toBe("2026-01-02T03:04");
   });
 });
