@@ -28,6 +28,8 @@ rfd = "0.16"
 tao = "0.37"
 tray-icon = "0.25"
 winreg = "0.56"
+# IP 명단 창(WebView2). 호스트 앱(Tauri)과 같은 판.
+wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Security",

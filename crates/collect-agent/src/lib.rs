@@ -7,6 +7,8 @@
 //! - 플랫폼과 상관없는 부분(관리 API·서비스·마감·되살리기·경로)은 Linux에서도 시험한다([`FakeEngine`]).
 
 pub mod admin;
+#[cfg(windows)]
+pub mod admin_window;
 pub mod agent;
 pub mod api;
 pub mod engine;
