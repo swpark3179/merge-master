@@ -40,6 +40,8 @@ pub trait Engine: Send + Sync + 'static {
     fn stop_recalc(&self, key: &str);
     /// 켤 때: 앞서 죽은 에이전트가 남긴 계산 사본을 정리한다.
     fn cleanup(&self) -> EngineFuture<()>;
+    /// 끝낼 때: 계산 사본을 모두 닫고 띄운 Excel을 끝낸다(끝날 때까지 기다린다).
+    fn shutdown(&self) -> EngineFuture<()>;
 }
 
 /// Excel 없이 쓰는 엔진(시험·`--fake-excel`): 계획 요약을 JSON으로 `out`에 쓴다. `fail`번은 저장에 실패한다.
@@ -91,6 +93,10 @@ impl Engine for FakeEngine {
     fn stop_recalc(&self, _key: &str) {}
 
     fn cleanup(&self) -> EngineFuture<()> {
+        Box::pin(async {})
+    }
+
+    fn shutdown(&self) -> EngineFuture<()> {
         Box::pin(async {})
     }
 }

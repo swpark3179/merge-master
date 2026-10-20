@@ -783,14 +783,17 @@ impl Agent {
         Ok(service)
     }
 
-    /// 에이전트를 끝낼 때: 공유를 닫는다(참여자에게는 잠시 멈춘 것으로 — 다시 켜면 이어서 한다).
-    pub fn pause_all(&self) {
+    /// 에이전트를 끝낼 때: 공유를 닫고(참여자에게는 잠시 멈춘 것으로 — 다시 켜면 이어서 한다), 계산 사본을 닫는다.
+    pub async fn pause_all(&self) {
         for (slug, _) in self.hub.sessions() {
             self.hub.unpublish_as(&slug, Gone::Paused);
         }
         for s in self.all() {
-            self.opts.engine.stop_recalc(&s.id);
+            if let Some(session) = s.session() {
+                session.set_recalc(None);
+            }
         }
+        self.opts.engine.shutdown().await;
     }
 }
 

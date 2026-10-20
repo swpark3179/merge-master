@@ -88,6 +88,19 @@ impl Engine for ExcelEngine {
         }
     }
 
+    fn shutdown(&self) -> EngineFuture<()> {
+        let excel = self.excel.clone();
+        self.recalcs.lock().unwrap().clear();
+        Box::pin(async move {
+            let _ = run_excel(&excel, |s| {
+                s.close_all_calc();
+                s.close_background();
+                Ok(())
+            })
+            .await;
+        })
+    }
+
     fn cleanup(&self) -> EngineFuture<()> {
         let excel = self.excel.clone();
         let installed = self.installed;

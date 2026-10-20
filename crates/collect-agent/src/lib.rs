@@ -76,7 +76,7 @@ impl Running {
         if let Some(t) = self.ticker {
             t.abort();
         }
-        self.agent.pause_all();
+        self.agent.pause_all().await;
         self.server.stop().await;
     }
 }
