@@ -10,6 +10,8 @@ import type { CellWrite } from "./api";
 interface ActiveEdit {
   at: CellRef;
   state: EditorState;
+  /** 편집을 시작할 때의 글(고치지 않고 확정하면 수식 칸의 수식을 그대로 둔다). */
+  start: string;
 }
 
 export interface HostEditorOptions {
@@ -63,7 +65,8 @@ function same(a: CellValue | undefined, b: CellValue | undefined): boolean {
 /**
  * 호스트 그리드(1b 설정·4 모니터링)의 칸 편집. 참여자 화면과 같은 편집기([`CellEditor`])를 활성 칸에 대기시켜
  * 바로 입력(한글 첫 글자 포함)·F2·두 번 누르기로 고치고, Enter/Tab으로 확정해 옮긴다. Delete는 고른 범위를 지운다.
- * 수식 칸·병합에 덮인 칸·숨긴 칸은 고칠 수 없다. 잠금·되돌리기는 없다(히스토리 화면에서 되돌린다).
+ * 병합에 덮인 칸·숨긴 칸은 고칠 수 없다. 수식 칸은 값으로 바꾼다(고쳐서 확정하면 수식 대신 그 값, Delete는 수식도 지운다).
+ * 잠금·되돌리기는 없다(히스토리 화면에서 되돌린다).
  */
 export function useHostEditor(o: HostEditorOptions) {
   const { model, flags, columns, grid, host, selection, setSelection, blockedBy, commit, notify } = o;
@@ -77,7 +80,6 @@ export function useHostEditor(o: HostEditorOptions) {
   const reason = (r: number, c: number): string | null => {
     const cell = model.cells[idx(r, c)];
     if (!cell) return "표 밖입니다";
-    if (cell.f) return "수식 칸은 고칠 수 없습니다(Excel이 계산합니다)";
     if ((flags[idx(r, c)] ?? 0) & BLOCKED) return "고칠 수 없는 칸입니다";
     return blockedBy?.(r, c) ?? null;
   };
@@ -86,7 +88,7 @@ export function useHostEditor(o: HostEditorOptions) {
   const editable = at !== null && reason(at.row, at.col) === null;
 
   const startEdit = useCallback((target: CellRef, text: string, arrowsMove: boolean) => {
-    const next: ActiveEdit = { at: target, state: { text, arrowsMove, listOpen: false } };
+    const next: ActiveEdit = { at: target, state: { text, arrowsMove, listOpen: false }, start: text };
     editorRef.current = next;
     setEditor(next);
     requestAnimationFrame(() => {
@@ -96,6 +98,12 @@ export function useHostEditor(o: HostEditorOptions) {
       el.setSelectionRange(el.value.length, el.value.length);
     });
   }, []);
+
+  /** 편집을 시작한다. 수식 칸이면 값으로 바뀐다고 알린다. */
+  const begin = (target: CellRef, text: string, arrowsMove: boolean) => {
+    if (model.cells[idx(target.row, target.col)]?.f) notify("수식 칸입니다. 확정하면 수식 대신 입력한 값이 들어갑니다");
+    startEdit(target, text, arrowsMove);
+  };
 
   const close = useCallback(() => {
     editorRef.current = null;
@@ -108,7 +116,10 @@ export function useHostEditor(o: HostEditorOptions) {
       if (!e) return;
       close();
       const value = hostValue(override ?? e.state.text, e.at.row, e.at.col, model, columns);
-      if (!same(model.cells[idx(e.at.row, e.at.col)]?.v, value)) commit([{ row: e.at.row, col: e.at.col, value }]);
+      const cell = model.cells[idx(e.at.row, e.at.col)];
+      // 수식 칸은 고쳐 넣었으면 같은 값이어도 쓴다(수식을 그 값으로 바꾼다). 열어 보기만 했으면 그대로.
+      const typed = override !== undefined || e.state.text !== e.start;
+      if (!same(cell?.v, value) || (cell?.f && typed)) commit([{ row: e.at.row, col: e.at.col, value }]);
       if (move) grid.current?.step(move[0], move[1]);
     },
     // idx는 model로 정해진다.
@@ -154,14 +165,14 @@ export function useHostEditor(o: HostEditorOptions) {
     let skipped = 0;
     for (let r = r0; r <= r1; r++) {
       for (let c = c0; c <= c1; c++) {
-        const v = model.cells[idx(r, c)]?.v;
-        if (same(v, null)) continue;
+        const cell = model.cells[idx(r, c)];
+        if (same(cell?.v, null) && !cell?.f) continue;
         if (reason(r, c) !== null) skipped++;
         else cells.push({ row: r, col: c, value: null });
       }
     }
     if (cells.length > 0) commit(cells);
-    if (skipped > 0) notify(`고칠 수 없는 ${skipped}칸(수식·입력 중인 칸 등)은 그대로 두었습니다`);
+    if (skipped > 0) notify(`고칠 수 없는 ${skipped}칸(입력 중인 칸 등)은 그대로 두었습니다`);
   };
 
   /** 그리드의 키(편집 중이 아닐 때). 방향키 이동은 그리드가 한다. */
@@ -178,22 +189,22 @@ export function useHostEditor(o: HostEditorOptions) {
       if (!editable) return blocked(at.row, at.col);
       const cell = model.cells[idx(at.row, at.col)];
       const format = at.row < model.headerRows ? undefined : columns?.[at.col]?.format;
-      if (e.key === "Backspace") startEdit(at, "", true);
-      else startEdit(at, editText(cell?.v, format), false);
+      if (e.key === "Backspace") begin(at, "", true);
+      else begin(at, editText(cell?.v, format), false);
       return;
     }
     if (e.key.length === 1 && !mod && !e.altKey) {
       if (!editable) return blocked(at.row, at.col);
       // 편집기가 포커스를 받기 전에 그리드로 온 첫 글자(칸을 누르자마자 입력)
       e.preventDefault();
-      startEdit(at, e.key, true);
+      begin(at, e.key, true);
     }
   };
 
   const onCellDoubleClick = (row: number, col: number) => {
     if (reason(row, col) !== null) return blocked(row, col);
     const format = row < model.headerRows ? undefined : columns?.[col]?.format;
-    startEdit({ row, col }, editText(model.cells[idx(row, col)]?.v, format), false);
+    begin({ row, col }, editText(model.cells[idx(row, col)]?.v, format), false);
   };
 
   const setText = (text: string) => {
@@ -209,7 +220,7 @@ export function useHostEditor(o: HostEditorOptions) {
       <CellEditor
         inputRef={input}
         state={editor?.state ?? null}
-        onStart={(text) => startEdit(at, text, true)}
+        onStart={(text) => begin(at, text, true)}
         onText={setText}
         onCommit={finish}
         onLeave={() => finish(null)}

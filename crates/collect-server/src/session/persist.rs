@@ -248,10 +248,11 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     }
     let comms: CommsData = blob(&saved.blobs, BLOB_COMMS).map(|(_, c)| c).unwrap_or_default();
     let tokens: BTreeMap<String, String> = blob(&saved.blobs, BLOB_PEOPLE).map(|(_, t)| t).unwrap_or_default();
-    // 시트를 남긴 뒤의 기록을 그 시트에 되짚는다.
+    // 시트를 남긴 뒤의 기록을 그 시트에 되짚는다. 기록된 값 쓰기는 수식 칸의 수식을 버린다(재계산 결과는 기록하지 않는다).
     for e in saved.changes.iter().filter(|e| e.seq > sheet_seq && !e.gone) {
         if let Some(cell) = models.get_mut(e.sheet as usize).and_then(|m| m.cell_mut(CellRef::new(e.row, e.col))) {
             cell.v = e.new.clone();
+            cell.f = None;
         }
     }
     let meta = saved.meta;

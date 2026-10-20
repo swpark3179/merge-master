@@ -474,6 +474,64 @@ async fn recalc_requests_and_formula_results() {
     assert_eq!(st.log.len(), 1, "수식 결과는 이력에 남기지 않는다");
 }
 
+/// G(수식) 열을 입력으로 연 세션.
+fn formula_input_init() -> SessionInit {
+    let mut init = fixture();
+    init.sheets[0].1.columns[G as usize].role = collect_core::config::ColumnRole::Input;
+    init
+}
+
+#[tokio::test]
+async fn participants_overwrite_formula_cells_with_values() {
+    let (mut st, mut c) = setup_with(formula_input_init(), &["이서연", "최도윤"]);
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    st.handle(Command::SetRecalc(Some(tx)));
+    let r = first_row(&st, "이서연");
+    let g = CellRef::new(r, G);
+    let cached = value(&st, r, G);
+    assert!(st.sheets[0].model.cell(g).unwrap().f.is_some());
+    let mut feed = st.host_feed.subscribe();
+    // 지금 값과 같은 값이어도 수식을 그 값으로 바꾼다(열 형식 검사는 그대로 — G는 숫자).
+    set(&mut st, &c[0], "b1", vec![cell(r, G, cached.clone(), 0), cell(r + 1, G, num(2.0), 0)]);
+    let mine = c[0].take();
+    let (cells, _, rejected) = applied(&mine);
+    assert!(rejected.is_empty(), "{rejected:?}");
+    assert_eq!(cells.len(), 2);
+    assert!(st.sheets[0].model.cell(g).unwrap().f.is_none());
+    assert_eq!(value(&st, r + 1, G), num(2.0));
+    assert_eq!(st.log.len(), 2);
+    // 모두에게 수식이 없는 새 시트가 간다.
+    for msgs in [mine, c[1].take()] {
+        let w = msgs.iter().rev().find_map(|m| match m {
+            ServerMsg::Welcome(w) => Some(w),
+            _ => None,
+        });
+        assert!(w.is_some_and(|w| w.sheets[0].model.cell(g).unwrap().f.is_none()), "{msgs:?}");
+    }
+    assert!(std::iter::from_fn(|| feed.try_recv().ok()).any(|e| e == HostEvent::Reset));
+    // 계산 사본에도 값으로 들어가고, 그 뒤 재계산 결과는 이 칸을 덮지 않는다.
+    let req = rx.try_recv().expect("재계산 요청");
+    assert!(req.writes.contains(&(0, g, cached.clone())));
+    st.handle(Command::Formulas(vec![(0, g, num(0.5))]));
+    assert_eq!(value(&st, r, G), cached);
+    // 이미 값이 된 칸에 같은 값을 다시 넣으면 아무 일도 없다.
+    set(&mut st, &c[0], "b2", vec![cell(r, G, cached, 0)]);
+    c[0].take();
+    assert_eq!(st.log.len(), 2);
+}
+
+#[tokio::test]
+async fn formula_cells_stay_locked_when_overwrite_is_off() {
+    let mut init = formula_input_init();
+    init.sheets[0].1.permissions.overwrite_formulas = false;
+    let (mut st, mut c) = setup_with(init, &["이서연"]);
+    let r = first_row(&st, "이서연");
+    set(&mut st, &c[0], "b1", vec![cell(r, G, num(1.0), 0)]);
+    let (_, _, rejected) = applied(&c[0].take());
+    assert_eq!(rejected.len(), 1);
+    assert!(st.sheets[0].model.cell(CellRef::new(r, G)).unwrap().f.is_some());
+}
+
 #[tokio::test]
 async fn welcome_carries_versions_and_locks_and_replace_resets_them() {
     let (init, k) = shared_cell_init();
@@ -547,7 +605,7 @@ async fn participants_add_rows_when_allowed() {
     assert!(matches!(feed.try_recv(), Ok(HostEvent::Reset)));
 
     // 새 행의 입력 칸: 추가한 사람만(행 배정 기준이 있으므로). 잠금 열(D 비목)도 새 행에서는 입력할 수 있고,
-    // 수식(G)·행 배정 기준(C) 칸은 그대로 잠겨 있다.
+    // 잠금 열의 수식(G)·행 배정 기준(C) 칸은 그대로 잠겨 있다.
     set(&mut st, &a, "n1", vec![cell(r0, F, text("1,200"), 0), cell(r0, 3, text("새 비목"), 0)]);
     let (ok, _, rejected) = applied(&a.take());
     assert!(rejected.is_empty(), "{rejected:?}");
@@ -563,14 +621,14 @@ async fn participants_add_rows_when_allowed() {
     );
     set(&mut st, &b, "n2", vec![cell(r0, H, text("남의 새 행"), 0)]);
     assert_eq!(applied(&b.take()).2.len(), 1);
-    // 예외는 한 벌(입력 가능 + 기준 칸 입력 금지)이고, 이어서 추가하면 범위가 늘어난다.
+    // 예외는 한 벌(입력 가능 + 기준 칸·잠금 열 수식 칸 입력 금지)이고, 이어서 추가하면 범위가 늘어난다.
     let added: Vec<_> =
         st.sheets[0].config.exceptions.iter().filter(|e| e.note == super::structure::ADDED_ROWS_NOTE).collect();
-    assert_eq!(added.len(), 2);
+    assert_eq!(added.len(), 3);
     add_rows(&mut st, &a, 1);
     let added: Vec<_> =
         st.sheets[0].config.exceptions.iter().filter(|e| e.note == super::structure::ADDED_ROWS_NOTE).collect();
-    assert_eq!(added.len(), 2);
+    assert_eq!(added.len(), 3);
     assert_eq!(added[0].range, CellRange::new(r0, 0, 3, st.sheets[0].model.cols));
     a.take();
     b.take();

@@ -177,7 +177,7 @@ export function jobApi(job: string) {
     sheetStructure: (sheet: number, edit: StructureEdit, viewer: string | null) =>
       call<FormatResult>("sheet_structure", { sheet, edit, viewer }),
 
-    /** 호스트가 칸 내용을 바꾼다(1b·모니터링). 수식 칸·같은 값은 건너뛴다. 바뀐 칸은 `sheet-changes`로 온다. */
+    /** 호스트가 칸 내용을 바꾼다(1b·모니터링). 같은 값은 건너뛴다(수식 칸은 수식 대신 그 값). 바뀐 칸은 `sheet-changes`로 온다. */
     sheetSetCells: (sheet: number, cells: CellWrite[]) => call<void>("sheet_set_cells", { sheet, cells }),
 
     /** 이 업무를 이 주소 경로로 공개한다. 포트는 모든 업무가 같이 쓴다(다른 업무가 공개 중이면 바꿀 수 없다). */

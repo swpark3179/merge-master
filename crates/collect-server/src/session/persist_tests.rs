@@ -113,6 +113,33 @@ async fn session_comes_back_from_its_file() {
     assert_eq!(st.sheets[0].model.cell(CellRef::new(r + 3, F)).unwrap().v, CellValue::Number(3.0));
 }
 
+#[tokio::test]
+async fn overwritten_formulas_stay_values_after_recover() {
+    let path = temp("formula.sqlite");
+    let mut init = fixture();
+    init.sheets[0].1.columns[6].role = collect_core::config::ColumnRole::Input;
+    init.store = Some(Store::open(&path).unwrap());
+    let mut st = State::new(init);
+    let mut lee = connect(&mut st, 1);
+    join(&mut st, &lee, "이서연", None);
+    lee.take();
+    let r = st.rt[0].access.rows_of(st.rt[0].access.person("이서연").unwrap())[0];
+    set(&mut st, &lee, "b1", r, 6, CellValue::Number(3.0));
+    // 시트를 남기기 전에 꺼진 경우: 기록만 있는 수식 칸 쓰기(기록 재생)도 수식을 버린다.
+    let mut late = st.log.last().unwrap().clone();
+    (late.seq, late.row, late.new) = (st.next_seq, r + 1, CellValue::Number(4.0));
+    st.store.as_ref().unwrap().append(&[late]);
+    st.store.as_ref().unwrap().flush().unwrap();
+    drop(st);
+    let rec = recover(&path).unwrap();
+    let m = &rec.init.sheets[0].0;
+    for (row, v) in [(r, 3.0), (r + 1, 4.0)] {
+        let g = m.cell(CellRef::new(row, 6)).unwrap();
+        assert_eq!((g.v.clone(), g.f.is_none()), (CellValue::Number(v), true), "{row}행");
+    }
+    assert!(m.cell(CellRef::new(r + 2, 6)).unwrap().f.is_some(), "고치지 않은 수식 칸은 그대로");
+}
+
 #[test]
 fn files_without_a_sheet_cannot_be_recovered() {
     let path = temp("empty.sqlite");

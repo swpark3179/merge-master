@@ -144,6 +144,15 @@ pub struct Permissions {
     /// 참여자가 열 너비·행 높이를 바꿀 수 있다(1b 참여자 권한 '크기 조절', 바꾸면 모두에게 보인다). 기본은 금지.
     #[serde(default)]
     pub resize: bool,
+    /// 참여자가 입력할 수 있는 수식 칸에 값을 넣을 수 있다(1b 참여자 권한 '수식 칸'). 넣으면 그 칸은 수식 대신 그 값이 된다
+    /// (`=`로 시작해도 글자, 저장하면 Excel에서도 값). 끄면 참여자에게 수식 칸은 잠긴다(호스트는 늘 고칠 수 있다).
+    /// 기본은 허용(이 설정이 없던 옛 기록 파일도).
+    #[serde(default = "yes")]
+    pub overwrite_formulas: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Permissions {
@@ -156,6 +165,7 @@ impl Default for Permissions {
             delete_rows: false,
             deadline_action: DeadlineAction::ReadOnly,
             resize: false,
+            overwrite_formulas: true,
         }
     }
 }
@@ -224,7 +234,7 @@ impl CollectConfig {
     ///
     /// - 제목: 엑셀 파일 이름(확장자 제외).
     /// - 행 배정 기준: 정하지 않는다(호스트가 '담당자 배정'에서 고른다). 후보 1순위([`suggested_key_col`])는 아래 판단에만 쓴다.
-    /// - 열 역할: 모두 입력 영역. 잠글 열은 호스트가 1b에서 정한다(수식 칸은 열 역할과 상관없이 입력할 수 없다).
+    /// - 열 역할: 모두 입력 영역. 잠글 열은 호스트가 1b에서 정한다(수식 칸도 열 역할을 따른다 — 값을 넣으면 수식 대신 그 값).
     /// - 조회조건: 데이터가 거의 다 채워진 글자 열 중 값이 2~50가지로 반복되는 열(본부·부서·비목 같은 키,
     ///   수식 열·배정 기준 후보 열 제외).
     /// - 형식: 목록 유효성 → 목록, 숫자가 있거나 숫자 표시 형식 → 숫자(머리글 괄호 안을 단위로), 날짜 형식 → 날짜.
@@ -511,7 +521,7 @@ pub(crate) mod tests {
         assert_eq!(cfg.title, "budget");
         assert_eq!(cfg.assignment.key_col, None); // 담당자 배정은 호스트가 정한다
         assert_eq!(suggested_key_col(&m), Some(2));
-        // 처음엔 모든 열이 입력(잠글 열은 호스트가 정한다). G 수식 칸은 열 역할과 상관없이 입력할 수 없다.
+        // 처음엔 모든 열이 입력(잠글 열은 호스트가 정한다). G 수식 칸도 열 역할을 따른다(값으로 바꿀 수 있다).
         assert!(cfg.columns.iter().all(|c| c.role == ColumnRole::Input));
         let filters: Vec<u32> = (0..9).filter(|&c| cfg.columns[c as usize].filter).collect();
         assert_eq!(filters, [0, 1, 3]); // 본부·부서·비목 (담당자는 배정 기준이라 제외)
@@ -604,5 +614,14 @@ pub(crate) mod tests {
         assert!(cfg.has_assignment());
         cfg.on_cols_removed(1, 1);
         assert!(!cfg.has_assignment(), "기준 열을 지우면 행 배정 없음");
+    }
+
+    #[test]
+    fn formula_overwrite_is_allowed_unless_switched_off() {
+        assert!(Permissions::default().overwrite_formulas);
+        // 이 설정이 없던 옛 기록 파일도 허용으로 읽는다.
+        let old = r#"{"format":"none","othersRows":"readOnly","filterSort":true,"addRows":false}"#;
+        let p: Permissions = serde_json::from_str(old).unwrap();
+        assert!(p.overwrite_formulas && !p.delete_rows);
     }
 }

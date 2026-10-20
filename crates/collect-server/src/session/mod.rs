@@ -482,7 +482,7 @@ impl Shared<'_> {
     }
 
     /// 호스트가 칸 값을 바꾼다(되돌리기·이 값으로·'Excel 값 유지'). 참여자 입력처럼 버전·이력·진행률에 반영하고 알린다.
-    /// 수식 칸은 건너뛴다.
+    /// 수식 칸이면 수식을 버리고 그 값으로 바꾼다(같은 값이어도).
     pub fn host_set(&mut self, user: &str, origin: BatchOrigin, sheet: usize, cells: Vec<(CellRef, CellValue)>) {
         if !cells.is_empty() && sheet < self.sheets.len() {
             self.actions.push(Action::Set { user: user.to_string(), origin, sheet, cells });

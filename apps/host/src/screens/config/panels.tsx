@@ -383,7 +383,8 @@ export function RangeAssignmentsPanel({ s }: { s: ConfigState }) {
         </div>
       ))}
       <div className="formula-note small">
-        입력 가능 = (배정 행 ∪ 배정 범위) ∩ 입력 영역 − 입력 금지 · 담당자가 아무도 없는 입력 칸은 누구나
+        입력 가능 = (배정 행 ∪ 배정 범위) ∩ 입력 영역 − 입력 금지 · 담당자가 아무도 없는 입력 칸은 누구나 · 수식 칸은
+        값으로 바꿀 수 있다(참여자 권한 '수식 칸')
       </div>
     </section>
   );
@@ -444,6 +445,29 @@ export function PermissionsPanel({ s }: { s: ConfigState }) {
               className={p.resize === v ? "on" : ""}
               aria-pressed={p.resize === v}
               onClick={() => set({ resize: v })}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div
+        className="kv"
+        title="값으로 바꾸기: 참여자가 입력할 수 있는 수식 칸에 값을 넣으면 수식 대신 그 값이 저장됩니다(=로 시작해도 글자). 호스트는 늘 고칠 수 있습니다"
+      >
+        <span className="muted">수식 칸</span>
+        <div className="segmented" role="group" aria-label="참여자 수식 칸">
+          {(
+            [
+              [false, "잠금"],
+              [true, "값으로 바꾸기"],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={label}
+              className={p.overwriteFormulas === v ? "on" : ""}
+              aria-pressed={p.overwriteFormulas === v}
+              onClick={() => set({ overwriteFormulas: v })}
             >
               {label}
             </button>

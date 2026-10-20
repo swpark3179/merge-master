@@ -378,9 +378,11 @@ pub async fn save_run(
                     collect_core::export::adopt_structure(&mut slot.baseline, planned);
                     let (rows, cols) = (planned.rows, planned.cols);
                     slot.model.added_rows.retain(|a| a.row >= rows);
+                    // 쓴 칸은 원본에서 값이다(값으로 바꾼 수식 칸도 이제 수식이 아니다).
                     for (at, v) in written {
                         if let Some(cell) = slot.baseline.cell_mut(at) {
                             cell.v = v;
+                            cell.f = None;
                         }
                     }
                     if styles {

@@ -328,7 +328,10 @@ function SheetMonitor({
         if (ev.type === "cells") {
           for (const u of ev.cells) {
             const cell = m.cells[u.row * m.cols + u.col];
-            if (cell) cell.v = u.value ?? null;
+            if (!cell) continue;
+            cell.v = u.value ?? null;
+            // 사람이 넣은 값이면 수식 칸의 수식은 사라진다(재계산 결과는 by가 빈 문자열).
+            if (ev.by) delete cell.f;
           }
           return d;
         }

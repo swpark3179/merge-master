@@ -178,11 +178,15 @@ fn template_cell(baseline: &SheetModel, at: CellRef) -> Option<&Cell> {
 }
 
 /// 값이 바뀐 칸: 수식이 아니고, 병합에 덮이지 않았고, 기준과 값이 다른 칸(행 우선). 붙인 행·열은 빈 칸과 비교한다.
+///
+/// 앱에서 값으로 바꾼 수식 칸(기준 시트에는 수식, 지금은 값)은 값이 같거나 비어도 쓴다 — 써야 Excel의 수식이 그 값이 된다.
+/// 붙인 행에서 위 행의 수식을 채워 내릴 열([`fill_cols`])의 칸도 수식이 아니면 비어 있어도 쓴다(채워 내린 수식을 지운다).
 pub fn changed_cells(baseline: &SheetModel, current: &SheetModel) -> Vec<CellRef> {
     if !comparable(baseline, current) {
         return Vec::new();
     }
     let cover = covered(current);
+    let fill: HashSet<u32> = fill_cols(baseline, current).into_iter().collect();
     let cols = current.cols.max(1);
     current
         .cells
@@ -193,10 +197,26 @@ pub fn changed_cells(baseline: &SheetModel, current: &SheetModel) -> Vec<CellRef
             let differs = now.f.is_none()
                 && !cover[i]
                 && match base_cell(baseline, at) {
-                    Some(then) => now.v != then.v,
-                    None => !now.v.is_empty(),
+                    Some(then) => then.f.is_some() || now.v != then.v,
+                    None => !now.v.is_empty() || (at.row >= baseline.rows && fill.contains(&at.col)),
                 };
             differs.then_some(at)
+        })
+        .collect()
+}
+
+/// 표 아래에 붙인 행에 위 행(기준 시트 마지막 행)의 수식을 채워 내릴 열: 그 칸이 수식이고, 붙인 행 중 그 열에 수식이 남은
+/// 칸이 있다(Excel이 상대 참조를 맞춘다). 값으로 바꾼 칸은 채워 내린 뒤 값을 써서 덮는다.
+pub fn fill_cols(baseline: &SheetModel, current: &SheetModel) -> Vec<u32> {
+    if !comparable(baseline, current) || current.rows == baseline.rows || baseline.rows == 0 {
+        return Vec::new();
+    }
+    let last = baseline.rows - 1;
+    (0..current.cols)
+        .filter(|&c| {
+            baseline.cell(CellRef::new(last, c)).is_some_and(|cell| cell.f.is_some())
+                && (baseline.rows..current.rows)
+                    .any(|r| current.cell(CellRef::new(r, c)).is_some_and(|cell| cell.f.is_some()))
         })
         .collect()
 }
@@ -249,13 +269,7 @@ fn row_insert(baseline: &SheetModel, current: &SheetModel) -> Option<RowInsert> 
         return None;
     }
     let at = baseline.rows;
-    let formula_cols = (0..current.cols)
-        .filter(|&c| {
-            at > 0
-                && current.cell(CellRef::new(at, c)).is_some_and(|cell| cell.f.is_some())
-                && baseline.cell(CellRef::new(at - 1, c)).is_some_and(|cell| cell.f.is_some())
-        })
-        .collect();
+    let formula_cols = fill_cols(baseline, current);
     Some(RowInsert { at, count: current.rows - at, formula_cols, heights: current.row_heights[at as usize..].to_vec() })
 }
 
@@ -557,6 +571,10 @@ pub fn compare(baseline: &SheetModel, current: &SheetModel, excel: &[CellValue],
     let writing: HashSet<CellRef> = cells.iter().copied().collect();
     for &at in cells.iter().filter(|at| at.row < baseline.rows && at.col < baseline.cols) {
         let i = idx(at);
+        // 앱에서 값으로 바꾼 수식 칸: Excel의 값은 수식이 다시 계산한 것이라 충돌로 보지 않는다(취합 값으로 바꾼다).
+        if baseline.cells[i].f.is_some() {
+            continue;
+        }
         let collected = current.cell(at).map(|c| &c.v).unwrap_or(&CellValue::Empty);
         let (original, now) = (&baseline.cells[i].v, &excel[i]);
         // Excel에서도 같은 값으로 고쳤으면 충돌이 아니다.
@@ -800,6 +818,40 @@ mod tests {
         set(&mut now, "G3", CellValue::Number(0.065)); // 수식 결과(재계산)는 쓰지 않는다
         set(&mut now, "H5", CellValue::Text("교재".into()));
         assert_eq!(changed_cells(&base, &now), [at("F3"), at("F4"), at("H5")]);
+    }
+
+    #[test]
+    fn overwritten_formulas_are_written_even_with_same_value_and_never_conflict() {
+        let base = budget();
+        let mut now = base.clone();
+        // G3: 수식(=F3/E3-1, 0.1)을 같은 값으로, G4: 다른 값으로, G5: 지워서 값으로 바꿨다.
+        for (a, v) in [("G3", CellValue::Number(0.1)), ("G4", CellValue::Number(7.0)), ("G5", CellValue::Empty)] {
+            let cell = now.cell_mut(at(a)).unwrap();
+            cell.v = v;
+            cell.f = None;
+        }
+        set(&mut now, "G6", CellValue::Number(0.5)); // 아직 수식인 칸의 재계산 결과는 쓰지 않는다
+        assert_eq!(changed_cells(&base, &now), [at("G3"), at("G4"), at("G5")]);
+        let p = plan(&base, &now, &[], &[], ExportOptions::default(), 0, &HashSet::new());
+        assert_eq!(p.cells, [at("G3"), at("G4"), at("G5")]);
+        // Excel이 그사이 다시 계산해 값이 달라졌어도 충돌이 아니다.
+        let mut excel: Vec<CellValue> = base.cells.iter().map(|c| c.v.clone()).collect();
+        excel[(2 * base.cols + 6) as usize] = CellValue::Number(0.2);
+        let r = compare(&base, &now, &excel, &p.cells);
+        assert!(r.conflicts.is_empty() && !r.suspicious, "{r:?}");
+    }
+
+    #[test]
+    fn cleared_formula_in_added_row_is_written_over_the_filled_down_formula() {
+        let base = budget();
+        let mut now = base.clone();
+        now.append_rows(2); // 모델 8·9행, G열은 위 행 수식을 따른다
+        now.cell_mut(at("G9")).unwrap().f = None; // 첫 새 행의 수식을 지움
+        assert_eq!(fill_cols(&base, &now), [6], "다른 새 행(G10)에 수식이 남아 있으면 채워 내린다");
+        assert_eq!(changed_cells(&base, &now), [at("G9")], "채워 내린 수식을 빈 값으로 덮는다");
+        now.cell_mut(at("G10")).unwrap().f = None;
+        assert!(fill_cols(&base, &now).is_empty());
+        assert!(changed_cells(&base, &now).is_empty());
     }
 
     #[test]

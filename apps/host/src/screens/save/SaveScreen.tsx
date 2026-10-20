@@ -494,7 +494,8 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
                 </label>
               )}
               <span className="muted small">
-                수식 칸과 원래 서식은 건드리지 않습니다. 수식은 저장할 때 Excel이 다시 계산합니다.
+                원래 서식은 건드리지 않습니다. 수식은 저장할 때 Excel이 다시 계산합니다(앱에서 값으로 바꾼 수식 칸은 그
+                값으로 저장합니다).
               </span>
             </div>
             <div className="field">

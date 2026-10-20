@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use collect_core::a1::shift_after_removal;
-use collect_core::config::{CellException, ExceptionKind};
+use collect_core::config::{CellException, ColumnRole, ExceptionKind};
 use collect_core::format::Axis;
 use collect_core::history::{BatchOrigin, ChangeKind};
 use collect_core::structure::{Actor, StructureEdit, check_add, check_delete_rows, remap_entries, reshape_values};
@@ -221,11 +221,18 @@ impl State {
         }
     }
 
-    /// 참여자가 추가한 행을 입력 칸으로 여는 셀 예외(입력 가능 + 행 배정 기준 칸은 입력 금지). 바로 위에 이어지는 같은
-    /// 예외가 있으면 그 범위를 늘린다(행을 여러 번 추가해도 예외는 늘지 않는다).
+    /// 참여자가 추가한 행을 입력 칸으로 여는 셀 예외(입력 가능 + 행 배정 기준 칸·잠금 열의 수식 칸은 입력 금지). 바로 위에
+    /// 이어지는 같은 예외가 있으면 그 범위를 늘린다(행을 여러 번 추가해도 예외는 늘지 않는다).
     fn open_added_rows(&mut self, sheet: usize, range: CellRange) {
         let slot = &mut self.sheets[sheet];
         let key = slot.config.assignment.key_col.filter(|&k| k < slot.model.cols);
+        // 잠금 열의 수식(위 행에서 내려 쓴 것)은 새 행에서도 Excel이 계산하게 둔다.
+        let formula_locked: Vec<u32> = (0..slot.model.cols)
+            .filter(|&c| {
+                slot.config.columns.get(c as usize).is_some_and(|r| r.role == ColumnRole::Locked)
+                    && slot.model.cell(CellRef::new(range.row, c)).is_some_and(|cell| cell.f.is_some())
+            })
+            .collect();
         let mut add = |kind: ExceptionKind, r: CellRange| {
             let list = &mut slot.config.exceptions;
             let prev = list.iter_mut().rev().find(|e| {
@@ -243,6 +250,9 @@ impl State {
         add(ExceptionKind::Input, range);
         if let Some(key) = key {
             add(ExceptionKind::Locked, CellRange::new(range.row, key, range.rows, 1));
+        }
+        for c in formula_locked.into_iter().filter(|&c| Some(c) != key) {
+            add(ExceptionKind::Locked, CellRange::new(range.row, c, range.rows, 1));
         }
     }
 

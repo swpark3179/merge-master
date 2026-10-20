@@ -228,6 +228,7 @@ impl State {
         let mut conflicts = Vec::new();
         let mut rejected = Vec::new();
         let mut touched_people = Vec::new();
+        let mut dropped = false;
         for edit in cells {
             let at = CellRef::new(edit.row, edit.col);
             if !self.in_bounds(si, at) {
@@ -261,8 +262,10 @@ impl State {
                 },
                 None => edit.value,
             };
-            let old = self.sheets[si].model.cell(at).map(|c| c.v.clone()).unwrap_or_default();
-            if old == value {
+            let (old, had_formula) =
+                self.sheets[si].model.cell(at).map(|c| (c.v.clone(), c.f.is_some())).unwrap_or_default();
+            // 수식 칸은 같은 값이어도 쓴다(수식을 그 값으로 바꾼다).
+            if old == value && !had_formula {
                 applied.push(self.update_of(si, at));
                 continue;
             }
@@ -276,7 +279,9 @@ impl State {
             let ver = rt.versions[i];
             if let Some(cell) = self.sheets[si].model.cell_mut(at) {
                 cell.v = value.clone();
+                cell.f = None;
             }
+            dropped |= had_formula;
             self.log.push(ChangeEntry {
                 seq: self.next_seq,
                 at_ms,
@@ -316,6 +321,18 @@ impl State {
         self.broadcast_cells(si, &name, changed.clone(), Some(conn));
         self.send_progress(si, &touched_people);
         self.request_recalc(si, changed);
+        if dropped {
+            self.formulas_dropped();
+        }
+    }
+
+    /// 수식 칸을 값으로 바꿨다: 권한(필수 여부)·진행률을 다시 계산하고 모든 화면에 새 시트를 보낸다(수식 표시가 사라진다).
+    /// 기록 파일에는 시트를 남긴다(되살릴 때 수식이 돌아오지 않게 — 기록 재생도 수식을 지운다).
+    fn formulas_dropped(&mut self) {
+        self.recompile();
+        self.resync();
+        self.feed(HostEvent::Reset);
+        self.persist_sheet();
     }
 
     /// 바뀐 입력 칸을 수식 재계산에 넘긴다(어느 시트에든 수식이 있고 재계산을 맡은 곳이 있을 때 — 수식은 다른 시트를
@@ -356,12 +373,15 @@ impl State {
         let batch = format!("host-{}", self.next_seq);
         let mut changed = Vec::new();
         let mut touched = Vec::new();
+        let mut dropped = false;
         for (at, value) in values {
             if !self.in_bounds(sheet, at) {
                 continue;
             }
             let model = &mut self.sheets[sheet].model;
-            let Some(cell) = model.cell_mut(at).filter(|c| c.f.is_none() && c.v != value) else { continue };
+            // 수식 칸은 같은 값이어도 쓴다(수식을 그 값으로 바꾼다).
+            let Some(cell) = model.cell_mut(at).filter(|c| c.f.is_some() || c.v != value) else { continue };
+            dropped |= cell.f.take().is_some();
             let old = std::mem::replace(&mut cell.v, value.clone());
             let i = self.idx(sheet, at);
             let rt = &mut self.rt[sheet];
@@ -392,6 +412,9 @@ impl State {
         self.broadcast_cells(sheet, user, changed.clone(), None);
         self.send_progress(sheet, &touched);
         self.request_recalc(sheet, changed);
+        if dropped {
+            self.formulas_dropped();
+        }
     }
 
     fn update_of(&self, sheet: usize, at: CellRef) -> CellUpdate {
@@ -571,7 +594,8 @@ impl State {
         self.broadcast(&ServerMsg::Resized { by: by.to_string(), sheet, axis, from, count, size }, None);
     }
 
-    /// 호스트(Excel)가 다시 계산한 수식 칸. 바뀐 칸만 시트마다 보낸다(이력에는 남기지 않는다).
+    /// 호스트(Excel)가 다시 계산한 수식 칸. 바뀐 칸만 시트마다 보낸다(이력에는 남기지 않는다). 값으로 바꾼 칸(수식이 없음)은
+    /// 건너뛴다.
     pub(super) fn formulas(&mut self, values: Vec<(u32, CellRef, CellValue)>) {
         let mut changed: Vec<Vec<CellUpdate>> = vec![Vec::new(); self.sheets.len()];
         for (sheet, at, v) in values {
