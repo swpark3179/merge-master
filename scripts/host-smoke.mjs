@@ -4,8 +4,8 @@
 // 참여자(Chrome) 접속 → 동시 편집(진행률·Excel 수식 재계산·편집 잠금 해제) → 6 저장·마감(다른 이름으로 저장·원본에 반영·
 // 원본 충돌·마감) → 7단계 세션 복구(앱 강제 종료 → 다시 켜면 끝내지 않은 업무를 저절로 이어서 엶 → 같은 포트 ·
 // 참여자 자동 재접속 · 끊긴 동안의 입력 반영 · 앞 앱이 남긴 Excel 정리) → 9단계 여러 업무(두 번째 업무를 같은 포트에
-// 다른 주소 경로로 공유 · 참여자 업무 목록 · 업무 끝내기) → 10 에이전트(같은 PC에 띄운 에이전트로 넘기기 · 승인 · 지금 저장하고
-// 끝내기)까지 확인한다. 저장 시험은 픽스처를 test-results로 복사한 통합문서로
+// 다른 주소 경로로 공유 · 참여자 업무 목록 · 업무 끝내기) → 10 에이전트(같은 PC에 띄운 에이전트로 넘기기 · 자동 승인 · 호스트
+// 앱에서 관리자로 다루기 — 끊기·범위 붙여 승인·칸 고치기·채팅·히스토리·마감 바꾸기 · 지금 저장하고 끝내기)까지 확인한다. 저장 시험은 픽스처를 test-results로 복사한 통합문서로
 // 하므로 픽스처는 바뀌지 않는다. 네이티브 파일 대화상자는 자동화할 수 없어 같은 command(excel_open_file)를 직접 부른다.
 //
 // 실행: pnpm smoke:host                     (Excel이 없을 때: '파일 열기'가 숨은 Excel 인스턴스를 쓴다)
@@ -928,15 +928,66 @@ try {
     const p6 = await participant.newPage();
     await p6.goto(`http://127.0.0.1:${AGENT_PORT}/agent-hr`);
     await expect(p6.getByRole("heading", { name: "교육 수요 3차(에이전트)" })).toBeVisible();
+    await expect(p6.getByText("이름을 입력하면 바로 참여합니다")).toBeVisible();
     await p6.getByLabel("이름").fill("정하늘");
     await p6.getByRole("button", { name: "참여하기" }).click();
-    await expect(p6.getByText("호스트 승인을 기다리는 중")).toBeVisible();
-    const pending = page2.getByRole("region", { name: "승인 대기" });
-    await expect(pending).toContainText("정하늘", { timeout: 15_000 });
-    await pending.getByRole("button", { name: "승인", exact: true }).click();
     await p6.getByText("실시간 동기화").waitFor({ timeout: 15_000 });
-    check(true, "에이전트의 참여자: 이름 입력 → 호스트 앱에서 승인 → 입장");
+    check(true, "에이전트의 참여자: 명단 밖이어도 입력한 이름 그대로 바로 입장(자동 승인)");
 
+    // 넘긴 업무도 이 PC 업무처럼 다룬다(관리자 연결).
+    await expect(step2("1 불러오기")).toBeDisabled();
+    await step2("3 서비스").click();
+    const svc5 = page2.locator(".service-screen");
+    await expect(svc5.getByText(/에이전트 PC · /)).toBeVisible();
+    const ha = svc5.getByRole("row", { name: "정하늘" });
+    await expect(ha).toContainText("● 접속 중", { timeout: 15_000 });
+    await ha.getByRole("button", { name: "정하늘 메뉴" }).click();
+    await svc5.getByRole("menuitem", { name: "연결 끊기" }).click();
+    await expect(p6.getByText("호스트가 연결을 끊었습니다.")).toBeVisible({ timeout: 10_000 });
+    await p6.getByRole("button", { name: "다시 참여" }).click();
+    await expect(p6.getByText("호스트 승인이 있어야 다시 참여할 수 있습니다")).toBeVisible({ timeout: 10_000 });
+    await expect(svc5.getByText("호스트가 끊었거나 거절한 이름")).toBeVisible({ timeout: 15_000 });
+    await svc5.getByRole("button", { name: "배정 후 승인" }).click();
+    await svc5.getByLabel("배정 범위").fill("E5:E9");
+    await svc5.getByRole("button", { name: "승인", exact: true }).click();
+    await p6.getByText("실시간 동기화").waitFor({ timeout: 15_000 });
+    await expect(svc5.getByRole("row", { name: "정하늘" })).toContainText("E5:E9", { timeout: 10_000 });
+    check(true, "호스트가 끊은 이름은 다시 승인 → 범위(E5:E9) 붙여 승인 → 입장");
+
+    await step2("4 모니터링").click();
+    const mon5 = page2.locator(".monitor-screen");
+    const mcell5 = (r, c) => mon5.locator(`.mmg-cell[data-r="${r}"][data-c="${c}"]`);
+    await mcell5(2, 1).click();
+    await page2.keyboard.type("777");
+    await page2.keyboard.press("Enter");
+    await expect(p6.locator('.mmg-cell[data-r="2"][data-c="1"] .mmg-text')).toHaveText("777", { timeout: 10_000 });
+    check(true, "모니터링 그리드에서 칸 고치기 → 에이전트의 참여자 화면에 반영");
+    await mon5.getByRole("tab", { name: /^채팅/ }).click();
+    const chat5 = mon5.getByLabel("채팅", { exact: true });
+    await chat5.getByLabel("채팅 입력").fill("에이전트 업무도 여기서 답합니다");
+    await chat5.getByLabel("채팅 입력").press("Enter");
+    await p6.locator(".side-panel").getByRole("tab", { name: /^채팅/ }).click();
+    await expect(p6.getByLabel("채팅 내용")).toContainText("에이전트 업무도 여기서 답합니다", { timeout: 10_000 });
+    await p6.getByLabel("채팅 입력").fill("네 확인했습니다");
+    await p6.getByLabel("채팅 입력").press("Enter");
+    await expect(chat5).toContainText("네 확인했습니다", { timeout: 10_000 });
+    check(true, "채팅: 호스트 앱 ↔ 에이전트의 참여자");
+    await step2("5 히스토리").click();
+    await expect(page2.locator(".history-screen").getByLabel("변경 기록")).toContainText("777", { timeout: 10_000 });
+    check(true, "히스토리: 에이전트 업무의 변경 기록");
+
+    await step2("3 서비스").click();
+    await svc5.getByLabel("마감 시", { exact: true }).selectOption("19");
+    await expect
+      .poll(
+        async () => (await invoke2("agent_services", {})).find((a) => a.title.includes("3차"))?.status?.deadline ?? "",
+        { timeout: 15_000 },
+      )
+      .toBe(`${day}T19:00`);
+    check(true, "마감을 19:00으로 바꾸면 에이전트가 그 시각에 저장");
+    await page2.screenshot({ path: join(shots, "host-agent-remote.png") });
+
+    await step2("6 에이전트").click();
     await page2.getByRole("button", { name: "지금 저장하고 끝내기" }).click();
     await page2.getByRole("alertdialog").getByRole("button", { name: "지금 저장하고 끝내기" }).click();
     await expect(page2.locator(".service-badge")).toContainText("저장하고 끝냄", { timeout: 120_000 });
