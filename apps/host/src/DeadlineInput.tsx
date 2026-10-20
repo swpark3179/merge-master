@@ -92,13 +92,15 @@ export function DeadlineInput({ value, onChange, required = false, minDate, disa
             </option>
           ))}
         </select>
+      </span>
+      <span className="deadline-foot">
+        {clock}
         {!required && value && (
-          <button type="button" className="ghost small" disabled={disabled} onClick={() => onChange(undefined)}>
+          <button type="button" className="link small" disabled={disabled} onClick={() => onChange(undefined)}>
             마감 지우기
           </button>
         )}
       </span>
-      {clock}
     </span>
   );
 }

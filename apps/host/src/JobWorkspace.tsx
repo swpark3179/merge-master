@@ -1,4 +1,12 @@
-import type { CommsSnapshot, HostEvent, HostSnapshot, JobSummary, ServiceInfo, SheetModel } from "@mm/shared";
+import type {
+  AgentServiceView,
+  CommsSnapshot,
+  HostEvent,
+  HostSnapshot,
+  JobSummary,
+  ServiceInfo,
+  SheetModel,
+} from "@mm/shared";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -42,6 +50,8 @@ interface Props {
   onNewJob: () => void;
   /** 이 업무를 끝낸다(확인 대화상자). */
   onEndJob: () => void;
+  /** 이 업무를 에이전트로 넘겼다(이 PC의 업무는 끝났다). */
+  onHandedOff: (view: AgentServiceView) => void;
   /** 사이드바 위쪽(업무 목록). */
   sidebar: ReactNode;
   /** 화면 위 알림(앱을 켜며 되살린 업무 등). */
@@ -256,6 +266,7 @@ export function JobWorkspace(props: Props) {
                       snapshot={snapshot}
                       sheets={sheets}
                       onGoConfig={() => setStep("config")}
+                      onHandedOff={props.onHandedOff}
                     />
                   )}
                   {step === "monitor" && (

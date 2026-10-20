@@ -9,6 +9,9 @@
 //!   관리자가 실수로 끝내지 않게 하는 것이고 보안 경계는 아니다(같은 사내망 누구나 넘길 수 있다).
 //! - 오류는 상태 코드 + [`ApiError`](한국어 문구).
 
+#[cfg(feature = "client")]
+pub mod client;
+
 use std::collections::BTreeMap;
 
 use chrono::NaiveDateTime;

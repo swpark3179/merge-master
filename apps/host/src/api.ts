@@ -1,5 +1,7 @@
 import type {
   Activity,
+  AgentConnection,
+  AgentServiceView,
   CellRange,
   CellRef,
   CellValue,
@@ -9,8 +11,11 @@ import type {
   ConfigEdit,
   ConfigView,
   ExcelStatus,
+  FolderList,
   FormatEdit,
   FormatResult,
+  HandoffCheck,
+  HandoffOptions,
   HighlightAudience,
   HistoryFilter,
   HistoryPage,
@@ -106,6 +111,34 @@ export const appApi = {
   ipNamesExport: (path: string) => invoke<number>("ip_names_export", { path }),
 
   revealFile: (path: string) => invoke<void>("reveal_file", { path }),
+
+  // ---------------------------------------------------------- 에이전트 PC(다른 PC에서 서비스)
+  /** 마지막으로 연결한 에이전트 주소. */
+  agentLastAddr: () => invoke<string | null>("agent_last_addr"),
+
+  /** 에이전트에 연결해 본다(`PC01`, `10.0.0.7`, `10.0.0.7:8090` 모두 받는다). */
+  agentConnect: (addr: string) => invoke<AgentConnection>("agent_connect", { addr }),
+
+  /** 에이전트 기본 저장 폴더 아래 폴더 하나(`path`는 경로 조각). */
+  agentFolders: (addr: string, path: string[]) => invoke<FolderList>("agent_folders", { addr, path }),
+
+  /** 넘긴 서비스들(3초마다 `agent-services` 이벤트로도 온다). */
+  agentServices: () => invoke<AgentServiceView[]>("agent_services"),
+
+  agentRefresh: () => invoke<AgentServiceView[]>("agent_refresh"),
+
+  agentApprove: (id: string, name: string) => invoke<AgentServiceView>("agent_approve", { id, name }),
+
+  agentReject: (id: string, name: string) => invoke<AgentServiceView>("agent_reject", { id, name }),
+
+  /** 지금 저장하고 끝내기(`save`) / 저장 없이 끝내기. 저장은 에이전트가 뒤에서 한다(상태 '저장 중'). */
+  agentFinish: (id: string, save: boolean) => invoke<AgentServiceView>("agent_finish", { id, save }),
+
+  /** 저장 실패를 다시 저장한다. */
+  agentRetry: (id: string) => invoke<AgentServiceView>("agent_retry", { id }),
+
+  /** 목록에서 지운다(에이전트의 서비스는 그대로). */
+  agentForget: (id: string) => invoke<AgentServiceView[]>("agent_forget", { id }),
 };
 
 /**
@@ -169,6 +202,12 @@ export function jobApi(job: string) {
     participantUnlock: (name: string) => call<void>("participant_unlock", { name }),
 
     recalcStatus: () => call<RecalcStatus>("recalc_status"),
+
+    /** 에이전트로 넘기기 전 확인(원본 표 위치·그사이 Excel에서 고친 칸). */
+    agentHandoffCheck: () => call<HandoffCheck>("agent_handoff_check"),
+
+    /** 에이전트로 넘긴다. 받으면 이 PC의 업무는 끝난다(`jobs` 이벤트). */
+    agentHandoff: (options: HandoffOptions) => call<AgentServiceView>("agent_handoff", { options }),
 
     /** 6 저장·마감: 요약·원본 상태·기본 저장 경로. */
     saveInfo: () => call<SaveInfo>("save_info"),

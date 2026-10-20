@@ -42,6 +42,7 @@ windows = { version = "0.62", features = [
 embed-resource = "3"
 
 [dev-dependencies]
+agent-protocol = { workspace = true, features = ["client"] }
 collect-store.workspace = true
 futures-util = "0.3"
 tokio-tungstenite = "0.30"

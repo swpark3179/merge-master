@@ -448,3 +448,35 @@ async fn bad_requests_are_refused() {
     assert!(!env.data.join("services").join("svc-x").exists());
     running.stop().await;
 }
+
+#[tokio::test]
+async fn host_client_talks_to_the_agent() {
+    use agent_protocol::client::{AgentClient, ClientError};
+    let env = Env::new("client");
+    let running = env.start().await;
+    let client = AgentClient::new(&format!("127.0.0.1:{}", running.port())).unwrap();
+    let info = client.info().await.unwrap();
+    assert_eq!(info.port, running.port());
+    std::fs::create_dir_all(env.base().join("2026").join("새 폴더")).unwrap();
+    let list = client.folders(&["2026".into()]).await.unwrap();
+    assert_eq!(list.folders, ["새 폴더"]);
+    assert!(matches!(client.folders(&["..".into()]).await, Err(ClientError::Api { status: 400, .. })));
+
+    let p = package(&env.data, "svc-c", "q4", "c.xlsx").await;
+    let created = client.create(&p).await.unwrap();
+    assert_eq!(created.slug, "q4");
+    let token = p.manifest.token.clone();
+    let items =
+        client.status(&[agent_protocol::StatusQuery { id: "svc-c".into(), token: token.clone() }]).await.unwrap();
+    assert_eq!(items[0].status.as_ref().unwrap().state, ServiceState::Running);
+    let err = client.reject("svc-c", &token, "없는 사람").await.unwrap_err();
+    assert!(matches!(err, ClientError::Api { status: 400, .. }), "{err:?}");
+    assert!(matches!(client.finish("svc-c", "틀린 키", true).await, Err(ClientError::Api { status: 403, .. })));
+    client.finish("svc-c", &token, true).await.unwrap();
+    until(running.port(), "svc-c", &token, ServiceState::Done).await;
+    assert!(matches!(client.retry("svc-c", &token).await, Err(ClientError::Api { status: 409, .. })));
+    running.stop().await;
+
+    // 꺼진 에이전트
+    assert!(matches!(client.info().await, Err(ClientError::Unreachable(_))));
+}

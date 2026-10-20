@@ -1835,20 +1835,32 @@ button.link:hover:not(:disabled) {
 
 .deadline-parts {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
 
 .deadline-parts input[type="date"] {
-  width: 150px;
+  width: 142px;
   cursor: pointer;
   caret-color: transparent;
 }
 
 .deadline-parts select {
   height: 36px;
-  min-width: 72px;
+  min-width: 66px;
+}
+
+.deadline-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+/* 입력 마감은 고르는 칸 너비만큼, 옆(마감 시각이 되면)이 나머지 */
+.two.deadline-row {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
 }
 
 /* 마감 시각이 되면: 읽기 전용 / 공유 닫기 */
@@ -2760,4 +2772,168 @@ button.save-btn {
   background: var(--cancel-bg);
   color: var(--cancel-ink);
   text-decoration: none;
+}
+
+/* ---------------------------------------------------------------- 에이전트 PC에서 서비스 */
+.where-seg {
+  flex: none;
+  min-width: 170px;
+}
+
+.agent-deadline-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.agent-share .row {
+  gap: 8px;
+  align-items: stretch;
+}
+
+.agent-share .row > .grow,
+.agent-share code.url.grow {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-share code.url {
+  padding: 8px 10px;
+}
+
+.agent-info {
+  line-height: 1.6;
+}
+
+.folder-dialog,
+.handoff-confirm {
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.handoff-confirm ul {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.6;
+}
+
+.handoff-confirm .check {
+  margin-top: 6px;
+}
+
+.crumbs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+}
+
+.folder-path {
+  word-break: break-all;
+}
+
+.folder-list {
+  min-height: 160px;
+  max-height: 46vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.folder-list > .muted,
+.folder-list > .error {
+  padding: 8px 10px;
+}
+
+.folder-row {
+  height: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font-weight: 400;
+  text-align: left;
+}
+
+button.folder-row:hover:not(:disabled) {
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--hover);
+}
+
+.folder-row.file {
+  color: var(--muted);
+}
+
+.folder-icon {
+  width: 14px;
+  height: 10px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--warn);
+  opacity: 0.7;
+}
+
+.new-folder input {
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-screen {
+  gap: 20px;
+}
+
+.kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  line-height: 1.5;
+}
+
+.kv-list > div > .muted:first-child {
+  display: inline-block;
+  min-width: 72px;
+  margin-right: 8px;
+}
+
+.agent-actions {
+  align-items: center;
+  margin-top: 6px;
+}
+
+.pending-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pending-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.agent-list .job-chip {
+  white-space: nowrap;
 }

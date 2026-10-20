@@ -17,6 +17,7 @@ dependencies = [
  "collect-server",
  "serde",
  "serde_json",
+ "tokio",
  "ts-rs",
 ]
 
@@ -2402,6 +2403,7 @@ dependencies = [
 name = "merge-master"
 version = "1.7.4"
 dependencies = [
+ "agent-protocol",
  "chrono",
  "collect-core",
  "collect-excel",
@@ -2417,6 +2419,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ts-rs",
+ "uuid",
 ]
 
 [[package]]

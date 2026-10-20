@@ -1,4 +1,6 @@
 import type {
+  AgentConnection,
+  AgentServiceView,
   CollectConfig,
   DeadlineAction,
   HostSnapshot,
@@ -16,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { errorText, jobEvent } from "../../api";
 import { DeadlineInput } from "../../DeadlineInput";
+import { AgentClock, AgentHandoff, agentToday } from "./AgentHandoff";
 import { useApi, useJobId } from "../../job";
 import { useToast } from "../../frame";
 import { IpNamesPanel } from "./IpNamesPanel";
@@ -34,6 +37,8 @@ interface Props {
   /** 확정한 시트들(현재 위치 주소·승인 범위의 시트). */
   sheets: SheetModel[];
   onGoConfig: () => void;
+  /** 에이전트로 넘겼다(이 PC의 업무는 끝났다). */
+  onHandedOff: (view: AgentServiceView) => void;
 }
 
 /**
@@ -42,6 +47,10 @@ interface Props {
  */
 export function ServiceScreen(props: Props) {
   const { active, hasSheet, service, onService, snapshot, sheets, onGoConfig, jobs } = props;
+  /** 서비스 위치: 이 PC(앱 안의 서버) / 에이전트 PC(넘김). 이 PC에서 공유 중이면 넘길 수 없다. */
+  const [where, setWhere] = useState<"local" | "agent">("local");
+  const agentMode = where === "agent" && !service;
+  const [conn, setConn] = useState<AgentConnection | null>(null);
   const api = useApi();
   const job = useJobId();
   const [config, setConfig] = useState<CollectConfig | null>(null);
@@ -228,7 +237,28 @@ export function ServiceScreen(props: Props) {
     <div className="screen service-screen">
       <div className="service-top">
         <section className="card conditions" aria-label="접속 조건">
-          <div className="card-title">접속 조건</div>
+          <div className="card-head">
+            <span className="card-title">접속 조건</span>
+            <span className="spacer" />
+            <div className="segmented where-seg" role="group" aria-label="서비스 위치">
+              <button className={!agentMode ? "on" : ""} aria-pressed={!agentMode} onClick={() => setWhere("local")}>
+                이 PC
+              </button>
+              <button
+                className={agentMode ? "on" : ""}
+                aria-pressed={agentMode}
+                disabled={!!service}
+                title={
+                  service
+                    ? "이 PC에서 공유 중에는 넘길 수 없어요. 공유를 멈춘 뒤 넘겨 주세요"
+                    : "에이전트가 설치된 다른 PC에서 서비스합니다(이 PC를 꺼도 계속)"
+                }
+                onClick={() => setWhere("agent")}
+              >
+                에이전트 PC
+              </button>
+            </div>
+          </div>
           {!hasSheet && <div className="warn small">먼저 시트를 불러와 확정해 주세요(1 불러오기).</div>}
           {config && (
             <>
@@ -274,184 +304,218 @@ export function ServiceScreen(props: Props) {
                   }
                 />
               </label>
-              <div className="two">
+              <div className="two deadline-row">
                 <div className="field">
                   <span>
-                    <b>입력 마감</b> <span className="muted">(선택)</span>
+                    <b>입력 마감</b> <span className="muted">{agentMode ? "(필수)" : "(선택)"}</span>
                   </span>
                   <DeadlineInput
                     value={config.deadline}
                     onChange={(deadline) => void saveMeta({ deadline })}
-                    clock={<HostClock />}
+                    required={agentMode}
+                    minDate={agentMode && conn ? agentToday(conn) : undefined}
+                    clock={agentMode ? <AgentClock conn={conn} /> : <HostClock />}
                   />
                 </div>
-                <fieldset className="deadline-action" disabled={!config.deadline}>
-                  <legend>마감 시각이 되면</legend>
-                  {(
-                    [
-                      ["readOnly", "읽기 전용으로 전환", "참여자는 접속한 채로 보기만 합니다"],
-                      ["stopSharing", "공유 닫기", "이 업무의 공유를 닫아 참여자 연결이 끊깁니다(다시 열 수 있음)"],
-                    ] as const
-                  ).map(([value, label, hint]) => (
-                    <label key={value} className="radio" title={hint}>
-                      <input
-                        type="radio"
-                        name="deadline-action"
-                        checked={config.permissions.deadlineAction === value}
-                        onChange={() => void setDeadlineAction(value)}
-                      />
-                      {label}
-                    </label>
-                  ))}
-                </fieldset>
+                {agentMode ? (
+                  <div className="agent-deadline-note small">
+                    <b>마감 시각이 되면</b>
+                    <span>
+                      에이전트가 엑셀로 저장하고 이 업무의 서비스를 끝냅니다(그때부터 참여자는 입력할 수 없어요).
+                    </span>
+                  </div>
+                ) : (
+                  <fieldset className="deadline-action" disabled={!config.deadline}>
+                    <legend>마감 시각이 되면</legend>
+                    {(
+                      [
+                        ["readOnly", "읽기 전용으로 전환", "참여자는 접속한 채로 보기만 합니다"],
+                        ["stopSharing", "공유 닫기", "이 업무의 공유를 닫아 참여자 연결이 끊깁니다(다시 열 수 있음)"],
+                      ] as const
+                    ).map(([value, label, hint]) => (
+                      <label key={value} className="radio" title={hint}>
+                        <input
+                          type="radio"
+                          name="deadline-action"
+                          checked={config.permissions.deadlineAction === value}
+                          onChange={() => void setDeadlineAction(value)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
               </div>
             </>
           )}
-          <div className="divider" />
-          <button className="net-toggle" aria-expanded={net} onClick={() => setNet((v) => !v)}>
-            <b>네트워크 설정</b>
-            <span className="tag">자동</span>
-            <span className="spacer" />
-            <span className="muted small">{net ? "접기" : "펼치기"}</span>
-          </button>
-          {net && (
-            <div className="net-fields">
-              <label className="field">
-                <span>사용할 네트워크</span>
-                {lans.length === 0 ? (
-                  <span className="warn small">사용 가능한 네트워크 주소가 없습니다.</span>
-                ) : (
-                  <select aria-label="네트워크" value={host} onChange={(e) => setIp(e.target.value)}>
-                    {lans.map((l) => (
-                      <option key={l.ip} value={l.ip}>
-                        {l.name} · {l.ip}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </label>
-              <label className="field">
-                <span>
-                  포트 <span className="muted">(모든 업무 공통)</span>
-                </span>
-                <input
-                  aria-label="포트"
-                  value={port}
-                  onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
-                  disabled={portLocked}
-                  title={
-                    !service && portLocked ? `다른 업무가 포트 ${server?.port}로 공유 중이라 바꿀 수 없어요` : undefined
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>주소 경로</span>
-                <input
-                  aria-label="주소 경로"
-                  value={slug}
-                  onChange={(e) => setSlug(e.target.value.replace(/[^\w-]/g, ""))}
-                  disabled={!!service}
-                />
-                {slugTaken && <span className="warn small">다른 업무가 쓰는 주소 경로예요</span>}
-              </label>
-            </div>
-          )}
-          {others.length > 0 && (
-            <div className="small muted">
-              같은 포트({server?.port})로 공유 중인 다른 업무: {others.map((j) => j.title || "새 취합").join(", ")}
-            </div>
-          )}
-          <div className="reach">
-            <span className="dot-ok" />
-            같은 {lanName ? `${lanName.split(" ")[0]}` : "사내망"}({subnet}.x)에 있는 사람은 바로 접속할 수 있어요.
-          </div>
-          {recalc && recalc.state !== "none" && (
-            <div className="small" aria-label="수식 계산">
-              <span className="muted">수식 계산</span>{" "}
-              {recalc.state === "opening" ? (
-                <span className="muted">Excel 계산 사본을 여는 중…</span>
-              ) : recalc.state === "ready" ? (
-                <span className="ok">● Excel이 바로 계산 (수식 {recalc.formulas.toLocaleString()}칸)</span>
-              ) : (
-                <span className="warn" title={recalc.message}>
-                  ○ 저장할 때 계산
-                </span>
-              )}
-            </div>
-          )}
-        </section>
-
-        <section className="card share" aria-label="공유">
-          {service && url ? (
+          {!agentMode && (
             <>
-              <div className="card-head">
-                <span className="card-title">참여자에게 보낼 주소</span>
+              <div className="divider" />
+              <button className="net-toggle" aria-expanded={net} onClick={() => setNet((v) => !v)}>
+                <b>네트워크 설정</b>
+                <span className="tag">자동</span>
                 <span className="spacer" />
-                <span className="pill ok-pill">공유 중{since ? ` · ${since}부터` : ""}</span>
-              </div>
-              <div className="url-row">
-                <code className="url">{url}</code>
-                <button onClick={() => void copy(url, "주소를 복사했어요")}>복사</button>
-              </div>
-              {listUrl && (
-                <div className="url-row list-url">
-                  <span className="muted small">업무 목록</span>
-                  <code className="url">{listUrl}</code>
-                  <button className="ghost" onClick={() => void copy(listUrl, "업무 목록 주소를 복사했어요")}>
-                    복사
-                  </button>
+                <span className="muted small">{net ? "접기" : "펼치기"}</span>
+              </button>
+              {net && (
+                <div className="net-fields">
+                  <label className="field">
+                    <span>사용할 네트워크</span>
+                    {lans.length === 0 ? (
+                      <span className="warn small">사용 가능한 네트워크 주소가 없습니다.</span>
+                    ) : (
+                      <select aria-label="네트워크" value={host} onChange={(e) => setIp(e.target.value)}>
+                        {lans.map((l) => (
+                          <option key={l.ip} value={l.ip}>
+                            {l.name} · {l.ip}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </label>
+                  <label className="field">
+                    <span>
+                      포트 <span className="muted">(모든 업무 공통)</span>
+                    </span>
+                    <input
+                      aria-label="포트"
+                      value={port}
+                      onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))}
+                      disabled={portLocked}
+                      title={
+                        !service && portLocked
+                          ? `다른 업무가 포트 ${server?.port}로 공유 중이라 바꿀 수 없어요`
+                          : undefined
+                      }
+                    />
+                  </label>
+                  <label className="field">
+                    <span>주소 경로</span>
+                    <input
+                      aria-label="주소 경로"
+                      value={slug}
+                      onChange={(e) => setSlug(e.target.value.replace(/[^\w-]/g, ""))}
+                      disabled={!!service}
+                    />
+                    {slugTaken && <span className="warn small">다른 업무가 쓰는 주소 경로예요</span>}
+                  </label>
                 </div>
               )}
-              <div className="row">
-                <button className="ghost grow-btn" onClick={() => void copy(notice(), "안내 문구를 복사했어요")}>
-                  안내 문구 복사
-                </button>
-                <button className="danger grow-btn" onClick={() => void stop()} disabled={busy}>
-                  공유 중지
-                </button>
+              {others.length > 0 && (
+                <div className="small muted">
+                  같은 포트({server?.port})로 공유 중인 다른 업무: {others.map((j) => j.title || "새 취합").join(", ")}
+                </div>
+              )}
+              <div className="reach">
+                <span className="dot-ok" />
+                같은 {lanName ? `${lanName.split(" ")[0]}` : "사내망"}({subnet}.x)에 있는 사람은 바로 접속할 수 있어요.
               </div>
-            </>
-          ) : (
-            <>
-              <div>
-                <div className="card-title">아직 공유 전이에요</div>
-                <div className="muted-2">시작하면 아래 주소로 참여자가 접속할 수 있어요.</div>
-              </div>
-              <code className="url pending-url">{preview}</code>
-              <button
-                className="big-btn"
-                onClick={() => void start()}
-                disabled={busy || !port || !hasSheet || !myName.trim() || slugTaken}
-              >
-                {busy ? "시작하는 중…" : "공유 시작"}
-              </button>
-              {hasSheet && config && !myName.trim() && (
-                <div className="warn small">접속 조건에 내 이름을 입력하면 공유를 시작할 수 있어요.</div>
+              {recalc && recalc.state !== "none" && (
+                <div className="small" aria-label="수식 계산">
+                  <span className="muted">수식 계산</span>{" "}
+                  {recalc.state === "opening" ? (
+                    <span className="muted">Excel 계산 사본을 여는 중…</span>
+                  ) : recalc.state === "ready" ? (
+                    <span className="ok">● Excel이 바로 계산 (수식 {recalc.formulas.toLocaleString()}칸)</span>
+                  ) : (
+                    <span className="warn" title={recalc.message}>
+                      ○ 저장할 때 계산
+                    </span>
+                  )}
+                </div>
               )}
             </>
           )}
-          {sameTitle.length > 0 && (
-            <div className="warn small">
-              같은 업무명으로 공유 중인 업무가 있어요. 참여자가 업무 목록에서 헷갈리지 않게 업무명을 다르게 해 주세요.
-            </div>
-          )}
-          <div className="small muted">
-            참여 방식: IP 명단의 PC는 그 이름으로 바로 · 그 밖은 이름 입력 후 호스트 승인
-          </div>
-          {error && <div className="error small">{error}</div>}
         </section>
-      </div>
 
-      <ParticipantsPanel
-        running={service !== null}
-        snapshot={snapshot}
-        roster={roster}
-        sheets={sheets}
-        onRosterChanged={reload}
-        onIpNamesChanged={() => setIpRev((n) => n + 1)}
-        onGoConfig={onGoConfig}
-        onError={setError}
-      />
+        {agentMode ? (
+          <AgentHandoff
+            conn={conn}
+            onConn={setConn}
+            deadline={config?.deadline}
+            hasSheet={hasSheet}
+            sheets={sheets}
+            slug={slug}
+            myName={myName}
+            beforeStart={saveName}
+            onHandedOff={props.onHandedOff}
+          />
+        ) : (
+          <section className="card share" aria-label="공유">
+            {service && url ? (
+              <>
+                <div className="card-head">
+                  <span className="card-title">참여자에게 보낼 주소</span>
+                  <span className="spacer" />
+                  <span className="pill ok-pill">공유 중{since ? ` · ${since}부터` : ""}</span>
+                </div>
+                <div className="url-row">
+                  <code className="url">{url}</code>
+                  <button onClick={() => void copy(url, "주소를 복사했어요")}>복사</button>
+                </div>
+                {listUrl && (
+                  <div className="url-row list-url">
+                    <span className="muted small">업무 목록</span>
+                    <code className="url">{listUrl}</code>
+                    <button className="ghost" onClick={() => void copy(listUrl, "업무 목록 주소를 복사했어요")}>
+                      복사
+                    </button>
+                  </div>
+                )}
+                <div className="row">
+                  <button className="ghost grow-btn" onClick={() => void copy(notice(), "안내 문구를 복사했어요")}>
+                    안내 문구 복사
+                  </button>
+                  <button className="danger grow-btn" onClick={() => void stop()} disabled={busy}>
+                    공유 중지
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div>
+                  <div className="card-title">아직 공유 전이에요</div>
+                  <div className="muted-2">시작하면 아래 주소로 참여자가 접속할 수 있어요.</div>
+                </div>
+                <code className="url pending-url">{preview}</code>
+                <button
+                  className="big-btn"
+                  onClick={() => void start()}
+                  disabled={busy || !port || !hasSheet || !myName.trim() || slugTaken}
+                >
+                  {busy ? "시작하는 중…" : "공유 시작"}
+                </button>
+                {hasSheet && config && !myName.trim() && (
+                  <div className="warn small">접속 조건에 내 이름을 입력하면 공유를 시작할 수 있어요.</div>
+                )}
+              </>
+            )}
+            {sameTitle.length > 0 && (
+              <div className="warn small">
+                같은 업무명으로 공유 중인 업무가 있어요. 참여자가 업무 목록에서 헷갈리지 않게 업무명을 다르게 해 주세요.
+              </div>
+            )}
+            <div className="small muted">
+              참여 방식: IP 명단의 PC는 그 이름으로 바로 · 그 밖은 이름 입력 후 호스트 승인
+            </div>
+            {error && <div className="error small">{error}</div>}
+          </section>
+        )}
+      </div>
+      {agentMode && error && <div className="error small">{error}</div>}
+
+      {!agentMode && (
+        <ParticipantsPanel
+          running={service !== null}
+          snapshot={snapshot}
+          roster={roster}
+          sheets={sheets}
+          onRosterChanged={reload}
+          onIpNamesChanged={() => setIpRev((n) => n + 1)}
+          onGoConfig={onGoConfig}
+          onError={setError}
+        />
+      )}
 
       <IpNamesPanel snapshot={snapshot} rev={ipRev} onError={setError} onChange={onIpNames} />
     </div>
