@@ -84,13 +84,12 @@ impl Job {
 }
 
 impl AppState {
+    /// 이 PC의 업무. 에이전트 업무(서비스 id)면 '이 PC에서는 할 수 없어요'.
     pub(crate) fn job(&self, id: &str) -> CmdResult<Arc<Job>> {
-        self.jobs.lock().unwrap().get(id).cloned().ok_or_else(|| NO_JOB.into())
-    }
-
-    /// 그 업무의 세션(시트를 확정하기 전이면 오류).
-    pub(crate) fn session(&self, id: &str) -> CmdResult<SessionHandle> {
-        self.job(id)?.session()
+        if let Some(job) = self.jobs.lock().unwrap().get(id).cloned() {
+            return Ok(job);
+        }
+        Err(if self.remotes.get(id).is_some() { crate::remote::NOT_HERE } else { NO_JOB }.into())
     }
 
     pub(crate) fn all_jobs(&self) -> Vec<Arc<Job>> {
@@ -289,15 +288,29 @@ pub struct JobState {
     pub recalc: collect_server::RecalcStatus,
 }
 
+/// 업무를 고를 때 화면이 다시 그릴 것. 에이전트 업무면 관리자 연결로 받는다(공유 정보는 에이전트 상태에 있다).
 #[tauri::command]
-pub async fn job_state(state: State<'_, AppState>, job: String) -> CmdResult<JobState> {
+pub async fn job_state(state: State<'_, AppState>, job: String) -> CmdResult<serde_json::Value> {
+    if !state.jobs.lock().unwrap().contains_key(&job)
+        && let Some(remote) = state.remotes.get(&job)
+    {
+        let s = remote.state().await?;
+        return Ok(serde_json::json!({
+            "id": job,
+            "models": s.models,
+            "slug": s.status.slug,
+            "snapshot": s.snapshot,
+            "comms": s.comms,
+            "recalc": s.recalc,
+        }));
+    }
     let job = state.job(&job)?;
     let session = job.session.lock().unwrap().clone();
     let models = match &session {
         Some(s) => s.with(|s| s.sheets.iter().map(|x| x.model.clone()).collect()).await?,
         None => Vec::new(),
     };
-    Ok(JobState {
+    let out = JobState {
         id: job.id.clone(),
         models,
         slug: job.slug(),
@@ -305,7 +318,8 @@ pub async fn job_state(state: State<'_, AppState>, job: String) -> CmdResult<Job
         snapshot: session.as_ref().map(SessionHandle::snapshot),
         comms: session.as_ref().map(SessionHandle::comms),
         recalc: job.recalc.status(),
-    })
+    };
+    serde_json::to_value(out).map_err(|e| e.to_string())
 }
 
 /// 업무를 끝낸다: 공개를 멈추고(참여자에게 '끝났습니다'), 계산 사본을 닫고, 기록 파일에 '끝냄'을 남겨 앱을 다시 켜도
@@ -403,8 +417,6 @@ async fn restore_all(app: &AppHandle, state: &AppState) -> RestoreReport {
             Some(save::Source { workbook_id: rec.workbook_id.clone(), sheets: rec.sheets.clone() });
         state.jobs.lock().unwrap().insert(job.id.clone(), job.clone());
         attach(app, state, &job, &session).await; // 옛 파일에도 업무 id를 적어 둔다
-        let models: Vec<SheetModel> =
-            session.with(|s| s.sheets.iter().map(|x| x.model.clone()).collect()).await.unwrap_or_default();
         report.jobs.push(RestoredJob {
             id: job.id.clone(),
             title: session.info().title,
@@ -414,22 +426,22 @@ async fn restore_all(app: &AppHandle, state: &AppState) -> RestoreReport {
         if let Some(meta) = remembered.filter(|s| s.running) {
             publish.push((job.clone(), meta.port));
         }
-        started.push((job, session, models, rec.workbook_id, rec.sheets));
+        started.push((job, session, rec.workbook_id, rec.sheets));
     }
 
     // 앞 앱이 남긴 숨은 Excel(계산 사본·원본)을 한 번에 정리한다. Excel이 없어도 취합은 이어서 한다.
     if !started.is_empty() {
-        let sources: Vec<String> = started.iter().map(|(_, _, _, wb, _)| wb.clone()).collect();
+        let sources: Vec<String> = started.iter().map(|(_, _, wb, _)| wb.clone()).collect();
         match run_excel(&state.excel, move |s| s.adopt_orphans_many(&sources)).await {
             Ok(r) if r.closed_calc > 0 || r.adopted => tracing::info!("앞 앱이 남긴 Excel 정리: {r:?}"),
             Ok(_) => {}
             Err(e) => tracing::warn!("Excel 정리 실패: {e}"),
         }
     }
-    for (job, session, models, workbook_id, sheets) in &started {
+    for (job, session, workbook_id, sheets) in &started {
         let source = collect_excel::CalcSource::Workbook(workbook_id.clone());
         let notify = recalc::notify(app, &job.id);
-        job.recalc.start(state.excel.clone(), &job.id, session.clone(), models, source, sheets, notify);
+        job.recalc.start(state.excel.clone(), &job.id, session.clone(), source, sheets, notify);
     }
 
     // 공개 중이던 업무를 다시 공개한다. 포트는 모든 업무가 같이 쓰므로 가장 최근 업무의 포트로.

@@ -142,6 +142,8 @@ enum Op {
     ReplaceSnapshot(u32, Vec<u8>),
     /// 다른 시트로 바꿈: 기록·스냅샷을 비운다.
     Reset,
+    /// 한 번에(전부 또는 하나도) 반영할 쓰기들([`Store::begin_group`]).
+    Group(Vec<Op>),
     Flush(mpsc::SyncSender<()>),
     /// 그때까지의 쓰기를 모두 반영한 사본을 한 파일로(`VACUUM INTO`).
     Backup(PathBuf, mpsc::SyncSender<Result<()>>),
@@ -152,6 +154,8 @@ pub struct Store {
     path: PathBuf,
     tx: Option<mpsc::Sender<Op>>,
     join: Option<JoinHandle<()>>,
+    /// 묶는 중인 쓰기([`Store::begin_group`] ~ [`Store::end_group`]).
+    group: std::sync::Mutex<Option<Vec<Op>>>,
 }
 
 const SCHEMA: &str = "
@@ -205,10 +209,21 @@ fn json<T: Serialize>(v: &T) -> String {
     serde_json::to_string(v).expect("직렬화")
 }
 
-fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
+/// `f`를 한 번에(전부 또는 하나도) 반영한다. 묶음 안에서 불러도 된다(SAVEPOINT는 겹쳐 쓸 수 있다).
+fn atomic(conn: &Connection, f: impl FnOnce(&Connection) -> rusqlite::Result<()>) -> rusqlite::Result<()> {
+    conn.execute_batch("SAVEPOINT op")?;
+    match f(conn) {
+        Ok(()) => conn.execute_batch("RELEASE op"),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK TO op; RELEASE op");
+            Err(e)
+        }
+    }
+}
+
+fn write(conn: &Connection, op: Op) -> rusqlite::Result<()> {
     match op {
-        Op::Changes(entries) => {
-            let tx = conn.transaction()?;
+        Op::Changes(entries) => atomic(conn, |tx| {
             {
                 let mut stmt = tx.prepare_cached(
                     "INSERT OR REPLACE INTO changes (seq, at_ms, user, batch, origin, kind, row, col, old, new, sheet, gone)
@@ -231,8 +246,8 @@ fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
                     ])?;
                 }
             }
-            tx.commit()
-        }
+            Ok(())
+        }),
         Op::Snapshot(m, data) => conn
             .execute(
                 "INSERT OR REPLACE INTO snapshots (id, at_ms, kind, seq, label, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -251,21 +266,25 @@ fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
                 Axis::Col => "col",
             };
             let end = from.saturating_add(count);
-            let tx = conn.transaction()?;
-            tx.execute(
-                &format!("UPDATE changes SET gone = 1 WHERE sheet = ?1 AND gone = 0 AND {line} >= ?2 AND {line} < ?3"),
-                params![sheet, from, end],
-            )?;
-            tx.execute(
-                &format!("UPDATE changes SET {line} = {line} - ?3 WHERE sheet = ?1 AND gone = 0 AND {line} >= ?2"),
-                params![sheet, end, count],
-            )?;
-            tx.commit()
+            atomic(conn, |tx| {
+                tx.execute(
+                    &format!(
+                        "UPDATE changes SET gone = 1 WHERE sheet = ?1 AND gone = 0 AND {line} >= ?2 AND {line} < ?3"
+                    ),
+                    params![sheet, from, end],
+                )?;
+                tx.execute(
+                    &format!("UPDATE changes SET {line} = {line} - ?3 WHERE sheet = ?1 AND gone = 0 AND {line} >= ?2"),
+                    params![sheet, end, count],
+                )?;
+                Ok(())
+            })
         }
         Op::ReplaceSnapshot(id, data) => {
             conn.execute("UPDATE snapshots SET data = ?2 WHERE id = ?1", params![id, data]).map(drop)
         }
         Op::Reset => conn.execute_batch("DELETE FROM changes; DELETE FROM snapshots; DELETE FROM blobs;"),
+        Op::Group(ops) => atomic(conn, |c| ops.into_iter().try_for_each(|op| write(c, op))),
         Op::Flush(done) => {
             let _ = done.send(());
             Ok(())
@@ -297,19 +316,19 @@ impl Store {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let mut conn = Connection::open(&path)?;
+        let conn = Connection::open(&path)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         let (tx, rx) = mpsc::channel::<Op>();
         let shown = path.display().to_string();
         let join = std::thread::Builder::new().name("collect-store".into()).spawn(move || {
             while let Ok(op) = rx.recv() {
-                if let Err(e) = write(&mut conn, op) {
+                if let Err(e) = write(&conn, op) {
                     tracing::error!("저장소({shown}) 쓰기 실패: {e}");
                 }
             }
         })?;
-        Ok(Store { path, tx: Some(tx), join: Some(join) })
+        Ok(Store { path, tx: Some(tx), join: Some(join), group: Default::default() })
     }
 
     pub fn path(&self) -> &Path {
@@ -317,8 +336,26 @@ impl Store {
     }
 
     fn send(&self, op: Op) {
+        if let Some(group) = self.group.lock().unwrap().as_mut() {
+            group.push(op);
+            return;
+        }
         if let Some(tx) = &self.tx {
             let _ = tx.send(op);
+        }
+    }
+
+    /// 이제부터 [`Store::end_group`]까지의 쓰기를 모아 한 번에(전부 또는 하나도) 반영한다. 표 구조를 바꿀 때 기록·스냅샷·
+    /// 시트·기준 시트가 서로 어긋난 채 남지 않게 한다(그사이 꺼지면 바꾸기 전 그대로). 겹쳐 부르면 바깥 묶음 하나다.
+    pub fn begin_group(&self) {
+        self.group.lock().unwrap().get_or_insert_with(Vec::new);
+    }
+
+    /// 모은 쓰기를 한 번에 보낸다.
+    pub fn end_group(&self) {
+        let ops = self.group.lock().unwrap().take();
+        if let Some(ops) = ops.filter(|o| !o.is_empty()) {
+            self.send(Op::Group(ops));
         }
     }
 
@@ -544,6 +581,43 @@ mod tests {
         assert_eq!(saved.blobs.get("sheet").map(|(seq, d)| (*seq, d.as_slice())), Some((2, b"blob".as_slice())));
         assert!(!copy.with_extension("sqlite-wal").exists(), "사본은 한 파일");
         let _ = std::fs::remove_file(&copy);
+    }
+
+    #[test]
+    fn grouped_writes_land_together_or_not_at_all() {
+        let path = temp("group.sqlite");
+        let store = Store::open(&path).unwrap();
+        store.append(&[entry(1, CellValue::Number(1.0))]);
+        store.begin_group();
+        store.remap(0, Axis::Row, 2, 1);
+        store.blob("sheet", 1, b"after".to_vec());
+        store.begin_group(); // 겹쳐 불러도 하나
+        store.blob("baseline", 1, b"after".to_vec());
+        store.flush().unwrap();
+        assert!(load(&path).unwrap().blobs.is_empty(), "묶음이 끝나기 전에는 쓰지 않는다");
+        store.end_group();
+        store.end_group(); // 빈 묶음은 보내지 않는다
+        store.flush().unwrap();
+        let saved = load(&path).unwrap();
+        assert!(saved.changes[0].gone);
+        assert_eq!(saved.blobs.len(), 2);
+        // 묶음 안에서 하나가 실패하면 앞의 쓰기도 되돌린다.
+        conn_write_fails_whole_group(&path);
+        drop(store);
+    }
+
+    fn conn_write_fails_whole_group(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch("CREATE TRIGGER no_meta BEFORE INSERT ON meta BEGIN SELECT RAISE(ABORT, 'no'); END;")
+            .unwrap();
+        let ops = vec![
+            Op::Blob("x".into(), 9, b"x".to_vec()),
+            Op::Remap { sheet: 0, axis: Axis::Row, from: 0, count: 1 },
+            Op::Meta("job".into(), "j".into()), // 실패
+        ];
+        assert!(write(&conn, Op::Group(ops)).is_err());
+        let n: i64 = conn.query_row("SELECT count(*) FROM blobs WHERE key = 'x'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]

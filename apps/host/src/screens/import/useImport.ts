@@ -23,7 +23,6 @@ export const DEFAULT_ITEMS: ImportItems = {
   fills: true,
   dimensions: true,
   validations: true,
-  includeHidden: false,
 };
 
 /** 1a 입력값(시트마다). 머리글·틀 고정은 다시 읽지 않고 반영하고, 범위·가져올 항목이 바뀌면 다시 읽는다. */

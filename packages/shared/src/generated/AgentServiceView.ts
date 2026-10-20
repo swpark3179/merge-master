@@ -24,4 +24,16 @@ problem?: string,
 /**
  * 넘기는 중(받았는지 확인하는 중).
  */
-pending: boolean, createdAtMs: number, };
+pending: boolean, 
+/**
+ * 관리자 연결이 열려 있다(설정·모니터링·소통을 이 PC 업무처럼 다룬다).
+ */
+linked: boolean, 
+/**
+ * 업무 화면으로 다룬다(서비스 중이고 관리자 연결을 두었다 — 잠시 끊겨도).
+ */
+live: boolean, 
+/**
+ * 참여자가 보낸 마지막 채팅 번호(안 읽은 채팅 표시, 없으면 0).
+ */
+lastChat: number, createdAtMs: number, };

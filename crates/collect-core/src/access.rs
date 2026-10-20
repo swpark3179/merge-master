@@ -1,4 +1,7 @@
-//! 권한 엔진: **입력 가능 = (배정 행 ∪ 배정 범위 ∪ 담당자 없는 칸) ∩ 입력 영역 − 입력 금지 − 수식**.
+//! 권한 엔진: **입력 가능 = (배정 행 ∪ 배정 범위 ∪ 담당자 없는 칸) ∩ 입력 영역 − 입력 금지**(− 수식: 참여자 권한 '수식 칸'이
+//! 잠금일 때).
+//!
+//! 수식 칸은 값으로만 바꿀 수 있고(넣으면 수식을 버린다) 필수로 세지 않는다.
 //!
 //! 행 배정도 범위 배정도 걸리지 않은 칸은 담당자가 없는 칸으로, 입력 영역이면 **누구나** 입력할 수 있다.
 //!
@@ -158,6 +161,8 @@ impl Access {
             }
         }
 
+        // 수식 칸에 값을 넣을 수 있으면 수식은 입력을 막지 않는다(표시용 비트로만 남는다).
+        let formula_lock = if config.permissions.overwrite_formulas { 0 } else { flag::FORMULA };
         let mut base = vec![0u8; n];
         for r in 0..rows {
             for c in 0..cols {
@@ -181,11 +186,15 @@ impl Access {
                 }
                 let rule = config.columns.get(c as usize);
                 let col_input = rule.is_some_and(|r| r.role == ColumnRole::Input);
-                let blocked = flag::HEADER | flag::HIDDEN | flag::FORMULA | flag::COVERED;
+                let blocked = flag::HEADER | flag::HIDDEN | flag::COVERED | formula_lock;
                 let input = (col_input || exc[i] & EXC_INPUT != 0) && exc[i] & EXC_LOCKED == 0 && f & blocked == 0;
                 if input {
                     f |= flag::INPUT;
-                    if (rule.is_some_and(|r| r.required) || exc[i] & EXC_REQUIRED != 0) && !cancelled[r as usize] {
+                    // 수식 칸은 Excel이 채우므로 필수로 세지 않는다.
+                    if (rule.is_some_and(|r| r.required) || exc[i] & EXC_REQUIRED != 0)
+                        && !cancelled[r as usize]
+                        && f & flag::FORMULA == 0
+                    {
                         f |= flag::REQUIRED;
                     }
                 }
@@ -447,7 +456,7 @@ mod tests {
         assert!(!a.can_edit(choi, at("F3"))); // 남의 행
         assert!(a.can_edit(choi, at("F5")));
         assert!(!a.can_edit(lee, at("E3"))); // 입력 금지 열
-        assert!(!a.can_edit(lee, at("G3"))); // 수식
+        assert!(!a.can_edit(lee, at("G3"))); // 잠금 열의 수식 칸
         assert!(!a.can_edit(Viewer::Host, at("F2"))); // 머리글
         assert!(a.can_edit(Viewer::Host, at("F5")));
         assert_eq!(a.flags(at("F3")) & (flag::INPUT | flag::REQUIRED), flag::INPUT | flag::REQUIRED);
@@ -527,7 +536,7 @@ mod tests {
         assert!(a.can_edit(lee, at("F7")) && a.can_edit(choi, at("F7")));
         assert!(a.can_edit(choi, at("I7")) && !a.can_edit(lee, at("I7")));
         assert!(a.can_edit(lee, at("I8")));
-        // 입력 금지·수식 칸은 여전히 아무도 못 쓴다.
+        // 입력 금지 열(수식 칸 G 포함)은 여전히 아무도 못 쓴다.
         assert!(!a.can_edit(lee, at("E7")) && !a.can_edit(lee, at("G7")));
         // 남의 행 숨김: 담당자 없는 칸이 있는 행은 모두에게 보인다.
         assert_eq!(a.rows_of(a.person("이서연").unwrap()), [2, 3, 6, 7]);
@@ -550,8 +559,27 @@ mod tests {
         assert!(a.can_edit(lee, at("F7")) && a.can_edit(lee, at("I7")));
         // 담당자 정보는 그대로(필터링용).
         assert!(a.row_owner(6).is_some() && !a.is_open(at("F7")));
-        // 입력 금지·수식 칸은 여전히 아무도 못 쓴다.
+        // 입력 금지 열(수식 칸 G 포함)은 여전히 아무도 못 쓴다.
         assert!(!a.can_edit(lee, at("E7")) && !a.can_edit(lee, at("G7")));
+    }
+
+    #[test]
+    fn formula_cells_follow_column_roles_but_are_never_required() {
+        let (m, mut cfg) = setup();
+        cfg.columns[6].role = ColumnRole::Input; // G 수식 열을 입력으로
+        cfg.columns[6].required = true;
+        let a = Access::compile(&m, &cfg);
+        let lee = Viewer::Person(a.person("이서연").unwrap());
+        let choi = Viewer::Person(a.person("최도윤").unwrap());
+        assert!(a.can_edit(lee, at("G3")) && !a.can_edit(choi, at("G3"))); // 담당자 규칙은 그대로
+        assert!(a.can_edit(Viewer::Host, at("G3")));
+        let f = a.flags(at("G3"));
+        assert_eq!(f & (flag::FORMULA | flag::INPUT | flag::REQUIRED), flag::FORMULA | flag::INPUT);
+        // 참여자 권한 '수식 칸'을 잠그면 수식 칸은 입력 영역이 아니다.
+        cfg.permissions.overwrite_formulas = false;
+        let a = Access::compile(&m, &cfg);
+        assert!(!a.can_edit(lee, at("G3")) && a.flags(at("G3")) & flag::INPUT == 0);
+        assert!(a.can_edit(lee, at("F3")));
     }
 
     #[test]

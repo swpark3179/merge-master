@@ -123,11 +123,18 @@ export function App() {
     [createJob, job, toast],
   );
 
-  const onStep = useCallback((s: Step) => job && steps.current.set(job, s), [job]);
+  const agent = agentView ? agents.find((a) => a.id === agentView) : undefined;
+  /** 업무 화면으로 보는 것: 이 PC 업무, 또는 관리자 연결로 다루는 에이전트 업무(서비스 id). */
+  const current = agent ? (agent.live ? agent.id : null) : job;
+  const onStep = useCallback((s: Step) => current && steps.current.set(current, s), [current]);
   const onChatSeen = useCallback(
-    (id: number) => job && setChatSeen((m) => ({ ...m, [job]: Math.max(m[job] ?? 0, id) })),
-    [job],
+    (id: number) => current && setChatSeen((m) => ({ ...m, [current]: Math.max(m[current] ?? 0, id) })),
+    [current],
   );
+  const onForgotten = useCallback(() => {
+    setAgentView(null);
+    toast("목록에서 지웠어요");
+  }, [toast]);
 
   const sidebar = (
     <JobList
@@ -155,10 +162,30 @@ export function App() {
     </div>
   ) : null;
 
-  const agent = agentView ? agents.find((a) => a.id === agentView) : undefined;
   return (
     <>
-      {agent ? (
+      {agent && agent.live ? (
+        <JobProvider key={agent.id} job={agent.id}>
+          <JobWorkspace
+            jobs={jobs}
+            initialStep={steps.current.get(agent.id)}
+            onStep={onStep}
+            chatSeen={chatSeen[agent.id] ?? 0}
+            onChatSeen={onChatSeen}
+            excelRunning={excelRunning}
+            onExcelStatus={setExcelRunning}
+            onNewJob={() => void createJob()}
+            onEndJob={() => {}}
+            onHandedOff={onHandedOff}
+            remote={agent}
+            onForgotten={onForgotten}
+            sidebar={sidebar}
+            banner={bannerNode}
+            toast={toast}
+            version={version}
+          />
+        </JobProvider>
+      ) : agent ? (
         <AgentWorkspace
           key={agent.id}
           view={agent}
@@ -166,10 +193,7 @@ export function App() {
           banner={bannerNode}
           toast={toast}
           version={version}
-          onForgotten={() => {
-            setAgentView(null);
-            toast("목록에서 지웠어요");
-          }}
+          onForgotten={onForgotten}
         />
       ) : job ? (
         <JobProvider key={job} job={job}>
@@ -297,6 +321,7 @@ function JobList(props: {
               const pct = s && s.required > 0 ? Math.round((s.filled / s.required) * 100) : null;
               const label = agentStateLabel(a);
               const warn = !a.reachable || s?.state === "failed";
+              const unread = a.id !== props.currentAgent && a.lastChat > (chatSeen[a.id] ?? 0);
               return (
                 <li key={a.id} className={`job-item${a.id === props.currentAgent ? " active" : ""}`} data-agent={a.id}>
                   <button
@@ -306,7 +331,10 @@ function JobList(props: {
                     title={`${a.agentName} · ${a.workbook}`}
                     onClick={() => props.onPickAgent(a.id)}
                   >
-                    <span className="job-title">{name}</span>
+                    <span className="job-title">
+                      {name}
+                      {unread && <span className="job-dot" title="안 읽은 채팅" />}
+                    </span>
                     <span className="job-file">
                       {a.agentName} · {a.workbook}
                     </span>
@@ -319,7 +347,9 @@ function JobList(props: {
                       {s && s.state === "running" && (
                         <span className="job-chip">마감 {formatDeadline(s.deadline)}</span>
                       )}
-                      {s?.state === "running" && !a.reachable && <span className="job-chip warn">연결 안 됨</span>}
+                      {s?.state === "running" && (!a.reachable || (a.live && !a.linked)) && (
+                        <span className="job-chip warn">연결 안 됨</span>
+                      )}
                     </span>
                   </button>
                 </li>

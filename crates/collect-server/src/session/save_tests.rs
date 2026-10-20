@@ -66,21 +66,29 @@ async fn host_values_are_logged_counted_and_broadcast() {
             0,
             vec![
                 (CellRef::new(r, F), CellValue::Number(1234.0)),
-                (CellRef::new(r, 6), CellValue::Number(9.0)), // 수식 칸은 건너뛴다
+                (CellRef::new(r, 6), CellValue::Number(9.0)), // 수식 칸은 수식을 버리고 그 값
             ],
         );
     });
     assert_eq!(st.sheets[0].model.cell(CellRef::new(r, F)).unwrap().v, CellValue::Number(1234.0));
+    let g = st.sheets[0].model.cell(CellRef::new(r, 6)).unwrap();
+    assert_eq!((g.v.clone(), g.f.is_none()), (CellValue::Number(9.0), true));
     assert_eq!(st.rt[0].progress.filled, before + 1);
-    assert_eq!(st.log.len(), 1);
+    assert_eq!(st.log.len(), 2);
     assert_eq!(st.log[0].user, "Excel(원본)");
     for client in &mut c {
         let seen = client.take();
         assert!(
             seen.iter()
-                .any(|m| matches!(m, ServerMsg::Cells { by, cells, .. } if by == "Excel(원본)" && cells.len() == 1)),
+                .any(|m| matches!(m, ServerMsg::Cells { by, cells, .. } if by == "Excel(원본)" && cells.len() == 2)),
             "{seen:?}"
         );
+        // 수식이 사라졌으니 새 시트가 간다(수식 표시를 지운다).
+        let w = seen.iter().find_map(|m| match m {
+            ServerMsg::Welcome(w) => Some(w),
+            _ => None,
+        });
+        assert!(w.is_some_and(|w| w.sheets[0].model.cell(CellRef::new(r, 6)).unwrap().f.is_none()));
     }
     assert!(st.rt[0].writer.values().all(|w| w == "Excel(원본)"));
 }

@@ -1,23 +1,27 @@
 //! 트레이 아이콘과 메뉴(Windows). 메뉴는 서비스 목록·상태가 바뀔 때마다 다시 만든다.
 //!
 //! - 버전·주소(복사), 서비스 n개 / 저장 실패 n개, 진행 중인 서비스 ▸(주소 복사·지금 저장하고 끝내기·저장 없이 끝내기)
-//! - 기본 저장 폴더 표시·바꾸기·열기, Windows 시작 시 실행, 로그 폴더 열기, 설정 파일 열기, 끝내기
+//! - IP 명단 관리…(창, [`crate::admin_window`]), 기본 저장 폴더 표시·바꾸기·열기, Windows 시작 시 실행, 로그 폴더 열기,
+//!   설정 파일 열기, 끝내기
 //! - 서비스가 있는 동안 PC가 절전에 들어가지 않게 한다.
 
 use std::sync::Arc;
 
 use agent_protocol::ServiceState;
-use tao::event::Event;
+use tao::event::{Event, WindowEvent};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+use crate::admin_window::{self, AdminWindow};
 use crate::agent::{Agent, Overview};
 use crate::{Running, win};
 
 enum UserEvent {
     Menu(MenuEvent),
     Refresh,
+    /// IP 명단 창의 답·파일 대화상자.
+    Admin(admin_window::Msg),
 }
 
 /// 트레이를 띄우고 끝날 때까지 돈다(끝내기를 고르면 공유를 닫고 프로세스를 끝낸다).
@@ -58,11 +62,50 @@ pub fn run(rt: tokio::runtime::Runtime, running: Running) -> ! {
 
     let mut running = Some(running);
     let mut rt = Some(rt);
-    event_loop.run(move |event, _, control_flow| {
+    let mut admin: Option<AdminWindow> = None;
+    let admin_proxy = event_loop.create_proxy();
+    event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
-        let Event::UserEvent(event) = event else { return };
+        let event = match event {
+            Event::UserEvent(e) => e,
+            Event::WindowEvent { window_id, event: WindowEvent::CloseRequested, .. } => {
+                if admin.as_ref().is_some_and(|w| w.id() == window_id) {
+                    admin = None; // 닫으면 없앤다(WebView2도 끝난다)
+                }
+                return;
+            }
+            _ => return,
+        };
         match event {
-            UserEvent::Refresh => {}
+            // 창의 답은 메뉴를 다시 만들지 않는다(열린 트레이 메뉴가 닫히지 않게).
+            UserEvent::Admin(msg) => {
+                if let (Some(w), Some(rt)) = (&admin, &rt) {
+                    w.handle(msg, &agent, rt);
+                }
+                return;
+            }
+            UserEvent::Refresh => {
+                if let Some(w) = &admin {
+                    w.changed();
+                }
+            }
+            UserEvent::Menu(e) if e.id.0 == "ip-names" => {
+                match &admin {
+                    Some(w) => w.focus(),
+                    None => {
+                        if let Some(rt) = &rt {
+                            admin = admin_window::open(
+                                target,
+                                &agent,
+                                rt.handle().clone(),
+                                admin_proxy.clone(),
+                                UserEvent::Admin,
+                            );
+                        }
+                    }
+                }
+                return;
+            }
             UserEvent::Menu(e) => {
                 let id = e.id.0.as_str();
                 if id == "quit" {
@@ -189,6 +232,9 @@ fn menu(agent: &Agent) -> Menu {
         }
         let _ = m.append(&list);
     }
+    let _ = m.append(&PredefinedMenuItem::separator());
+    let names = agent.ip_names().len();
+    let _ = m.append(&MenuItem::with_id("ip-names", format!("IP 명단 관리… ({names}명)"), true, None));
     let _ = m.append(&PredefinedMenuItem::separator());
     let _ = m.append(&disabled(format!("기본 저장 폴더: {}", settings.base_dir.display())));
     let _ = m.append(&MenuItem::with_id("base-change", "기본 저장 폴더 바꾸기…", true, None));

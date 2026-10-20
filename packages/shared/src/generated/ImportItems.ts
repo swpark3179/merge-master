@@ -23,8 +23,4 @@ dimensions: boolean,
 /**
  * 데이터 유효성 → 입력 형식.
  */
-validations: boolean, 
-/**
- * 숨긴 행·열도 보이는 행·열로 가져온다.
- */
-includeHidden: boolean, };
+validations: boolean, };

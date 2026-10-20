@@ -1,7 +1,7 @@
 import type { SheetModel } from "@mm/shared";
 import { describe, expect, it } from "vitest";
 
-import { fitRowHeights, mergeValueCell, partlyShownMerges, withHiddenRows } from "./rows";
+import { cutMerge, fitRowHeights, mergeValueCell, partlyShownMerges, withHiddenRows } from "./rows";
 
 function model(values: (string | number | null)[][], merges: SheetModel["merges"] = []): SheetModel {
   const rows = values.length;
@@ -119,5 +119,24 @@ describe("partlyShownMerges", () => {
     expect(mergeValueCell(loose, loose.merges[0]!)).toBe(3); // 왼쪽 위가 비면 영역 안에서 값이 있는 칸
     const empty = model([[null], [null]], [{ row: 0, col: 0, rows: 2, cols: 1 }]);
     expect(mergeValueCell(empty, empty.merges[0]!)).toBe(0);
+  });
+});
+
+describe("cutMerge", () => {
+  const m = model(
+    [["a"], ["b"], ["c"], ["d"]],
+    [
+      { row: 1, col: 0, rows: 2, cols: 1 },
+      { row: 3, col: 0, rows: 1, cols: 1 },
+    ],
+  );
+  it("병합의 첫 행만 지우면 그 병합", () => {
+    expect(cutMerge(m, 1, 1)).toEqual({ row: 1, col: 0, rows: 2, cols: 1 });
+    expect(cutMerge(m, 0, 2)).toEqual({ row: 1, col: 0, rows: 2, cols: 1 });
+  });
+  it("병합을 통째로·아래 행만 지우면 없음(한 칸 병합은 보지 않는다)", () => {
+    expect(cutMerge(m, 1, 2)).toBeNull();
+    expect(cutMerge(m, 2, 1)).toBeNull();
+    expect(cutMerge(m, 3, 1)).toBeNull();
   });
 });

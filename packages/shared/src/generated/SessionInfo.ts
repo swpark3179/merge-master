@@ -28,4 +28,8 @@ closed: boolean, online: number,
 /**
  * 호스트 앱의 업무 id. 같은 주소 경로를 새 업무가 다시 쓰면 바뀐다(참여자가 앞 업무의 대기열·토큰을 버린다).
  */
-job?: string, };
+job?: string, 
+/**
+ * IP 명단 밖에서도 입력한 이름 그대로 바로 들어온다(에이전트 PC에서 서비스 — 관리자가 승인하지 못할 수 있다).
+ */
+autoApprove: boolean, };

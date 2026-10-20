@@ -199,6 +199,9 @@ export function CellDetail({ s, at, columns, labels, flags, canEdit, locker, wai
         </div>
       )}
       {f & FLAG.MINE && rule?.hint ? <div className="hint-bar">{rule.hint}</div> : null}
+      {editable && cell.f ? (
+        <div className="hint-bar">수식 칸입니다 · 값을 넣으면 수식 대신 그 값이 저장됩니다</div>
+      ) : null}
       {editable && items ? (
         <select
           aria-label="셀 내용 편집"

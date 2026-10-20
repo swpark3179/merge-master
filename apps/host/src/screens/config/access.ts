@@ -5,7 +5,7 @@ import { FLAG } from "@mm/shared";
 export interface RangeAccess {
   /** 센 칸 수(병합에 덮인 칸·숨긴 칸 제외). */
   cells: number;
-  /** 입력할 수 없는 칸(잠금·수식·머리글). */
+  /** 입력할 수 없는 칸(잠금·머리글, '수식 칸'을 잠그면 수식). */
   locked: number;
   /** 담당자가 없는 입력 칸(누구나). */
   open: number;

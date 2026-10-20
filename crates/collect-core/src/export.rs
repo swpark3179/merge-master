@@ -13,6 +13,10 @@
 //!
 //! 취소 표시한 행([`SheetModel::cancelled_rows`])은 서식 위에 덮개(취소선 + 회색 채우기)를 씌운 것을 그 칸의 서식으로 본다.
 //! 기준 시트의 `cancelled_rows`는 이미 Excel에 덮개를 쓴 행이다.
+//!
+//! 앱에서 지운 불러온 행은 기준 시트에서도 지워 두고 그 순서([`SheetModel::deleted_rows`])를 남긴다. 저장할 때 Excel에서
+//! 그 순서대로 먼저 지우면([`ExportPlan::row_cuts`]) 나머지는 지금처럼 (행, 열)로 맞는다. Excel에서 숨겨져 있던 행·열
+//! ([`SheetModel::unhidden_rows`])은 저장할 때 숨김을 푼다.
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,7 +27,8 @@ use crate::a1::{CellRange, CellRef, sheet_prefix};
 use crate::access::{Access, flag, union_roster};
 use crate::config::CollectConfig;
 use crate::history::{ChangeEntry, SheetLabels, sheet_of};
-use crate::sheet::{Cell, CellStyle, CellValue, SheetModel};
+use crate::sheet::{Cell, CellStyle, CellValue, RowCut, SheetModel};
+use crate::structure::{StructureEdit, reshape_values};
 
 /// 칸에 쓸 값. `literal`이면 글자를 그대로 둔다(Excel이 숫자·날짜·수식으로 바꾸지 않게 앞에 `'`를 붙여 쓴다).
 #[derive(Debug, Clone, PartialEq)]
@@ -73,9 +78,18 @@ pub struct ColInsert {
     pub widths: Vec<f32>,
 }
 
+/// 숨김을 풀 때 크기를 알 수 없으면 쓰는 기본 크기(pt, 불러올 때 펼친 크기와 같다).
+pub const DEFAULT_ROW_PT: f32 = 15.0;
+pub const DEFAULT_COL_PT: f32 = 48.0;
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExportPlan {
     pub origin: CellRef,
+    /// 앱에서 지운 불러온 행: 무엇보다 먼저 이 순서대로 Excel에서 행 전체를 지운다(그 순간의 모델 행 좌표).
+    pub row_cuts: Vec<RowCut>,
+    /// Excel에서 숨겨져 있던 행·열: 숨김을 풀고 이 크기로 둔다(모델 좌표, pt). 서식 반영 옵션과 상관없이 쓴다.
+    pub unhide_rows: Vec<(u32, f32)>,
+    pub unhide_cols: Vec<(u32, f32)>,
     /// 표 오른쪽에 붙인 열(행보다 먼저, 값을 쓰기 전에 끼워 넣는다).
     pub col_insert: Option<ColInsert>,
     /// 표 아래에 붙인 행(값을 쓰기 전에 끼워 넣는다).
@@ -99,6 +113,9 @@ pub struct ExportPlan {
 impl ExportPlan {
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
+            && self.row_cuts.is_empty()
+            && self.unhide_rows.is_empty()
+            && self.unhide_cols.is_empty()
             && self.insert.is_none()
             && self.col_insert.is_none()
             && self.styles.is_empty()
@@ -113,6 +130,41 @@ impl ExportPlan {
     pub fn resized(&self) -> u32 {
         (self.col_widths.len() + self.row_heights.len()) as u32
     }
+
+    /// Excel에서 지울 행 수.
+    pub fn deleted_rows(&self) -> u32 {
+        self.row_cuts.iter().map(|c| c.count).sum()
+    }
+
+    /// 숨김을 풀 행·열 수.
+    pub fn unhidden(&self) -> u32 {
+        (self.unhide_rows.len() + self.unhide_cols.len()) as u32
+    }
+}
+
+/// 지금 Excel에 있는 불러온 범위의 행 수: 기준 시트 행 + 앱에서 지웠지만 아직 Excel에서 지우지 않은 행.
+pub fn source_rows(baseline: &SheetModel) -> u32 {
+    baseline.rows + baseline.deleted_rows.iter().map(|c| c.count).sum::<u32>()
+}
+
+/// 저장 직전에 Excel에서 읽은 불러온 범위([`source_rows`]행 × 기준 시트 열, 행 우선)에서 앱에서 지운 행을 같은 순서로
+/// 빼 기준 시트 모양으로 맞춘다([`compare`]에 넘긴다).
+pub fn align_to_baseline(excel: &mut Vec<CellValue>, cols: u32, cuts: &[RowCut]) {
+    for cut in cuts {
+        reshape_values(excel, cols, StructureEdit::DeleteRows { from: cut.from, count: cut.count });
+    }
+}
+
+/// 숨김을 풀 줄과 그 크기(지금 크기, 0이면 기본 크기). 기준 시트 범위 밖은 뺀다.
+fn unhide_sizes(lines: &[u32], sizes: &[f32], limit: u32, default: f32) -> Vec<(u32, f32)> {
+    let mut out: Vec<(u32, f32)> = lines
+        .iter()
+        .filter(|&&i| i < limit)
+        .map(|&i| (i, sizes.get(i as usize).copied().filter(|s| *s > 0.0).unwrap_or(default)))
+        .collect();
+    out.sort_by_key(|(i, _)| *i);
+    out.dedup_by_key(|(i, _)| *i);
+    out
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -178,11 +230,15 @@ fn template_cell(baseline: &SheetModel, at: CellRef) -> Option<&Cell> {
 }
 
 /// 값이 바뀐 칸: 수식이 아니고, 병합에 덮이지 않았고, 기준과 값이 다른 칸(행 우선). 붙인 행·열은 빈 칸과 비교한다.
+///
+/// 앱에서 값으로 바꾼 수식 칸(기준 시트에는 수식, 지금은 값)은 값이 같거나 비어도 쓴다 — 써야 Excel의 수식이 그 값이 된다.
+/// 붙인 행에서 위 행의 수식을 채워 내릴 열([`fill_cols`])의 칸도 수식이 아니면 비어 있어도 쓴다(채워 내린 수식을 지운다).
 pub fn changed_cells(baseline: &SheetModel, current: &SheetModel) -> Vec<CellRef> {
     if !comparable(baseline, current) {
         return Vec::new();
     }
     let cover = covered(current);
+    let fill: HashSet<u32> = fill_cols(baseline, current).into_iter().collect();
     let cols = current.cols.max(1);
     current
         .cells
@@ -193,10 +249,26 @@ pub fn changed_cells(baseline: &SheetModel, current: &SheetModel) -> Vec<CellRef
             let differs = now.f.is_none()
                 && !cover[i]
                 && match base_cell(baseline, at) {
-                    Some(then) => now.v != then.v,
-                    None => !now.v.is_empty(),
+                    Some(then) => then.f.is_some() || now.v != then.v,
+                    None => !now.v.is_empty() || (at.row >= baseline.rows && fill.contains(&at.col)),
                 };
             differs.then_some(at)
+        })
+        .collect()
+}
+
+/// 표 아래에 붙인 행에 위 행(기준 시트 마지막 행)의 수식을 채워 내릴 열: 그 칸이 수식이고, 붙인 행 중 그 열에 수식이 남은
+/// 칸이 있다(Excel이 상대 참조를 맞춘다). 값으로 바꾼 칸은 채워 내린 뒤 값을 써서 덮는다.
+pub fn fill_cols(baseline: &SheetModel, current: &SheetModel) -> Vec<u32> {
+    if !comparable(baseline, current) || current.rows == baseline.rows || baseline.rows == 0 {
+        return Vec::new();
+    }
+    let last = baseline.rows - 1;
+    (0..current.cols)
+        .filter(|&c| {
+            baseline.cell(CellRef::new(last, c)).is_some_and(|cell| cell.f.is_some())
+                && (baseline.rows..current.rows)
+                    .any(|r| current.cell(CellRef::new(r, c)).is_some_and(|cell| cell.f.is_some()))
         })
         .collect()
 }
@@ -249,13 +321,7 @@ fn row_insert(baseline: &SheetModel, current: &SheetModel) -> Option<RowInsert> 
         return None;
     }
     let at = baseline.rows;
-    let formula_cols = (0..current.cols)
-        .filter(|&c| {
-            at > 0
-                && current.cell(CellRef::new(at, c)).is_some_and(|cell| cell.f.is_some())
-                && baseline.cell(CellRef::new(at - 1, c)).is_some_and(|cell| cell.f.is_some())
-        })
-        .collect();
+    let formula_cols = fill_cols(baseline, current);
     Some(RowInsert { at, count: current.rows - at, formula_cols, heights: current.row_heights[at as usize..].to_vec() })
 }
 
@@ -309,6 +375,70 @@ pub fn adopt_structure(baseline: &mut SheetModel, current: &SheetModel) {
         baseline.row_heights.extend(current.row_heights[baseline.rows as usize..].iter().copied());
         baseline.rows = current.rows;
     }
+}
+
+/// 원본에 저장한 뒤 기준 시트(와 지금 시트)를 저장한 파일에 맞춘다. `planned`는 저장 계획을 만든 시트, `written`은 쓴 칸.
+///
+/// - 이번에 Excel에서 지운 행은 지운 기록에서 빼고(그 뒤에 지운 행은 이미 새 원본 좌표다), 숨김을 푼 줄은 목록에서 뺀다.
+/// - 붙인 행·열은 기준 시트에도 붙이고([`adopt_structure`]) 지금 시트의 '추가한 행' 표시를 지운다.
+/// - 쓴 칸은 그 값이 새 기준이다(값으로 바꾼 수식 칸도 이제 수식이 아니다).
+/// - 서식까지 반영했으면 서식·병합을, 취소 표시를 썼으면 그 행들을 새 기준으로 한다.
+pub fn adopt_saved(
+    baseline: &mut SheetModel,
+    model: &mut SheetModel,
+    planned: &SheetModel,
+    plan: &ExportPlan,
+    written: impl IntoIterator<Item = (CellRef, CellValue)>,
+    opts: ExportOptions,
+) {
+    let cuts = plan.row_cuts.len().min(baseline.deleted_rows.len());
+    baseline.deleted_rows.drain(..cuts);
+    let rows_done: HashSet<u32> = plan.unhide_rows.iter().map(|(r, _)| *r).collect();
+    let cols_done: HashSet<u32> = plan.unhide_cols.iter().map(|(c, _)| *c).collect();
+    for m in [&mut *baseline, &mut *model] {
+        m.unhidden_rows.retain(|r| !rows_done.contains(r));
+        m.unhidden_cols.retain(|c| !cols_done.contains(c));
+    }
+    adopt_structure(baseline, planned);
+    let (rows, cols) = (planned.rows, planned.cols);
+    model.added_rows.retain(|a| a.row >= rows);
+    for (at, v) in written {
+        if let Some(cell) = baseline.cell_mut(at) {
+            cell.v = v;
+            cell.f = None;
+        }
+    }
+    if opts.styles {
+        baseline.styles = model.styles.clone();
+        baseline.merges = model.merges.clone();
+        // 기준 시트는 저장 계획을 만든 크기다(그사이 붙인 행·열은 아직 원본에 없다).
+        for r in 0..rows.min(model.rows) {
+            for c in 0..cols.min(model.cols) {
+                let at = CellRef::new(r, c);
+                let style = model.cell(at).map(|m| m.s);
+                if let (Some(s), Some(cell)) = (style, baseline.cell_mut(at)) {
+                    cell.s = s;
+                }
+            }
+        }
+    }
+    // 취소 표시를 Excel에 썼으면 그 행들이 새 기준이다(서식까지 썼으면 덮개 없이 쓴 행은 풀린 것).
+    if opts.cancelled {
+        baseline.cancelled_rows = planned.cancelled_rows.clone();
+    }
+}
+
+/// 계획에서 값을 쓴 칸과 그 값.
+pub fn written_cells(plan: &ExportPlan) -> HashMap<CellRef, CellValue> {
+    plan.blocks
+        .iter()
+        .flat_map(|b| {
+            b.values
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (CellRef::new(b.range.row + i as u32, b.range.col), v.value.clone()))
+        })
+        .collect()
 }
 
 /// 칸 목록을 열마다 위아래로 이어진 묶음으로 나눈다. `alone`에 든 칸은 혼자 묶는다.
@@ -451,8 +581,21 @@ pub fn plan(
     let one = SheetLabels { name: current.sheet.clone(), origin: current.origin, labels: labels.to_vec() };
     let history = (opts.history && !history.is_empty())
         .then(|| history_table(std::slice::from_ref(&one), history, offset_minutes));
+    let same_shape = comparable(baseline, current);
+    let (row_cuts, unhide_rows, unhide_cols) = if same_shape {
+        (
+            baseline.deleted_rows.clone(),
+            unhide_sizes(&baseline.unhidden_rows, &current.row_heights, baseline.rows, DEFAULT_ROW_PT),
+            unhide_sizes(&baseline.unhidden_cols, &current.col_widths, baseline.cols, DEFAULT_COL_PT),
+        )
+    } else {
+        Default::default()
+    };
     ExportPlan {
         origin: current.origin,
+        row_cuts,
+        unhide_rows,
+        unhide_cols,
         col_insert: col_insert(baseline, current),
         insert: row_insert(baseline, current),
         cells,
@@ -557,6 +700,10 @@ pub fn compare(baseline: &SheetModel, current: &SheetModel, excel: &[CellValue],
     let writing: HashSet<CellRef> = cells.iter().copied().collect();
     for &at in cells.iter().filter(|at| at.row < baseline.rows && at.col < baseline.cols) {
         let i = idx(at);
+        // 앱에서 값으로 바꾼 수식 칸: Excel의 값은 수식이 다시 계산한 것이라 충돌로 보지 않는다(취합 값으로 바꾼다).
+        if baseline.cells[i].f.is_some() {
+            continue;
+        }
         let collected = current.cell(at).map(|c| &c.v).unwrap_or(&CellValue::Empty);
         let (original, now) = (&baseline.cells[i].v, &excel[i]);
         // Excel에서도 같은 값으로 고쳤으면 충돌이 아니다.
@@ -627,6 +774,12 @@ pub struct SheetSummary {
     pub added_cols: u32,
     pub cancelled_rows: u32,
     pub style_cells: u32,
+    /// 앱에서 지운 불러온 행(저장할 때 Excel에서도 지운다).
+    #[serde(default)]
+    pub deleted_rows: u32,
+    /// Excel에서 숨겨져 있던 행·열(저장할 때 숨김을 푼다).
+    #[serde(default)]
+    pub unhidden: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, TS)]
@@ -657,6 +810,10 @@ pub struct SaveSummary {
     pub cancelled_rows: u32,
     /// 취소 표시가 Excel과 다른 행 수(새로 표시했거나 푼 행 — 저장할 때 취소선·회색 채우기를 쓰거나 지운다).
     pub cancel_changes: u32,
+    /// 앱에서 지운 불러온 행 수(저장할 때 Excel에서도 지운다).
+    pub deleted_rows: u32,
+    /// Excel에서 숨겨져 있던 행·열 수(저장할 때 숨김을 푼다).
+    pub unhidden: u32,
     /// 시트마다(불러온 순서).
     pub sheets: Vec<SheetSummary>,
 }
@@ -742,10 +899,20 @@ pub fn summary_all(sheets: &[SummaryInput<'_>], history: &[ChangeEntry]) -> Save
                 + size_changes(&baseline.row_heights, &current.row_heights).len())
                 as u32;
         }
+        let (deleted, unhidden) = if comparable(baseline, current) {
+            let cut: u32 = baseline.deleted_rows.iter().map(|c| c.count).sum();
+            let rows = baseline.unhidden_rows.iter().filter(|&&r| r < baseline.rows).count();
+            let cols = baseline.unhidden_cols.iter().filter(|&&c| c < baseline.cols).count();
+            (cut, (rows + cols) as u32)
+        } else {
+            (0, 0)
+        };
         out.added_rows += added;
         out.added_cols += added_cols;
         out.cancelled_rows += current.cancelled_rows.len() as u32;
         out.cancel_changes += cancel_changes;
+        out.deleted_rows += deleted;
+        out.unhidden += unhidden;
         out.sheets.push(SheetSummary {
             name: current.sheet.clone(),
             required: progress.required,
@@ -755,6 +922,8 @@ pub fn summary_all(sheets: &[SummaryInput<'_>], history: &[ChangeEntry]) -> Save
             added_cols,
             cancelled_rows: current.cancelled_rows.len() as u32,
             style_cells: styled,
+            deleted_rows: deleted,
+            unhidden,
         });
     }
 
@@ -800,6 +969,108 @@ mod tests {
         set(&mut now, "G3", CellValue::Number(0.065)); // 수식 결과(재계산)는 쓰지 않는다
         set(&mut now, "H5", CellValue::Text("교재".into()));
         assert_eq!(changed_cells(&base, &now), [at("F3"), at("F4"), at("H5")]);
+    }
+
+    #[test]
+    fn overwritten_formulas_are_written_even_with_same_value_and_never_conflict() {
+        let base = budget();
+        let mut now = base.clone();
+        // G3: 수식(=F3/E3-1, 0.1)을 같은 값으로, G4: 다른 값으로, G5: 지워서 값으로 바꿨다.
+        for (a, v) in [("G3", CellValue::Number(0.1)), ("G4", CellValue::Number(7.0)), ("G5", CellValue::Empty)] {
+            let cell = now.cell_mut(at(a)).unwrap();
+            cell.v = v;
+            cell.f = None;
+        }
+        set(&mut now, "G6", CellValue::Number(0.5)); // 아직 수식인 칸의 재계산 결과는 쓰지 않는다
+        assert_eq!(changed_cells(&base, &now), [at("G3"), at("G4"), at("G5")]);
+        let p = plan(&base, &now, &[], &[], ExportOptions::default(), 0, &HashSet::new());
+        assert_eq!(p.cells, [at("G3"), at("G4"), at("G5")]);
+        // Excel이 그사이 다시 계산해 값이 달라졌어도 충돌이 아니다.
+        let mut excel: Vec<CellValue> = base.cells.iter().map(|c| c.v.clone()).collect();
+        excel[(2 * base.cols + 6) as usize] = CellValue::Number(0.2);
+        let r = compare(&base, &now, &excel, &p.cells);
+        assert!(r.conflicts.is_empty() && !r.suspicious, "{r:?}");
+    }
+
+    #[test]
+    fn cleared_formula_in_added_row_is_written_over_the_filled_down_formula() {
+        let base = budget();
+        let mut now = base.clone();
+        now.append_rows(2); // 모델 8·9행, G열은 위 행 수식을 따른다
+        now.cell_mut(at("G9")).unwrap().f = None; // 첫 새 행의 수식을 지움
+        assert_eq!(fill_cols(&base, &now), [6], "다른 새 행(G10)에 수식이 남아 있으면 채워 내린다");
+        assert_eq!(changed_cells(&base, &now), [at("G9")], "채워 내린 수식을 빈 값으로 덮는다");
+        now.cell_mut(at("G10")).unwrap().f = None;
+        assert!(fill_cols(&base, &now).is_empty());
+        assert!(changed_cells(&base, &now).is_empty());
+    }
+
+    #[test]
+    fn deleted_imported_rows_are_cut_first_and_excel_values_line_up() {
+        let excel_rows = budget(); // 지금 Excel에 있는 모양
+        let mut base = excel_rows.clone();
+        let mut now = excel_rows.clone();
+        // 앱에서 불러온 행 두 번 지움: 모델 4행(F4 5000) → 그 뒤 모델 5행(지금 좌표).
+        for (from, count) in [(3, 1), (5, 1)] {
+            base.remove_rows(from, count);
+            now.remove_rows(from, count);
+            base.deleted_rows.push(RowCut { from, count });
+        }
+        set(&mut now, "F3", CellValue::Number(9800.0));
+        let p = plan(&base, &now, &[], &[], ExportOptions::default(), 0, &HashSet::new());
+        assert_eq!(p.row_cuts, [RowCut { from: 3, count: 1 }, RowCut { from: 5, count: 1 }]);
+        assert_eq!((p.deleted_rows(), p.cells.clone()), (2, vec![at("F3")]));
+        assert!(!p.is_empty());
+        // 저장 직전 Excel 값(지우기 전 모양)을 같은 순서로 빼면 기준 시트와 맞는다(충돌·위치 변화 없음).
+        assert_eq!(source_rows(&base), excel_rows.rows);
+        let mut excel: Vec<CellValue> = excel_rows.cells.iter().map(|c| c.v.clone()).collect();
+        align_to_baseline(&mut excel, base.cols, &base.deleted_rows);
+        assert_eq!(excel.len(), base.cells.len());
+        let r = compare(&base, &now, &excel, &p.cells);
+        assert!(r.conflicts.is_empty() && r.drift_count == 0 && !r.suspicious, "{r:?}");
+        let s = summary(&base, &now, &crate::config::tests::configured(&now), &[]);
+        assert_eq!((s.deleted_rows, s.sheets[0].deleted_rows), (2, 2));
+    }
+
+    #[test]
+    fn unhidden_lines_are_planned_without_the_style_option() {
+        let mut base = budget();
+        base.unhidden_rows = vec![4, 99];
+        base.unhidden_cols = vec![2];
+        let mut now = base.clone();
+        now.col_widths[2] = 0.0; // 크기를 모르면 기본 크기
+        let p = plan(&base, &now, &[], &[], ExportOptions::default(), 0, &HashSet::new());
+        assert_eq!(p.unhide_rows, [(4, 15.0)], "표 밖 줄은 뺀다");
+        assert_eq!(p.unhide_cols, [(2, DEFAULT_COL_PT)]);
+        assert_eq!(p.unhidden(), 2);
+        assert!(p.cells.is_empty() && !p.is_empty());
+        assert_eq!(summary(&base, &now, &crate::config::tests::configured(&now), &[]).unhidden, 2);
+    }
+
+    #[test]
+    fn saving_to_the_original_adopts_cuts_unhides_and_written_values() {
+        let mut base = budget();
+        base.unhidden_rows = vec![4];
+        base.remove_rows(3, 1);
+        base.deleted_rows.push(RowCut { from: 3, count: 1 });
+        let mut now = base.clone();
+        now.unhidden_rows = vec![3];
+        for (a, v) in [("F3", CellValue::Number(1.0)), ("G4", CellValue::Number(2.0))] {
+            let cell = now.cell_mut(at(a)).unwrap();
+            cell.v = v;
+            cell.f = None;
+        }
+        let p = plan(&base, &now, &[], &[], ExportOptions::default(), 0, &HashSet::new());
+        let planned = now.clone();
+        // 저장하는 사이 또 지운 행(이번 계획에 없음)은 기록에 남는다.
+        base.deleted_rows.push(RowCut { from: 5, count: 1 });
+        adopt_saved(&mut base, &mut now, &planned, &p, written_cells(&p), ExportOptions::default());
+        assert_eq!(base.deleted_rows, [RowCut { from: 5, count: 1 }]);
+        assert!(base.unhidden_rows.is_empty() && now.unhidden_rows.is_empty());
+        let g = base.cell(at("G4")).unwrap();
+        assert_eq!((g.v.clone(), g.f.is_none()), (CellValue::Number(2.0), true));
+        base.deleted_rows.clear();
+        assert!(plan(&base, &now, &[], &[], ExportOptions::default(), 0, &HashSet::new()).is_empty());
     }
 
     #[test]

@@ -3,7 +3,7 @@ import type { SnapshotMeta } from "./SnapshotMeta";
 
 export type SnapshotView = { meta: SnapshotMeta, 
 /**
- * 지금과 다른 칸 수.
+ * 지금과 다른 칸 수(모든 시트).
  */
 diff: number, 
 /**

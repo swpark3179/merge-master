@@ -216,11 +216,12 @@ pub(crate) async fn check(
     if src.sheets.len() != snap.sheets.len() {
         return Err("불러온 시트와 세션의 시트가 맞지 않습니다. 다시 불러와 주세요".into());
     }
+    // 앱에서 지운 불러온 행은 아직 Excel에 있으므로 그만큼 더 읽고, 같은 순서로 빼서 기준 시트 모양으로 맞춘다.
     let ranges: Vec<(String, CellRef, u32, u32)> = src
         .sheets
         .iter()
         .zip(&snap.sheets)
-        .map(|(name, x)| (name.clone(), x.baseline.origin, x.baseline.rows, x.baseline.cols))
+        .map(|(name, x)| (name.clone(), x.baseline.origin, export::source_rows(&x.baseline), x.baseline.cols))
         .collect();
     let id = src.workbook_id.clone();
     let (status, excel) = run_excel(&state.excel, move |s| {
@@ -232,6 +233,14 @@ pub(crate) async fn check(
         Ok((status, values))
     })
     .await?;
+    let excel: Vec<Vec<CellValue>> = excel
+        .into_iter()
+        .zip(&snap.sheets)
+        .map(|(mut values, x)| {
+            export::align_to_baseline(&mut values, x.baseline.cols, &x.baseline.deleted_rows);
+            values
+        })
+        .collect();
     let sheets: Vec<SheetCheck> = snap
         .sheets
         .iter()
@@ -343,21 +352,9 @@ pub async fn save_run(
             keep.iter().map(|&at| (at, values[(at.row * cols + at.col) as usize].clone())).collect()
         })
         .collect();
-    let written: Vec<HashMap<CellRef, CellValue>> = plans
-        .iter()
-        .map(|(_, plan)| {
-            plan.blocks
-                .iter()
-                .flat_map(|b| {
-                    b.values
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| (CellRef::new(b.range.row + i as u32, b.range.col), v.value.clone()))
-                })
-                .collect()
-        })
-        .collect();
-    let (styles, cancelled) = (options.export.styles, options.export.cancelled);
+    let written: Vec<HashMap<CellRef, CellValue>> = plans.iter().map(|(_, plan)| export::written_cells(plan)).collect();
+    let plans: Vec<ExportPlan> = plans.into_iter().map(|(_, plan)| plan).collect();
+    let export_opts = options.export;
     let closed = matches!(options.after, AfterSave::ReadOnly);
     let kept_count = kept.iter().map(Vec::len).sum::<usize>() as u32;
     let history_entries = snap.history.len() as u32;
@@ -366,7 +363,9 @@ pub async fn save_run(
     let session = job.session()?;
     session
         .with(move |s| {
-            for (i, ((kept, written), planned)) in kept.into_iter().zip(written).zip(&planned).enumerate() {
+            for (i, ((kept, written), (planned, plan))) in
+                kept.into_iter().zip(written).zip(planned.iter().zip(&plans)).enumerate()
+            {
                 let Some(slot) = s.sheets.get_mut(i) else { continue };
                 for (at, v) in &kept {
                     if let Some(cell) = slot.baseline.cell_mut(*at) {
@@ -374,33 +373,8 @@ pub async fn save_run(
                     }
                 }
                 if original {
-                    // 표 아래·오른쪽에 끼워 넣은 행·열은 이제 원본에 있다: 기준 시트에도 붙인다.
-                    collect_core::export::adopt_structure(&mut slot.baseline, planned);
-                    let (rows, cols) = (planned.rows, planned.cols);
-                    slot.model.added_rows.retain(|a| a.row >= rows);
-                    for (at, v) in written {
-                        if let Some(cell) = slot.baseline.cell_mut(at) {
-                            cell.v = v;
-                        }
-                    }
-                    if styles {
-                        slot.baseline.styles = slot.model.styles.clone();
-                        slot.baseline.merges = slot.model.merges.clone();
-                        // 기준 시트는 저장 계획을 만든 크기다(그사이 붙인 행·열은 아직 원본에 없다).
-                        for r in 0..rows.min(slot.model.rows) {
-                            for c in 0..cols.min(slot.model.cols) {
-                                let at = CellRef::new(r, c);
-                                let style = slot.model.cell(at).map(|m| m.s);
-                                if let (Some(s), Some(cell)) = (style, slot.baseline.cell_mut(at)) {
-                                    cell.s = s;
-                                }
-                            }
-                        }
-                    }
-                    // 취소 표시를 Excel에 썼으면 그 행들이 새 기준이다(서식까지 썼으면 덮개 없이 쓴 행은 풀린 것).
-                    if cancelled {
-                        slot.baseline.cancelled_rows = planned.cancelled_rows.clone();
-                    }
+                    // 원본이 이제 저장한 모양이다: 지운 행·숨김 해제·붙인 행·열·쓴 값(·서식)을 기준 시트에 반영한다.
+                    export::adopt_saved(&mut slot.baseline, &mut slot.model, planned, plan, written, export_opts);
                 }
                 if !kept.is_empty() {
                     s.host_set(EXCEL_USER, BatchOrigin::Excel, i, kept);
@@ -423,12 +397,6 @@ pub async fn save_run(
         history_entries,
     });
     Ok(SaveResult { report, original, kept: kept_count, closed, stopped })
-}
-
-/// 취합 마감(참여자 입력을 막음) / 다시 열기.
-#[tauri::command]
-pub async fn collect_close(state: State<'_, AppState>, job: String, closed: bool) -> CmdResult<()> {
-    state.session(&job)?.with(move |s| s.set_closed(closed)).await
 }
 
 /// 저장한 파일을 탐색기에서 보여 준다.

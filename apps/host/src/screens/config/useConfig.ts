@@ -9,13 +9,20 @@ import type { CellWrite } from "../../api";
 import { errorText, jobEvent } from "../../api";
 import { useApi, useJobId } from "../../job";
 
-/** 칸 값을 바꾼 새 시트(원래 시트는 그대로 둔다). */
-function withValues(m: SheetModel, cells: { row: number; col: number; value?: CellWrite["value"] }[]): SheetModel {
+/**
+ * 칸 값을 바꾼 새 시트(원래 시트는 그대로 둔다). `byPerson`이면 사람이 넣은 값이라 수식 칸의 수식이 사라진다
+ * (수식 재계산 결과는 `false`).
+ */
+function withValues(
+  m: SheetModel,
+  cells: { row: number; col: number; value?: CellWrite["value"] }[],
+  byPerson: boolean,
+): SheetModel {
   const out = m.cells.slice();
   for (const u of cells) {
     const i = u.row * m.cols + u.col;
     const cell = out[i];
-    if (cell) out[i] = { ...cell, v: u.value ?? null };
+    if (cell) out[i] = byPerson ? { ...cell, v: u.value ?? null, f: undefined } : { ...cell, v: u.value ?? null };
   }
   return { ...m, cells: out };
 }
@@ -78,7 +85,7 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
             refresh();
           })
           .catch(() => {});
-      } else if (ev.type === "cells") setModel((m) => withValues(m, ev.cells));
+      } else if (ev.type === "cells") setModel((m) => withValues(m, ev.cells, ev.by !== ""));
       else if (ev.type === "resized") setModel((m) => withLineSize(m, ev.axis, ev.from, ev.count, ev.size));
       else if (ev.type === "styles")
         setModel((m) => {
@@ -145,7 +152,7 @@ export function useConfig(initial: SheetModel, sheet: number, active: boolean) {
   /** 호스트가 칸 내용을 바꾼다: 바로 그리고, 세션에 보낸 뒤 설정 보기(범례·명단·열 이름)를 새로 읽는다. */
   const setCells = useCallback(
     async (cells: CellWrite[]) => {
-      setModel((m) => withValues(m, cells));
+      setModel((m) => withValues(m, cells, true));
       setError(null);
       try {
         await api.sheetSetCells(sheet, cells);

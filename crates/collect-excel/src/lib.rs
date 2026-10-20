@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use collect_core::{CellRef, CellValue, SheetModel};
+use collect_core::{CellRef, CellValue};
 use collect_server::{RecalcRequest, RecalcStatus, SessionHandle};
 use excel_com::{CalcTarget, ExcelThread, Session};
 use tokio::sync::mpsc;
@@ -80,100 +80,113 @@ impl Recalc {
         });
     }
 
-    /// 계산 사본을 연다(모든 시트, `models`·`sheets`는 세션 안 시트 순번 순서). 수식이 다른 시트를 볼 수 있어 수식이 없는
-    /// 시트도 사본에 둔다. `key`는 Excel 계산 사본의 키(업무·서비스 id), 상태가 바뀌면 `notify`를 부른다. tokio 런타임
-    /// 안에서 부른다.
-    #[allow(clippy::too_many_arguments)]
+    /// 계산 사본을 연다(모든 시트, `sheets`는 세션 안 시트 순번 순서의 Excel 시트 이름). 수식이 다른 시트를 볼 수 있어
+    /// 수식이 없는 시트도 사본에 둔다. 사본을 연 뒤 앱에서 지운 행을 지우고 숨긴 줄을 펴서 지금 기준 시트와 맞추고, 기록을
+    /// 되짚는다. 여는 사이 행을 또 지웠으면(판이 바뀜) 다시 연다. `key`는 Excel 계산 사본의 키(업무·서비스 id), 상태가
+    /// 바뀌면 `notify`를 부른다. tokio 런타임 안에서 부른다.
     pub fn start(
         &self,
         excel: Arc<ExcelThread>,
         key: &str,
         session: SessionHandle,
-        models: &[SheetModel],
         source: CalcSource,
         sheets: &[String],
         notify: Notify,
     ) {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let targets: Vec<CalcTarget> = models
-            .iter()
-            .zip(sheets)
-            .map(|(model, sheet)| {
-                let cols = model.cols.max(1);
-                let formulas = model
-                    .cells
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| c.f.is_some())
-                    .map(|(i, _)| CellRef::new(i as u32 / cols, i as u32 % cols))
-                    .collect();
-                CalcTarget { sheet: sheet.clone(), origin: model.origin, formulas }
-            })
-            .collect();
         let (status, current) = (self.status.clone(), self.generation.clone());
-        let key = key.to_string();
-        if targets.iter().all(|t| t.formulas.is_empty()) {
-            set(&notify, &status, RecalcStatus::None);
-            tokio::spawn(async move {
-                let _ = run_excel(&excel, move |s| {
-                    s.close_calc_for(&key);
-                    Ok(())
-                })
-                .await;
-            });
-            return;
-        }
-        set(&notify, &status, RecalcStatus::Opening);
+        let (key, sheets) = (key.to_string(), sheets.to_vec());
         tokio::spawn(async move {
-            // 원본을 찾아(닫혔으면 다시 열어) 계산 사본을 만든다. 앱을 다시 켜 이어서 할 때도 같은 길. 에이전트는 넘겨받은
-            // 원본 파일에서 바로 만든다.
-            let k = key.clone();
-            let opened = run_excel(&excel, move |s| match &source {
-                CalcSource::Workbook(id) => {
-                    s.locate(id)?;
-                    s.open_calc_for(&k, id, targets)
-                }
-                CalcSource::File(path) => s.open_calc_file_for(&k, path, targets),
-            })
-            .await;
-            if current.load(Ordering::SeqCst) != generation {
-                // 그사이 다시 확정했거나 업무를 끝냈다. 끝냈으면 방금 연 사본을 닫는다(다시 확정했으면 새 사본이 대신한다).
-                if let Ok(info) = opened {
+            loop {
+                let Ok(layout) = session.calc_layout().await else { return };
+                let targets: Vec<CalcTarget> = layout
+                    .sheets
+                    .into_iter()
+                    .zip(&sheets)
+                    .map(|(l, sheet)| CalcTarget {
+                        sheet: sheet.clone(),
+                        origin: CellRef::default(), // 아래에서 채운다
+                        formulas: l.formulas,
+                        cuts: l.cuts,
+                        unhide_rows: l.unhide_rows,
+                        unhide_cols: l.unhide_cols,
+                    })
+                    .collect();
+                let Ok(origins) = session.with(|s| s.sheets.iter().map(|x| x.model.origin).collect::<Vec<_>>()).await
+                else {
+                    return;
+                };
+                let targets: Vec<CalcTarget> =
+                    targets.into_iter().zip(origins).map(|(t, origin)| CalcTarget { origin, ..t }).collect();
+                if targets.iter().all(|t| t.formulas.is_empty()) {
+                    set(&notify, &status, RecalcStatus::None);
                     let k = key.clone();
                     let _ = run_excel(&excel, move |s| {
-                        if s.calc_path_for(&k) == Some(info.path.as_path()) {
-                            s.close_calc_for(&k);
-                        }
+                        s.close_calc_for(&k);
                         Ok(())
                     })
                     .await;
+                    return;
                 }
+                set(&notify, &status, RecalcStatus::Opening);
+                // 원본을 찾아(닫혔으면 다시 열어) 계산 사본을 만든다. 앱을 다시 켜 이어서 할 때도 같은 길. 에이전트는
+                // 넘겨받은 원본 파일에서 바로 만든다.
+                let (k, src) = (key.clone(), source.clone());
+                let opened = run_excel(&excel, move |s| match &src {
+                    CalcSource::Workbook(id) => {
+                        s.locate(id)?;
+                        s.open_calc_for(&k, id, targets)
+                    }
+                    CalcSource::File(path) => s.open_calc_file_for(&k, path, targets),
+                })
+                .await;
+                if current.load(Ordering::SeqCst) != generation {
+                    // 그사이 다시 확정했거나 업무를 끝냈다. 끝냈으면 방금 연 사본을 닫는다(다시 확정했으면 새 사본이
+                    // 대신한다).
+                    if let Ok(info) = opened {
+                        let k = key.clone();
+                        let _ = run_excel(&excel, move |s| {
+                            if s.calc_path_for(&k) == Some(info.path.as_path()) {
+                                s.close_calc_for(&k);
+                            }
+                            Ok(())
+                        })
+                        .await;
+                    }
+                    return;
+                }
+                let info = match opened {
+                    Ok(info) => info,
+                    Err(e) => {
+                        tracing::warn!("계산 사본을 열 수 없습니다: {e}");
+                        let message = format!("수식은 저장할 때 계산합니다 ({e})");
+                        return set(&notify, &status, RecalcStatus::Unavailable { message });
+                    }
+                };
+                let (tx, rx) = mpsc::unbounded_channel();
+                session.set_recalc(Some(tx));
+                // 사본이 열리기 전에 들어온 입력도 반영한다(set_recalc 뒤의 입력은 채널로 온다. 겹쳐도 해롭지 않다).
+                // 여는 사이 행을 지웠으면 사본 모양이 다르다: 다시 연다.
+                let Ok(now) = session.calc_layout().await else { return };
+                if now.epoch != layout.epoch {
+                    session.set_recalc(None);
+                    continue;
+                }
+                set(&notify, &status, RecalcStatus::Ready { formulas: info.formulas as u32 });
+                let worker = Worker {
+                    notify,
+                    excel,
+                    key,
+                    session,
+                    status,
+                    current,
+                    generation,
+                    path: info.path,
+                    epoch: now.epoch,
+                };
+                worker.run(rx, now.replay).await;
                 return;
             }
-            let info = match opened {
-                Ok(info) => info,
-                Err(e) => {
-                    tracing::warn!("계산 사본을 열 수 없습니다: {e}");
-                    let message = format!("수식은 저장할 때 계산합니다 ({e})");
-                    return set(&notify, &status, RecalcStatus::Unavailable { message });
-                }
-            };
-            let (tx, rx) = mpsc::unbounded_channel();
-            session.set_recalc(Some(tx));
-            // 사본이 열리기 전에 들어온 입력도 반영한다(set_recalc 뒤의 입력은 채널로 온다. 겹쳐도 해롭지 않다).
-            let earlier = session
-                .with(|s| {
-                    let mut last: HashMap<(u32, CellRef), CellValue> = HashMap::new();
-                    for e in s.history() {
-                        last.insert((e.sheet, CellRef::new(e.row, e.col)), e.new.clone());
-                    }
-                    last.into_iter().map(|((sheet, at), v)| (sheet, at, v)).collect::<Vec<_>>()
-                })
-                .await
-                .unwrap_or_default();
-            set(&notify, &status, RecalcStatus::Ready { formulas: info.formulas as u32 });
-            let worker = Worker { notify, excel, key, session, status, current, generation, path: info.path };
-            worker.run(rx, earlier).await;
         });
     }
 }
@@ -188,6 +201,15 @@ struct Worker {
     current: Arc<AtomicU64>,
     generation: u64,
     path: PathBuf,
+    /// 이 사본의 판(세션이 행을 지우면 는다 — 결과에 실어 보낸다).
+    epoch: u64,
+}
+
+/// 계산 사본에 할 일 하나(받은 순서대로 한다).
+enum Step {
+    Writes(Vec<(u32, CellRef, CellValue)>),
+    /// 행 지우기(시트 순번, 그 순간의 모델 행 좌표).
+    Cuts(Vec<(u32, collect_core::RowCut)>),
 }
 
 /// 같은 칸(시트·칸)을 여러 번 바꿨으면 마지막 값만 쓴다(순서는 마지막으로 바뀐 순).
@@ -208,33 +230,58 @@ impl Worker {
         self.current.load(Ordering::SeqCst) == self.generation
     }
 
-    async fn run(self, mut rx: mpsc::UnboundedReceiver<RecalcRequest>, mut queue: Vec<(u32, CellRef, CellValue)>) {
+    /// 요청 하나를 할 일에 더한다: 행 지우기가 있으면 먼저(그 뒤의 입력은 지운 뒤 좌표다), 다음 입력. 판은 받은 요청 중
+    /// 가장 새것(결과에 실어 보낸다 — 세션은 지금 판이 아닌 결과를 버린다).
+    fn take(&mut self, req: RecalcRequest, queue: &mut Vec<Step>) {
+        self.epoch = self.epoch.max(req.epoch);
+        if !req.cuts.is_empty() {
+            queue.push(Step::Cuts(req.cuts));
+        }
+        if !req.writes.is_empty() {
+            queue.push(Step::Writes(req.writes));
+        }
+    }
+
+    async fn run(mut self, mut rx: mpsc::UnboundedReceiver<RecalcRequest>, first: Vec<(u32, CellRef, CellValue)>) {
+        // 연 직후에는 입력이 없어도 한 번 계산한다(지운 행·펼친 줄을 반영한 결과).
+        let mut queue: Vec<Step> = vec![Step::Writes(first)];
         loop {
             if queue.is_empty() {
                 match rx.recv().await {
-                    Some(req) => queue.extend(req.writes),
+                    Some(req) => self.take(req, &mut queue),
                     None => break, // 세션이 재계산을 껐다(다시 확정)
                 }
                 tokio::time::sleep(DEBOUNCE).await;
             }
             while let Ok(req) = rx.try_recv() {
-                queue.extend(req.writes);
+                self.take(req, &mut queue);
             }
-            let writes = last_per_cell(std::mem::take(&mut queue));
+            let steps = std::mem::take(&mut queue);
             let (path, key) = (self.path.clone(), self.key.clone());
             let result = run_excel(&self.excel, move |s| {
                 // 다시 확정해 다른 사본이 열렸으면 손대지 않는다.
                 if s.calc_path_for(&key) != Some(path.as_path()) {
                     return Ok(None);
                 }
-                s.calc_apply_for(&key, &writes).map(Some)
+                // 받은 순서대로: 행 지우기는 그때까지 모은 입력을 쓴 뒤에 한다(입력은 지우기 전 좌표).
+                let mut writes = Vec::new();
+                for step in steps {
+                    match step {
+                        Step::Writes(w) => writes.extend(w),
+                        Step::Cuts(cuts) => {
+                            s.calc_apply_writes_for(&key, &last_per_cell(std::mem::take(&mut writes)))?;
+                            s.calc_cut_rows_for(&key, &cuts)?;
+                        }
+                    }
+                }
+                s.calc_apply_for(&key, &last_per_cell(writes)).map(Some)
             })
             .await;
             if !self.alive() {
                 break;
             }
             match result {
-                Ok(Some(values)) => self.session.formula_results(values),
+                Ok(Some(values)) => self.session.formula_results_at(self.epoch, values),
                 Ok(None) => break,
                 Err(e) => {
                     tracing::warn!("수식 재계산 실패: {e}");

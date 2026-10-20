@@ -419,6 +419,6 @@ async fn host_feed_carries_cell_changes_and_resets() {
     }
     host(&mut st, |s| s.changed());
     assert_eq!(feed.try_recv().unwrap(), HostEvent::Reset);
-    st.handle(Command::Formulas(vec![(0, CellRef::new(r, 6), CellValue::Number(0.5))]));
+    st.handle(Command::Formulas { values: vec![(0, CellRef::new(r, 6), CellValue::Number(0.5))], epoch: None });
     assert!(matches!(feed.try_recv().unwrap(), HostEvent::Cells { by, .. } if by.is_empty()));
 }

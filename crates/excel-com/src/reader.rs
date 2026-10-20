@@ -32,7 +32,7 @@ pub(crate) const XL_INSIDE_HORIZONTAL: i32 = 12;
 const XL_GENERAL_FORMAT_NAME: i32 = 26;
 /// 한 번에 읽을 수 있는 최대 셀 수. 값 배열 하나가 이 크기를 넘으면 Excel·메모리 모두 버겁다.
 pub const MAX_CELLS: u64 = 1_000_000;
-/// 숨긴 행·열을 포함해 불러올 때 쓸 기본 크기(pt). 숨긴 행·열은 Excel이 크기를 0으로 알려 준다.
+/// 숨긴 행·열을 펼쳐 불러올 때 쓸 기본 크기(pt). 숨긴 행·열은 Excel이 크기를 0으로 알려 준다(원래 크기는 알 수 없다).
 const DEFAULT_COL_PT: f32 = 48.0;
 const DEFAULT_ROW_PT: f32 = 15.0;
 
@@ -53,8 +53,6 @@ pub struct ImportItems {
     pub dimensions: bool,
     /// 데이터 유효성 → 입력 형식.
     pub validations: bool,
-    /// 숨긴 행·열도 보이는 행·열로 가져온다.
-    pub include_hidden: bool,
 }
 
 impl Default for ImportItems {
@@ -67,7 +65,6 @@ impl Default for ImportItems {
             fills: true,
             dimensions: true,
             validations: true,
-            include_hidden: false,
         }
     }
 }
@@ -228,6 +225,9 @@ impl Session {
             validations: Vec::new(),
             hidden_rows: Vec::new(),
             hidden_cols: Vec::new(),
+            unhidden_rows: Vec::new(),
+            unhidden_cols: Vec::new(),
+            deleted_rows: Vec::new(),
             added_rows: Vec::new(),
             cancelled_rows: Vec::new(),
             layout: 0,
@@ -255,17 +255,15 @@ impl Session {
             model.col_widths = dims.col_widths;
             model.row_heights = dims.row_heights;
         }
+        // 숨긴 행·열은 늘 기본 크기로 펼쳐 불러온다(참여자에게도 보인다). 저장할 때 Excel에서도 숨김을 푼다.
         for &r in &hidden_rows {
-            // 숨긴 행·열을 포함하면 기본 크기로 펼치고, 아니면 크기 0(그리드에서 보이지 않음)으로 둔다.
-            model.row_heights[r as usize] = if items.include_hidden { DEFAULT_ROW_PT } else { 0.0 };
+            model.row_heights[r as usize] = DEFAULT_ROW_PT;
         }
         for &c in &hidden_cols {
-            model.col_widths[c as usize] = if items.include_hidden { DEFAULT_COL_PT } else { 0.0 };
+            model.col_widths[c as usize] = DEFAULT_COL_PT;
         }
-        if !items.include_hidden {
-            model.hidden_rows = hidden_rows;
-            model.hidden_cols = hidden_cols;
-        }
+        model.unhidden_rows = hidden_rows;
+        model.unhidden_cols = hidden_cols;
         let (frozen_rows, frozen_cols) = read_freeze(book, &ws, sheet_name)?;
         model.frozen_rows = frozen_rows.saturating_sub(used.row).min(used.rows);
         model.frozen_cols = opts.frozen_cols.unwrap_or(frozen_cols.saturating_sub(used.col)).min(used.cols);
@@ -794,7 +792,10 @@ mod tests {
     fn read_options_from_json_use_defaults() {
         let o: ReadOptions = serde_json::from_str(r#"{"range":"A1:I1002","items":{"borders":false}}"#).unwrap();
         assert_eq!(o.range.as_deref(), Some("A1:I1002"));
-        assert!(!o.items.borders && o.items.fonts && !o.items.include_hidden);
+        assert!(!o.items.borders && o.items.fonts);
+        // 예전 화면이 보내던 '숨긴 행·열 포함'은 무시한다(늘 펼쳐 불러온다).
+        let old: ReadOptions = serde_json::from_str(r#"{"items":{"includeHidden":false}}"#).unwrap();
+        assert!(old.items.formulas);
         assert_eq!(o.header_rows, None);
     }
 }

@@ -202,6 +202,8 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
             {result.report.resized > 0 ? ` · 크기 ${result.report.resized}줄` : ""}
             {result.report.inserted > 0 ? ` · 추가한 행 ${result.report.inserted}개` : ""}
             {result.report.insertedCols > 0 ? ` · 추가한 열 ${result.report.insertedCols}개` : ""}
+            {result.report.deletedRows > 0 ? ` · 지운 행 ${result.report.deletedRows}개` : ""}
+            {result.report.unhidden > 0 ? ` · 숨김 푼 줄 ${result.report.unhidden}개` : ""}
             {result.report.historySheet ? ` · ‘${result.report.historySheet}’ 시트` : ""}
             {result.kept > 0 ? ` · Excel 값 유지 ${result.kept}칸` : ""} ·{" "}
             {ok ? "다시 읽어 확인함" : `다시 읽었더니 다른 칸 ${result.report.mismatched.length}개`} ·{" "}
@@ -280,6 +282,16 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
                   취소 행 <b>{s.cancelledRows.toLocaleString()}</b>
                 </span>
               )}
+              {s.deletedRows > 0 && (
+                <span title="앱에서 지운 엑셀 행. 저장하면 Excel에서도 그 행 전체를 지웁니다">
+                  지운 행 <b>{s.deletedRows.toLocaleString()}</b>
+                </span>
+              )}
+              {s.unhidden > 0 && (
+                <span title="Excel에서 숨겨져 있던 행·열(펼쳐서 불러옴). 저장하면 Excel에서도 숨김을 풉니다">
+                  숨김을 풀 행·열 <b>{s.unhidden.toLocaleString()}</b>줄
+                </span>
+              )}
               {s.unassigned > 0 && <span>담당자 없는 필수 칸 {s.unassigned}(누구나 입력)</span>}
               <span className="spacer" />
               {info.closed ? (
@@ -304,6 +316,8 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
                     {x.addedRows > 0 && <span>추가된 행 {x.addedRows.toLocaleString()}</span>}
                     {x.addedCols > 0 && <span>추가된 열 {x.addedCols.toLocaleString()}</span>}
                     {x.cancelledRows > 0 && <span>취소 행 {x.cancelledRows.toLocaleString()}</span>}
+                    {x.deletedRows > 0 && <span>지운 행 {x.deletedRows.toLocaleString()}</span>}
+                    {x.unhidden > 0 && <span>숨김 풀 줄 {x.unhidden.toLocaleString()}</span>}
                     {x.styleCells > 0 && <span className="muted">서식 {x.styleCells.toLocaleString()}칸</span>}
                   </div>
                 ))}
@@ -494,7 +508,8 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
                 </label>
               )}
               <span className="muted small">
-                수식 칸과 원래 서식은 건드리지 않습니다. 수식은 저장할 때 Excel이 다시 계산합니다.
+                원래 서식은 건드리지 않습니다. 수식은 저장할 때 Excel이 다시 계산합니다(앱에서 값으로 바꾼 수식 칸은 그
+                값으로 저장합니다).
               </span>
             </div>
             <div className="field">

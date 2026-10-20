@@ -5,13 +5,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use collect_core::SheetModel;
 use collect_core::config::CollectConfig;
-use collect_core::edit::ConfigEdit;
-use collect_core::format::{FormatEdit, apply_format};
-use collect_core::history::BatchOrigin;
-use collect_core::view::ConfigView;
-use collect_core::{CellRef, CellValue, SheetModel};
-use collect_server::{Hub, LanAddress, ServerHandle, SessionHandle, SessionInit, Shared};
+use collect_server::{Hub, LanAddress, ServerHandle, SessionHandle, SessionInit};
 use excel_com::{
     ExcelStatus, ExcelThread, ReadOptions, ReadProgress, ReadStats, Session, SheetInspection, WorkbookInfo,
 };
@@ -23,12 +19,13 @@ use ts_rs::TS;
 
 mod agent;
 mod handoff;
-mod history;
+mod host;
 mod jobs;
 mod monitor;
 mod people;
 mod recalc;
 mod recovery;
+mod remote;
 mod save;
 mod service;
 
@@ -52,6 +49,8 @@ pub(crate) struct AppState {
     last_jobs: std::sync::Mutex<Vec<jobs::JobSummary>>,
     /// 에이전트 PC로 넘긴 서비스(`agents.json`).
     agents: agent::Agents,
+    /// 서비스 중인 에이전트 업무의 관리자 연결(서비스 id별).
+    remotes: remote::Remotes,
 }
 
 /// 1a에서 읽었지만 아직 확정하지 않은 시트들(미리보기, 시트 이름별)과 그 통합문서. 다른 통합문서를 읽으면 비운다.
@@ -223,7 +222,7 @@ async fn import_commit(
         return Err(jobs::NO_JOB.into());
     }
     let source = collect_excel::CalcSource::Workbook(workbook_id.clone());
-    job.recalc.start(state.excel.clone(), &job.id, session, &models, source, &names, recalc::notify(&app, &job.id));
+    job.recalc.start(state.excel.clone(), &job.id, session, source, &names, recalc::notify(&app, &job.id));
     *job.source.lock().unwrap() = Some(save::Source { workbook_id, sheets: names });
     job.last_save.lock().unwrap().take();
     jobs::emit_jobs(&app);
@@ -257,135 +256,6 @@ fn lan_addresses() -> Vec<LanAddress> {
     collect_server::lan_addresses()
 }
 
-/// 1b 화면이 그릴 설정 보기(그 시트). `viewer`를 주면 그 참여자 시점으로 계산한다(참여자 시점으로 보기).
-#[tauri::command]
-async fn config_view_get(
-    state: State<'_, AppState>,
-    job: String,
-    sheet: usize,
-    viewer: Option<String>,
-) -> CmdResult<ConfigView> {
-    state.session(&job)?.with(move |s| s.view(sheet, viewer.as_deref())).await?
-}
-
-/// 미리보던 사람이 명단에서 빠졌으면(범위 배정을 지움 등) 호스트 시점으로 돌아간다. 작업 안에서 바꾼 설정을 바로 본다.
-fn view_or_host(s: &Shared<'_>, sheet: usize, viewer: Option<&str>) -> CmdResult<ConfigView> {
-    s.view(sheet, viewer).or_else(|_| s.view(sheet, None))
-}
-
-/// 1b 설정 편집(그 시트). 제목·안내·마감, 직접 넣은 명단은 모든 시트가 같이 쓴다.
-#[tauri::command]
-async fn config_apply(
-    state: State<'_, AppState>,
-    job: String,
-    sheet: usize,
-    edit: ConfigEdit,
-    viewer: Option<String>,
-) -> CmdResult<ConfigView> {
-    state
-        .session(&job)?
-        .with(move |s| {
-            s.apply(sheet, edit)?;
-            view_or_host(s, sheet, viewer.as_deref())
-        })
-        .await?
-}
-
-#[derive(Serialize, TS)]
-#[ts(export)]
-struct FormatResult {
-    model: SheetModel,
-    view: ConfigView,
-}
-
-/// 서식 도구 줄·크기 조절(1b, 열 너비·행 높이는 1d에서도). 병합이 바뀌면 입력 가능 셀도 바뀌므로 설정 보기를 함께
-/// 돌려준다. 열 너비·행 높이는 권한이 그대로라 참여자에게 새 시트를 다시 보내지 않고 바뀐 크기만 알린다.
-#[tauri::command]
-async fn sheet_format(
-    state: State<'_, AppState>,
-    job: String,
-    sheet: usize,
-    edit: FormatEdit,
-    viewer: Option<String>,
-) -> CmdResult<FormatResult> {
-    state
-        .session(&job)?
-        .with(move |s| {
-            if let Some((axis, from, count, size)) = edit.as_resize() {
-                s.resize(sheet, axis, from, count, size)?;
-            } else {
-                let slot = s.sheets.get_mut(sheet).ok_or("없는 시트입니다")?;
-                apply_format(&mut slot.model, edit).map_err(|e| e.to_string())?;
-                s.changed();
-            }
-            let model = s.sheets[sheet].model.clone();
-            let view = view_or_host(s, sheet, viewer.as_deref())?;
-            Ok(FormatResult { model, view })
-        })
-        .await?
-}
-
-/// 표 구조 바꾸기(1b·1d 오른쪽 클릭 메뉴): 표 아래에 행·오른쪽에 열 붙이기, 앱에서 붙인 행·열 지우기, 행 취소 표시.
-/// 지울 수 없는 행·열(엑셀에서 불러온 것, 담당자가 배정된 것, 행 배정 기준 열)이면 이유를 돌려준다. 바뀐 시트와 설정
-/// 보기를 돌려준다(참여자에게는 새 시트가 간다).
-#[tauri::command]
-async fn sheet_structure(
-    state: State<'_, AppState>,
-    job: String,
-    sheet: usize,
-    edit: collect_core::structure::StructureEdit,
-    viewer: Option<String>,
-) -> CmdResult<FormatResult> {
-    let session = state.session(&job)?;
-    session.with(move |s| s.structure(sheet, edit)).await??;
-    // 구조 바꾸기는 작업이 끝난 뒤 반영되므로 다시 읽는다.
-    session
-        .with(move |s| {
-            let model = s.sheets.get(sheet).ok_or("없는 시트입니다")?.model.clone();
-            let view = view_or_host(s, sheet, viewer.as_deref())?;
-            Ok(FormatResult { model, view })
-        })
-        .await?
-}
-
-/// 호스트가 칸에 넣을 값(모델 좌표). TS: `apps/host/src/api.ts`의 `CellWrite`.
-#[derive(Deserialize)]
-struct CellWrite {
-    row: u32,
-    col: u32,
-    #[serde(default)]
-    value: CellValue,
-}
-
-/// 호스트가 칸 내용을 바꾼다(1b 설정·4 모니터링 그리드, 그 시트). 참여자 입력처럼 버전·이력·진행률에 반영되고 모두에게
-/// 간다. 수식 칸·같은 값은 세션이 건너뛴다. 머리글(열 이름)이나 행 배정 기준 열(명단)을 바꿨으면 권한을 다시 계산한다 —
-/// 같은 작업 안에서는 다시 계산이 값 반영보다 먼저 돌아서 따로 보낸다.
-#[tauri::command]
-async fn sheet_set_cells(
-    state: State<'_, AppState>,
-    job: String,
-    sheet: usize,
-    cells: Vec<CellWrite>,
-) -> CmdResult<()> {
-    let session = state.session(&job)?;
-    let structural = session
-        .with(move |s| {
-            let slot = s.sheets.get(sheet).ok_or("없는 시트입니다")?;
-            let header_rows = slot.model.header_rows;
-            let key = slot.config.assignment.key_col;
-            let structural = cells.iter().any(|c| c.row < header_rows || Some(c.col) == key);
-            let user = s.host_name().to_string();
-            let cells = cells.into_iter().map(|c| (CellRef::new(c.row, c.col), c.value)).collect();
-            s.host_set(&user, BatchOrigin::Edit, sheet, cells);
-            Ok::<_, String>(structural)
-        })
-        .await??;
-    if structural {
-        session.with(|s| s.changed()).await?;
-    }
-    Ok(())
-}
-
 pub fn run() {
     tracing_subscriber::fmt().with_env_filter(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())).init();
     let excel = Arc::new(ExcelThread::spawn().expect("Excel 스레드를 시작할 수 없습니다"));
@@ -403,6 +273,7 @@ pub fn run() {
             restored: tokio::sync::OnceCell::new(),
             last_jobs: Default::default(),
             agents: Default::default(),
+            remotes: Default::default(),
         })
         .invoke_handler(tauri::generate_handler![
             excel_list_workbooks,
@@ -411,36 +282,36 @@ pub fn run() {
             excel_read_sheet,
             excel_cancel_read,
             import_commit,
-            config_view_get,
-            config_apply,
-            sheet_format,
-            sheet_structure,
-            sheet_set_cells,
+            host::config_view_get,
+            host::config_apply,
+            host::sheet_format,
+            host::sheet_structure,
+            host::sheet_set_cells,
             lan_addresses,
             recalc::recalc_status,
-            monitor::monitor_get,
-            monitor::monitor_progress,
-            monitor::monitor_activity,
-            monitor::comms_get,
-            monitor::notice_send,
-            monitor::highlight_add,
-            monitor::highlight_clear,
-            monitor::chat_send,
-            monitor::chat_react,
-            history::history_query,
-            history::history_timeline,
-            history::history_revert,
-            history::history_revert_batch,
-            history::history_set_value,
-            history::history_export_csv,
-            history::snapshot_list,
-            history::snapshot_take,
-            history::snapshot_diff,
-            history::snapshot_restore,
+            host::monitor_get,
+            host::monitor_progress,
+            host::monitor_activity,
+            host::comms_get,
+            host::notice_send,
+            host::highlight_add,
+            host::highlight_clear,
+            host::chat_send,
+            host::chat_react,
+            host::history_query,
+            host::history_timeline,
+            host::history_revert,
+            host::history_revert_batch,
+            host::history_set_value,
+            host::history_export_csv,
+            host::snapshot_list,
+            host::snapshot_take,
+            host::snapshot_diff,
+            host::snapshot_restore,
             save::save_info,
             save::save_check,
             save::save_run,
-            save::collect_close,
+            host::collect_close,
             save::reveal_file,
             jobs::jobs_list,
             jobs::job_create,
@@ -451,11 +322,11 @@ pub fn run() {
             service::service_unpublish,
             service::service_info,
             service::server_status,
-            service::participants_get,
-            service::participant_approve,
-            service::participant_reject,
-            service::participant_kick,
-            service::participant_unlock,
+            host::participants_get,
+            host::participant_approve,
+            host::participant_reject,
+            host::participant_kick,
+            host::participant_unlock,
             people::ip_names_get,
             people::ip_names_set,
             people::ip_names_put,
@@ -466,8 +337,6 @@ pub fn run() {
             agent::agent_folders,
             agent::agent_services,
             agent::agent_refresh,
-            agent::agent_approve,
-            agent::agent_reject,
             agent::agent_finish,
             agent::agent_retry,
             agent::agent_forget,

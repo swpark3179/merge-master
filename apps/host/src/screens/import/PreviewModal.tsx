@@ -46,7 +46,7 @@ export function PreviewModal(p: Props) {
         <div className="card-head">
           <b>미리보기 · {p.title}</b>
           <span className="muted small">
-            {(m.rows - m.headerRows).toLocaleString()}행 · {m.cols - m.hiddenCols.length}열
+            {(m.rows - m.headerRows).toLocaleString()}행 · {m.cols}열
           </span>
           {p.stale && <span className="muted small">설정이 바뀌어 다시 읽는 중입니다…</span>}
           <span className="spacer" />

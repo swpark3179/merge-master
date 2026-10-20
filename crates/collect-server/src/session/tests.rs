@@ -137,7 +137,7 @@ async fn unknown_name_waits_for_host_then_gets_range() {
     let mut a = connect(&mut st, 1);
     join_unlisted(&mut st, &a, "김민수", None);
     assert!(matches!(a.take()[..], [ServerMsg::Pending { .. }]));
-    assert_eq!(st.snapshot().pending, [PendingRow { name: "김민수".into(), ip: "192.168.0.1".into() }]);
+    assert_eq!(st.snapshot().pending, [PendingRow { name: "김민수".into(), ip: "192.168.0.1".into(), reason: None }]);
 
     let range = CellRange::parse("H500:H620").unwrap();
     st.approve("김민수", Some((0, range)), "추가 배정".into()).unwrap();
@@ -392,4 +392,126 @@ async fn host_name_can_be_set_for_another_pc() {
     assert_eq!(st.snapshot().host_name, "정호스트");
     st.handle(Command::SetHostName(None));
     assert_eq!(st.snapshot().host_name, "에이전트 PC");
+}
+
+/// 에이전트 PC처럼 자동 승인을 켠 세션.
+fn auto() -> State {
+    let mut st = State::new(fixture());
+    st.handle(Command::SetAutoApprove(true));
+    st
+}
+
+fn pending_reason(msgs: &[ServerMsg]) -> Option<Option<PendingReason>> {
+    msgs.iter().find_map(|m| match m {
+        ServerMsg::Pending { reason, .. } => Some(*reason),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn auto_approve_lets_unlisted_names_in_as_typed() {
+    let mut st = auto();
+    assert!(st.info().auto_approve);
+    let mut a = connect(&mut st, 1);
+    join_unlisted(&mut st, &a, " 새사람 ", None);
+    let w = a.welcome();
+    assert_eq!(w.name, "새사람");
+    assert!(st.person("새사람").is_some(), "명단에 더한다");
+    assert!(st.sheets[0].config.assignment.extra_people.iter().any(|n| n == "새사람"));
+    // 명단(행 배정)에 있는 이름도 그대로 들어온다(IP 명단 밖이어도).
+    let mut b = connect(&mut st, 2);
+    join_unlisted(&mut st, &b, "최도윤", None);
+    assert_eq!(b.welcome().name, "최도윤");
+    // 토큰으로 다시 들어오기.
+    st.handle(Command::Disconnect { conn: 1 });
+    let mut again = connect(&mut st, 3);
+    join_unlisted(&mut st, &again, "새사람", Some(&w.token));
+    assert_eq!(again.welcome().token, w.token);
+    // 호스트 PC 서비스(자동 승인 꺼짐)는 지금처럼 승인 대기, 까닭은 보내지 않는다.
+    st.handle(Command::SetAutoApprove(false));
+    let mut c = connect(&mut st, 4);
+    join_unlisted(&mut st, &c, "또다른", None);
+    assert_eq!(pending_reason(&c.take()), Some(None));
+    assert_eq!(st.snapshot().pending[0].reason, None);
+}
+
+#[tokio::test]
+async fn auto_approve_waits_while_the_same_name_is_online_elsewhere() {
+    let mut st = auto();
+    let mut a = connect(&mut st, 1);
+    join_unlisted(&mut st, &a, "이서연", None);
+    let first = a.welcome();
+    let mut b = connect(&mut st, 2);
+    join_unlisted(&mut st, &b, "이서연", None);
+    assert_eq!(pending_reason(&b.take()), Some(Some(PendingReason::Online)));
+    a.take();
+    assert!(!a.closed, "앞 기기는 저절로 끊지 않는다");
+    assert_eq!(st.snapshot().pending[0].reason, Some(PendingReason::Online));
+    // 앞 기기의 연결이 끊기면 기다리던 기기가 들어오고, 앞 기기의 토큰은 더는 맞지 않는다.
+    st.handle(Command::Disconnect { conn: a.conn });
+    let w = b.welcome();
+    assert_ne!(w.token, first.token);
+    let mut c = connect(&mut st, 3);
+    join_unlisted(&mut st, &c, "이서연", Some(&first.token));
+    assert_eq!(pending_reason(&c.take()), Some(Some(PendingReason::Online)));
+    // 호스트가 승인하면 그 기기가 들어오고 접속 중이던 기기는 끊긴다.
+    st.handle(Command::Approve {
+        name: "이서연".into(),
+        range: None,
+        note: String::new(),
+        reply: oneshot::channel().0,
+    });
+    assert_eq!(c.welcome().name, "이서연");
+    assert!(b.take().iter().any(|m| matches!(m, ServerMsg::Kicked { reason: KickReason::SwitchedDevice })));
+}
+
+#[tokio::test]
+async fn names_the_host_kicked_or_rejected_need_approval_again() {
+    let mut st = auto();
+    let mut a = connect(&mut st, 1);
+    join_unlisted(&mut st, &a, "김민지", None);
+    let w = a.welcome();
+    st.handle(Command::Kick { name: "김민지".into(), reply: oneshot::channel().0 });
+    a.take();
+    assert!(a.closed);
+    // 옛 토큰으로도, 이름으로도 바로 들어오지 못한다.
+    let mut b = connect(&mut st, 2);
+    join_unlisted(&mut st, &b, "김민지", Some(&w.token));
+    assert_eq!(pending_reason(&b.take()), Some(Some(PendingReason::Approval)));
+    assert!(st.host_meta.get(META_HELD).is_some_and(|h| h.contains("김민지")));
+    st.handle(Command::Approve {
+        name: "김민지".into(),
+        range: None,
+        note: String::new(),
+        reply: oneshot::channel().0,
+    });
+    let w2 = b.welcome();
+    st.handle(Command::Disconnect { conn: b.conn });
+    let mut c = connect(&mut st, 3);
+    join_unlisted(&mut st, &c, "김민지", None);
+    assert_eq!(c.welcome().name, "김민지", "승인한 뒤로는 다시 자동");
+    assert_ne!(w2.token, w.token);
+    // 거절한 이름도 승인할 때까지 기다린다.
+    let mut d = connect(&mut st, 4);
+    join_unlisted(&mut st, &d, "막을이름", None);
+    d.take();
+    st.handle(Command::SetAutoApprove(false));
+    let mut e = connect(&mut st, 5);
+    join_unlisted(&mut st, &e, "거절할", None);
+    e.take();
+    st.handle(Command::Reject { name: "거절할".into(), reply: oneshot::channel().0 });
+    st.handle(Command::SetAutoApprove(true));
+    let mut f = connect(&mut st, 6);
+    join_unlisted(&mut st, &f, "거절할", None);
+    assert_eq!(pending_reason(&f.take()), Some(Some(PendingReason::Approval)));
+}
+
+#[tokio::test]
+async fn turning_auto_approve_on_admits_people_already_waiting() {
+    let mut st = State::new(fixture());
+    let mut a = connect(&mut st, 1);
+    join_unlisted(&mut st, &a, "기다림", None);
+    assert_eq!(pending_reason(&a.take()), Some(None));
+    st.handle(Command::SetAutoApprove(true));
+    assert_eq!(a.welcome().name, "기다림");
 }

@@ -1,8 +1,9 @@
-//! 에이전트 PC로 넘긴 서비스(사이드바 '에이전트에서 진행 중'): 연결 확인·폴더 조회·상태 보기·승인·끝내기.
+//! 에이전트 PC로 넘긴 서비스(사이드바 '에이전트에서 진행 중'): 연결 확인·폴더 조회·상태 보기·끝내기.
 //!
 //! 웹뷰는 다른 PC로 바로 요청할 수 없어(CSP) 여기서 보낸다([`agent_protocol::client`]). 넘긴 서비스(에이전트 주소·서비스
 //! id·관리 키)는 앱 설정 폴더의 `agents.json`에 기억하고, 3초마다 상태를 물어 `agent-services` 이벤트로 보낸다.
 //! 넘기다 응답을 놓쳤으면(`pending`) 에이전트에 물어 받았으면 이 PC의 업무를 끝내고, 받지 않았으면 기억을 지운다.
+//! 서비스 중인 것은 관리자 연결을 열어 이 PC 업무처럼 다룬다([`crate::remote`] — 설정·모니터링·소통·참여자 승인).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -10,11 +11,12 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use agent_protocol::client::{AgentClient, ClientError};
-use agent_protocol::{AgentInfo, Approve, FolderList, ServiceStatus, StatusQuery};
+use agent_protocol::{AgentInfo, FolderList, ServiceState, ServiceStatus, StatusQuery};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
+use crate::remote::Remotes;
 use crate::{AppState, CmdResult};
 
 const FILE: &str = "agents.json";
@@ -71,6 +73,12 @@ pub struct AgentServiceView {
     pub problem: Option<String>,
     /// 넘기는 중(받았는지 확인하는 중).
     pub pending: bool,
+    /// 관리자 연결이 열려 있다(설정·모니터링·소통을 이 PC 업무처럼 다룬다).
+    pub linked: bool,
+    /// 업무 화면으로 다룬다(서비스 중이고 관리자 연결을 두었다 — 잠시 끊겨도).
+    pub live: bool,
+    /// 참여자가 보낸 마지막 채팅 번호(안 읽은 채팅 표시, 없으면 0).
+    pub last_chat: u32,
     #[ts(type = "number")]
     pub created_at_ms: i64,
 }
@@ -95,6 +103,8 @@ struct Last {
     status: Option<ServiceStatus>,
     reachable: bool,
     problem: Option<String>,
+    /// 에이전트에 없거나 관리 키가 맞지 않는다.
+    gone: bool,
 }
 
 #[derive(Default)]
@@ -119,7 +129,7 @@ impl Agents {
             }
         }
         *self.file.lock().unwrap() = Some(path);
-        *self.views.lock().unwrap() = self.build();
+        *self.views.lock().unwrap() = self.build(&Remotes::default());
     }
 
     fn save(&self) {
@@ -183,16 +193,35 @@ impl Agents {
     }
 
     pub(crate) fn record_status(&self, id: &str, status: ServiceStatus) {
-        self.last.lock().unwrap().insert(id.to_string(), Last { status: Some(status), reachable: true, problem: None });
+        self.last
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), Last { status: Some(status), reachable: true, problem: None, gone: false });
     }
 
-    fn build(&self) -> Vec<AgentServiceView> {
+    /// 관리자 연결을 둘 서비스: 받았고, 서비스 중이고, 에이전트가 아직 그 서비스를 안다.
+    pub(crate) fn linkable(&self) -> Vec<AgentRef> {
+        let last = self.last.lock().unwrap();
+        self.refs()
+            .into_iter()
+            .filter(|r| {
+                !r.pending
+                    && last
+                        .get(&r.id)
+                        .is_some_and(|l| !l.gone && l.status.as_ref().is_some_and(|s| s.state == ServiceState::Running))
+            })
+            .collect()
+    }
+
+    fn build(&self, remotes: &Remotes) -> Vec<AgentServiceView> {
         let last = self.last.lock().unwrap();
         let mut out: Vec<AgentServiceView> = self
             .refs()
             .into_iter()
             .map(|r| {
                 let l = last.get(&r.id);
+                let remote = remotes.get(&r.id);
+                let running = l.and_then(|l| l.status.as_ref()).is_some_and(|s| s.state == ServiceState::Running);
                 AgentServiceView {
                     id: r.id.clone(),
                     addr: r.addr.clone(),
@@ -202,10 +231,13 @@ impl Agents {
                     status: l.and_then(|l| l.status.clone()),
                     reachable: l.is_some_and(|l| l.reachable),
                     problem: match l {
-                        Some(l) => l.problem.clone(),
+                        Some(l) => l.problem.clone().or_else(|| remote.as_ref().and_then(|x| x.stopped())),
                         None => Some("상태를 확인하는 중".into()),
                     },
                     pending: r.pending,
+                    linked: remote.as_ref().is_some_and(|x| x.linked()),
+                    live: running && remote.as_ref().is_some_and(|x| x.stopped().is_none()),
+                    last_chat: remote.as_ref().map_or(0, |x| x.last_chat()),
                     created_at_ms: r.created_at_ms,
                 }
             })
@@ -218,8 +250,8 @@ impl Agents {
         self.views.lock().unwrap().clone()
     }
 
-    pub(crate) fn view(&self, id: &str) -> Option<AgentServiceView> {
-        self.build().into_iter().find(|v| v.id == id)
+    pub(crate) fn view(&self, id: &str, remotes: &Remotes) -> Option<AgentServiceView> {
+        self.build(remotes).into_iter().find(|v| v.id == id)
     }
 }
 
@@ -268,6 +300,7 @@ pub(crate) async fn refresh(app: &AppHandle) {
                         state.agents.remove(&r.id);
                         continue;
                     }
+                    let gone = item.missing || item.forbidden;
                     let problem = if item.missing {
                         Some("에이전트에 없는 서비스입니다(끝난 지 오래되어 지웠거나 다른 에이전트)".into())
                     } else if item.forbidden {
@@ -281,6 +314,7 @@ pub(crate) async fn refresh(app: &AppHandle) {
                         let entry = last.entry(r.id.clone()).or_default();
                         entry.reachable = true;
                         entry.problem = problem;
+                        entry.gone = gone;
                         if item.status.is_some() {
                             entry.status = item.status;
                         }
@@ -305,6 +339,7 @@ pub(crate) async fn refresh(app: &AppHandle) {
             }
         }
     }
+    crate::remote::sync(app);
     emit(app);
 }
 
@@ -328,7 +363,7 @@ pub(crate) async fn end_local_job(app: &AppHandle, state: &AppState, r: &AgentRe
 /// 화면에 보낸다(바뀌었을 때만).
 pub(crate) fn emit(app: &AppHandle) {
     let state = app.state::<AppState>();
-    let views = state.agents.build();
+    let views = state.agents.build(&state.remotes);
     let mut last = state.agents.views.lock().unwrap();
     if *last != views {
         *last = views.clone();
@@ -392,32 +427,6 @@ where
     state.agents.views().into_iter().find(|v| v.id == id).ok_or_else(|| "에이전트 서비스를 찾을 수 없습니다".into())
 }
 
-#[tauri::command]
-pub async fn agent_approve(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: String,
-    name: String,
-) -> CmdResult<AgentServiceView> {
-    act(
-        &app,
-        &state,
-        &id,
-        |c, r| async move { c.approve(&r.id, &r.token, &Approve { name, note: String::new() }).await },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn agent_reject(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    id: String,
-    name: String,
-) -> CmdResult<AgentServiceView> {
-    act(&app, &state, &id, |c, r| async move { c.reject(&r.id, &r.token, &name).await }).await
-}
-
 /// 지금 저장하고 끝내기(`save`) / 저장 없이 끝내기.
 #[tauri::command]
 pub async fn agent_finish(
@@ -439,6 +448,7 @@ pub async fn agent_retry(app: AppHandle, state: State<'_, AppState>, id: String)
 #[tauri::command]
 pub fn agent_forget(app: AppHandle, state: State<'_, AppState>, id: String) -> Vec<AgentServiceView> {
     state.agents.remove(&id);
+    state.remotes.remove(&id);
     emit(&app);
     state.agents.views()
 }

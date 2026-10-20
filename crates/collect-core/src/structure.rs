@@ -1,7 +1,8 @@
-//! 앱에서 바꾸는 표 구조: 표 끝에 행·열 붙이기, 앱에서 붙인 행·열 지우기, 행 취소 표시.
+//! 앱에서 바꾸는 표 구조: 표 끝에 행·열 붙이기, 행 지우기(엑셀에서 불러온 행도), 앱에서 붙인 열 지우기, 행 취소 표시.
 //!
-//! 행은 표 아래에, 열은 표 오른쪽에만 붙인다. 지울 수 있는 것은 앱에서 붙인(기준 시트에 없는) 행·열뿐이라 엑셀에서
-//! 불러온 칸의 좌표는 바뀌지 않는다. 지우면 그 뒤의 붙인 행·열만 당겨진다([`SheetModel::layout`]이 오른다).
+//! 행은 표 아래에, 열은 표 오른쪽에만 붙인다. 행은 엑셀에서 불러온 행도 지울 수 있다(세션이 기준 시트에서도 지우고 그
+//! 순서를 남겨 저장할 때 Excel에서도 지운다). 열은 앱에서 붙인(기준 시트에 없는) 열만 지운다. 지우면 그 뒤의 행·열이
+//! 당겨진다([`SheetModel::layout`]이 오른다).
 //!
 //! 여기는 판정·좌표 계산만 한다. 시트·설정·세션 상태를 함께 바꾸는 일은 세션이 한다.
 
@@ -23,7 +24,7 @@ pub enum StructureEdit {
     AddRows { count: u32 },
     /// 표 오른쪽에 빈 열(호스트만).
     AddCols { count: u32 },
-    /// 앱에서 붙인 행 지우기.
+    /// 행 지우기(엑셀에서 불러온 행도 — 저장할 때 Excel에서도 지운다).
     DeleteRows { from: u32, count: u32 },
     /// 앱에서 붙인 열 지우기(호스트만).
     DeleteCols { from: u32, count: u32 },
@@ -40,7 +41,7 @@ pub const MAX_ADDED_COLS: u32 = 50;
 /// 행·열을 붙여도 넘지 않는 시트 크기(칸).
 pub const MAX_SHEET_CELLS: u64 = 1_000_000;
 
-/// 누가 지우나. 참여자는 자기가 추가한 행만 지운다.
+/// 누가 지우나. 참여자는 자기가 추가한 행과 자기에게 배정된 행만 지운다.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Actor<'a> {
     Host,
@@ -78,14 +79,20 @@ pub fn check_add(model: &SheetModel, baseline: &SheetModel, edit: StructureEdit)
     }
 }
 
-/// 행 `from`부터 `count`개를 지울 수 있나.
+/// 여러 행에 걸친 병합 중 첫 행이 지울 범위(`from`부터 `count`개) 안에 있고 아래로 그 범위를 넘는 것(지우면 병합의 값이
+/// 사라진다).
+pub fn cut_merge(model: &SheetModel, from: u32, count: u32) -> Option<CellRange> {
+    let end = from.saturating_add(count);
+    model.merges.iter().find(|m| !m.is_single() && from <= m.row && m.row < end && m.last_row() >= end).copied()
+}
+
+/// 행 `from`부터 `count`개를 지울 수 있나. 엑셀에서 불러온 행도 지운다(저장할 때 Excel에서도 지운다).
 ///
-/// - 앱에서 붙인 행(기준 시트 `baseline_rows` 뒤)만 지운다.
+/// - 머리글 행은 지우지 않는다. 여러 행에 걸친 병합의 첫 행만 지우는 것([`cut_merge`])도 거절한다(병합의 값이 사라진다).
 /// - 호스트: 담당자가 배정된 행(행 배정 기준 칸에 이름이 있음)이나 범위 배정이 걸친 행은 지우지 않는다.
-/// - 참여자: 자기가 추가한 행만, 남의 범위 배정이 걸친 행은 지우지 않는다.
+/// - 참여자: 자기가 추가한 행이나 자기에게 배정된 행(행 배정)만, 남의 범위 배정이 걸친 행은 지우지 않는다.
 pub fn check_delete_rows(
     model: &SheetModel,
-    baseline_rows: u32,
     config: &CollectConfig,
     access: &Access,
     from: u32,
@@ -96,9 +103,18 @@ pub fn check_delete_rows(
     if count == 0 || end > model.rows {
         return Err("없는 행입니다".into());
     }
-    if from < baseline_rows {
-        return Err("엑셀에서 불러온 행은 지울 수 없습니다(앱에서 추가한 행만 지울 수 있습니다)".into());
+    if from < model.header_rows {
+        return Err("머리글 행은 지울 수 없습니다".into());
     }
+    if let Some(m) = cut_merge(model, from, count) {
+        let o = model.origin;
+        let at = CellRange::new(m.row + o.row, m.col + o.col, m.rows, m.cols);
+        return Err(format!("병합된 칸({at})의 첫 행만 지울 수는 없습니다. 병합된 행을 모두 함께 지우세요"));
+    }
+    let me = match actor {
+        Actor::Person(name) => access.person(name),
+        Actor::Host => None,
+    };
     for r in from..end {
         let ranges = config.assignment.ranges.iter().filter(|a| a.range.row <= r && r <= a.range.last_row());
         match actor {
@@ -114,8 +130,10 @@ pub fn check_delete_rows(
                 }
             }
             Actor::Person(name) => {
-                if !model.added_by(r).is_some_and(|by| same_name(by, name)) {
-                    return Err("내가 추가한 행만 지울 수 있습니다".into());
+                let added = model.added_by(r).is_some_and(|by| same_name(by, name));
+                let mine = me.is_some() && access.row_owner(r) == me;
+                if !added && !mine {
+                    return Err("내가 추가한 행이나 내게 배정된 행만 지울 수 있습니다".into());
                 }
                 if let Some(a) = ranges.into_iter().find(|a| !same_name(&a.person, name)) {
                     return Err(format!("{} 님에게 배정된 범위가 걸친 행은 지울 수 없습니다", a.person.trim()));
@@ -243,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn only_rows_added_in_the_app_can_be_deleted() {
+    fn deletable_rows_follow_header_owner_range_and_merge_rules() {
         let base = budget();
         let mut m = base.clone();
         let cfg = assigned(&m);
@@ -256,15 +274,33 @@ mod tests {
             AddedRow { row: base.rows + 2, by: "이서연".into() },
         ];
         let a = Access::compile(&m, &cfg);
-        let host = |from, count| check_delete_rows(&m, base.rows, &cfg, &a, from, count, Actor::Host);
-        assert!(host(base.rows - 1, 1).unwrap_err().contains("엑셀에서 불러온 행"));
+        let host = |from, count| check_delete_rows(&m, &cfg, &a, from, count, Actor::Host);
+        assert!(host(1, 1).unwrap_err().contains("머리글"));
+        assert!(host(3, 1).unwrap_err().contains("담당자(이서연)"), "불러온 행도 담당자가 있으면 지우지 않는다");
         assert!(host(base.rows, 1).unwrap_err().contains("담당자(김민지)"), "담당자 칸에 이름이 있는 행");
         assert!(host(base.rows + 1, 2).is_ok());
         assert!(host(base.rows + 2, 2).unwrap_err().contains("없는 행"));
-        let person = |name, from, count| check_delete_rows(&m, base.rows, &cfg, &a, from, count, Actor::Person(name));
+        let person = |name, from, count| check_delete_rows(&m, &cfg, &a, from, count, Actor::Person(name));
         assert!(person("김민지", base.rows, 2).is_ok(), "내가 추가한 행은 담당자가 나여도 지운다");
-        assert!(person("김민지", base.rows, 3).unwrap_err().contains("내가 추가한 행만"));
+        assert!(person("김민지", base.rows, 3).unwrap_err().contains("내가 추가한 행이나 내게 배정된 행만"));
         assert!(person("이서연", base.rows + 2, 1).is_ok());
+        // 불러온 행: 내게 배정된 행(C 담당자 = 나)은 지운다. 5·6행(최도윤)은 C5:C6 병합이라 함께.
+        assert!(person("최도윤", 4, 2).is_ok());
+        assert!(person("최도윤", 4, 1).unwrap_err().contains("병합된 칸(B5:B6)의 첫 행만"));
+        assert!(person("최도윤", 5, 1).is_ok(), "병합의 아래 행만 지우는 것은 된다(병합이 줄어든다)");
+        assert!(person("김민지", 4, 2).unwrap_err().contains("내게 배정된 행만"));
+        assert!(person("이서연", 2, 2).unwrap_err().contains("병합된 칸(A3:A6)"), "A3:A6 병합의 머리를 포함");
+    }
+
+    #[test]
+    fn imported_rows_without_owner_can_be_deleted_by_the_host() {
+        let m = budget();
+        let cfg = crate::config::tests::configured(&m); // 행 배정 없음
+        let a = Access::compile(&m, &cfg);
+        assert!(check_delete_rows(&m, &cfg, &a, 6, 2, Actor::Host).is_ok());
+        assert!(check_delete_rows(&m, &cfg, &a, 0, 1, Actor::Host).unwrap_err().contains("머리글"));
+        assert!(check_delete_rows(&m, &cfg, &a, 7, 1, Actor::Person("가")).unwrap_err().contains("내게 배정된"));
+        assert_eq!(cut_merge(&m, 2, 1), m.merges.iter().find(|r| r.row == 2 && !r.is_single()).copied());
     }
 
     #[test]

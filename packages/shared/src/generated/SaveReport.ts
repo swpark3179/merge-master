@@ -31,6 +31,14 @@ inserted: number,
  */
 insertedCols: number, 
 /**
+ * 지운 행 수(앱에서 지운 불러온 행).
+ */
+deletedRows: number, 
+/**
+ * 숨김을 푼 행·열 수(불러올 때 펼친 줄).
+ */
+unhidden: number, 
+/**
  * 더한 '변경 이력' 시트 이름.
  */
 historySheet?: string, ms: number, };

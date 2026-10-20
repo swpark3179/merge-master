@@ -5,6 +5,11 @@
 //! - 1초마다([`Agent::tick`]): 마감이 된 서비스는 저장하고 끝낸다. 실패하면 1분 뒤 다시(모두 3번), 그래도 안 되면
 //!   '저장 실패'로 두고 공유를 닫는다(데이터는 남아 다시 저장할 수 있다).
 //! - 다시 켜면([`Agent::restore`]): 서비스 중이던 것은 다시 공개하고, 꺼진 사이 마감이 지났으면 바로 저장한다.
+//! - 참여자: 명단 밖에서도 입력한 이름 그대로 들어온다(자동 승인 — 관리자가 승인하지 못할 수 있다).
+//! - IP 명단: 에이전트 PC의 명단(`ip-names.json`, 트레이 'IP 명단 관리')이 이긴다. 서비스마다 넘겨받은 명단은 에이전트
+//!   명단에 없는 IP만 그 서비스에서 쓴다(에이전트 명단에 섞지 않는다).
+//! - 관리자 연결([`crate::host_link`]): 넘긴 호스트 앱이 설정·모니터링·소통·히스토리·참여자 승인을 이 PC 업무처럼 한다
+//!   ([`Agent::host_request`]). 마감은 비울 수 없고, 마감 동작은 '읽기 전용'(에이전트가 저장한다)으로 둔다.
 
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
@@ -13,6 +18,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use agent_protocol::link::LinkState;
 use agent_protocol::{
     AgentInfo, Approve, Created, FolderList, MIN_LEAD_MINUTES, PROTOCOL, Package, ServiceState, ServiceStatus,
     StatusItem, StatusQuery, check_deadline, check_name, extension,
@@ -20,6 +26,7 @@ use agent_protocol::{
 use chrono::{NaiveDateTime, TimeZone};
 use collect_core::config::DeadlineAction;
 use collect_core::edit::ConfigEdit;
+use collect_server::host::{self, HostRequest};
 use collect_server::{Gone, Hub, IpNames, META_ENDED, SessionHandle, lan_addresses, recover, validate_slug};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -108,7 +115,15 @@ pub struct Agent {
     creating: tokio::sync::Mutex<()>,
     port: AtomicU16,
     changes: watch::Sender<u64>,
+    /// 에이전트 PC의 IP 명단(`ip-names.json`).
+    ip_names: RwLock<IpNames>,
+    ip_names_path: PathBuf,
+    /// 에이전트를 끝내는 중(관리자 연결을 닫는다).
+    stopping: watch::Sender<bool>,
 }
+
+/// 에이전트 PC의 IP 명단 파일 이름(데이터 폴더).
+pub const IP_NAMES_FILE: &str = "ip-names.json";
 
 impl Agent {
     pub fn new(opts: AgentOptions) -> Arc<Agent> {
@@ -118,6 +133,14 @@ impl Agent {
             tracing::warn!("기본 저장 폴더({})를 만들 수 없습니다: {e}", settings.base_dir.display());
         }
         let port = settings.port;
+        let ip_names_path = opts.data_dir.join(IP_NAMES_FILE);
+        let ip_names = match std::fs::read_to_string(&ip_names_path) {
+            Ok(text) => IpNames::parse_json(&text).unwrap_or_else(|e| {
+                tracing::warn!("IP 명단({})을 읽을 수 없습니다: {e}", ip_names_path.display());
+                IpNames::default()
+            }),
+            Err(_) => IpNames::default(),
+        };
         Arc::new(Agent {
             opts,
             settings_path,
@@ -127,6 +150,9 @@ impl Agent {
             creating: tokio::sync::Mutex::new(()),
             port: AtomicU16::new(port),
             changes: watch::channel(0).0,
+            ip_names: RwLock::new(ip_names),
+            ip_names_path,
+            stopping: watch::channel(false).0,
         })
     }
 
@@ -182,6 +208,11 @@ impl Agent {
         self.changes.send_modify(|n| *n += 1);
     }
 
+    /// 에이전트를 끝낼 때 `true`가 된다.
+    pub fn stopping(&self) -> watch::Receiver<bool> {
+        self.stopping.subscribe()
+    }
+
     fn now(&self) -> NaiveDateTime {
         (self.opts.clock)()
     }
@@ -196,6 +227,11 @@ impl Agent {
 
     fn all(&self) -> Vec<Arc<Service>> {
         self.services.lock().unwrap().values().cloned().collect()
+    }
+
+    /// 지금 받아 둔 서비스들(끝난 것 포함).
+    pub fn services_now(&self) -> Vec<Arc<Service>> {
+        self.all()
     }
 
     /// 서비스 주소들(`slug`가 비면 업무 목록 주소).
@@ -214,7 +250,7 @@ impl Agent {
         f(&View { urls: &urls, now_ms: self.now_ms(), deadline_ms: &deadline_ms })
     }
 
-    fn owned(&self, id: &str, token: Option<&str>) -> Result<Arc<Service>, AgentError> {
+    pub(crate) fn owned(&self, id: &str, token: Option<&str>) -> Result<Arc<Service>, AgentError> {
         let service = self.service(id).ok_or_else(AgentError::missing)?;
         match token {
             Some(t) if !service.token_ok(t) => Err(AgentError::forbidden()),
@@ -424,11 +460,12 @@ impl Agent {
         Ok(service)
     }
 
-    /// 세션에 넘겨받은 호스트 이름·IP 명단을 건다.
+    /// 세션에 넘겨받은 호스트 이름·IP 명단(에이전트 명단이 이긴다)을 걸고 자동 승인을 켠다(공개하기 전에).
     fn attach(&self, service: &Service, session: &SessionHandle) {
         let m = service.record().manifest;
         session.set_host_name(m.host_name.clone());
-        session.set_ip_names(ip_names_of(&m.ip_names));
+        session.set_ip_names(self.effective_ip_names(service));
+        session.set_auto_approve(true);
     }
 
     fn start_recalc(&self, service: &Arc<Service>, session: &SessionHandle, models: Vec<collect_core::SheetModel>) {
@@ -441,13 +478,81 @@ impl Agent {
         self.opts.engine.start_recalc(&service.id, session.clone(), models, service.source_path(), sheets, notify);
     }
 
-    /// 모든 서비스의 IP 명단을 합쳐 업무 목록('내 담당')에 쓴다(입장은 서비스마다 자기 명단으로).
+    // ------------------------------------------------------------------ IP 명단
+
+    /// 에이전트 PC의 IP 명단.
+    pub fn ip_names(&self) -> IpNames {
+        self.ip_names.read().unwrap().clone()
+    }
+
+    pub fn ip_names_path(&self) -> &Path {
+        &self.ip_names_path
+    }
+
+    /// 에이전트 명단을 바꾼다(파일에 남기고 서비스 중인 세션마다 다시 건다 — 기다리던 사람은 바로 들어온다).
+    pub fn set_ip_names(&self, names: IpNames) -> Result<(), String> {
+        crate::settings::write_atomic(&self.ip_names_path, names.to_json().as_bytes())
+            .map_err(|e| format!("IP 명단을 남길 수 없습니다: {e}"))?;
+        *self.ip_names.write().unwrap() = names;
+        self.refresh_ip_names();
+        self.changed();
+        Ok(())
+    }
+
+    /// 한 사람을 더하거나 이름을 바꾼다.
+    pub fn put_ip_name(&self, ip: &str, name: &str) -> Result<(), String> {
+        let mut names = self.ip_names();
+        names.put(ip, name)?;
+        self.set_ip_names(names)
+    }
+
+    /// 한 사람을 뺀다.
+    pub fn remove_ip_name(&self, ip: &str) -> Result<(), String> {
+        let ip: IpAddr = ip.trim().parse().map_err(|_| format!("IP 주소가 잘못되었습니다: {ip}"))?;
+        let mut names = self.ip_names();
+        names.remove(ip);
+        self.set_ip_names(names)
+    }
+
+    /// 그 서비스가 넘겨받은 명단에서 한 사람을 뺀다(그 서비스에서만 쓰던 것).
+    pub fn remove_received(&self, id: &str, ip: &str) -> Result<(), AgentError> {
+        let s = self.service(id).ok_or_else(AgentError::missing)?;
+        let target: IpAddr =
+            ip.trim().parse().map_err(|_| AgentError::bad(format!("IP 주소가 잘못되었습니다: {ip}")))?;
+        s.update(|r| {
+            r.manifest
+                .ip_names
+                .retain(|k, _| k.parse::<IpAddr>().map_or(true, |a| a.to_canonical() != target.to_canonical()))
+        });
+        self.refresh_ip_names();
+        self.changed();
+        Ok(())
+    }
+
+    /// 그 서비스가 넘겨받은 명단을 바꾼다(넘긴 호스트가 명단을 고쳤다).
+    pub fn set_received(&self, id: &str, names: BTreeMap<String, String>) -> Result<(), AgentError> {
+        let s = self.service(id).ok_or_else(AgentError::missing)?;
+        s.update(|r| r.manifest.ip_names = names);
+        self.refresh_ip_names();
+        self.changed();
+        Ok(())
+    }
+
+    /// 그 서비스에서 쓰는 명단: 에이전트 명단 + 넘겨받은 명단 중 에이전트 명단에 없는 IP.
+    pub fn effective_ip_names(&self, service: &Service) -> IpNames {
+        let mut names = self.ip_names();
+        names.merge_missing(&ip_names_of(&service.record().manifest.ip_names));
+        names
+    }
+
+    /// 서비스 중인 세션마다 명단을 다시 걸고, 업무 목록('내 담당')에는 모든 명단을 합쳐 쓴다(에이전트 명단이 이긴다).
     fn refresh_ip_names(&self) {
-        let mut all = IpNames::default();
+        let mut all = self.ip_names();
         for s in self.all().iter().filter(|s| !s.state().finished()) {
-            for (ip, name) in &s.record().manifest.ip_names {
-                let _ = all.put(ip, name);
+            if let Some(session) = s.session() {
+                session.set_ip_names(self.effective_ip_names(s));
             }
+            all.merge_missing(&ip_names_of(&s.record().manifest.ip_names));
         }
         self.hub.set_ip_names(all);
     }
@@ -477,7 +582,7 @@ impl Agent {
         Ok(self.view(|v| s.status(v)))
     }
 
-    fn live_session(&self, s: &Service) -> Result<SessionHandle, AgentError> {
+    pub(crate) fn live_session(&self, s: &Service) -> Result<SessionHandle, AgentError> {
         match (s.state(), s.session()) {
             (ServiceState::Running, Some(session)) => Ok(session),
             _ => Err(AgentError::conflict("서비스 중이 아닙니다")),
@@ -496,6 +601,63 @@ impl Agent {
         self.live_session(&s)?.reject(name).await?;
         self.changed();
         self.status_of(id, token)
+    }
+
+    // ------------------------------------------------------------------ 관리자 연결
+
+    /// 관리자 연결의 요청 하나([`crate::host_link`]). 보기는 세션이 남아 있으면 언제든, 바꾸기는 서비스 중일 때만(저장을
+    /// 시작하면 막는다 — 저장하는 파일에 빠진 값이 생기지 않게). 에이전트 업무의 규칙: 마감은 비울 수 없고 바꾸면 받을 때와
+    /// 같은 범위(지금부터 1분 뒤 ~ 최대 서비스 기간)여야 하며 저장할 때도 그 시각을 쓴다. 마감 동작은 늘 '읽기 전용'
+    /// (마감 순간 입력을 막고 에이전트가 이어서 저장한다).
+    pub async fn host_request(&self, s: &Service, req: HostRequest) -> Result<serde_json::Value, String> {
+        if req.is_read() {
+            let session = s.session().ok_or("이 서비스는 끝났습니다")?;
+            return host::execute(&session, req).await;
+        }
+        let _edit = s.edits.read().await;
+        let session = self.live_session(s).map_err(|e| e.message)?;
+        let mut req = req;
+        let mut moved = None;
+        if let HostRequest::ConfigApply { edit, .. } = &mut req {
+            match edit {
+                ConfigEdit::SetMeta { deadline, .. } => {
+                    let text = deadline
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .ok_or("에이전트 PC에서 서비스하는 업무는 마감 일시를 비울 수 없습니다")?
+                        .to_string();
+                    if text != s.record().manifest.deadline {
+                        check_deadline(&text, self.now(), MIN_LEAD_MINUTES, self.settings().max_days)?;
+                        moved = Some(text.clone());
+                    }
+                    *deadline = Some(text);
+                }
+                ConfigEdit::SetPermissions { permissions } => permissions.deadline_action = DeadlineAction::ReadOnly,
+                _ => {}
+            }
+        }
+        let out = host::execute(&session, req).await?;
+        if let Some(deadline) = moved {
+            tracing::info!(id = %s.id, "마감을 바꿨습니다: {deadline}");
+            s.update(|r| r.manifest.deadline = deadline);
+            self.changed();
+        }
+        Ok(out)
+    }
+
+    /// 관리자 연결이 처음 그릴 것.
+    pub async fn link_state(&self, s: &Service) -> Result<LinkState, String> {
+        let session = s.session().ok_or("이 서비스는 끝났습니다")?;
+        let models = host::execute(&session, HostRequest::Models).await?;
+        let value = |v: serde_json::Result<serde_json::Value>| v.map_err(|e| e.to_string());
+        Ok(LinkState {
+            models,
+            snapshot: value(serde_json::to_value(session.snapshot()))?,
+            comms: value(serde_json::to_value(session.comms()))?,
+            recalc: s.recalc_status(),
+            status: self.view(|v| s.status(v)),
+        })
     }
 
     // ------------------------------------------------------------------ 끝내기·저장
@@ -577,11 +739,16 @@ impl Agent {
             self.changed();
             return;
         };
-        // 저장하는 동안 입력을 막는다(참여자는 보기만).
-        let _ = session.with(|s| s.set_closed(true)).await;
+        // 저장하는 동안 입력을 막는다(참여자는 보기만). 관리자 연결의 쓰기가 끝나기를 기다린 뒤 저장할 내용을 뜬다(그 뒤의
+        // 쓰기는 '서비스 중이 아님'으로 거절된다).
+        let parts = {
+            let _edits = s.edits.write().await;
+            let _ = session.with(|s| s.set_closed(true)).await;
+            session.save_parts().await
+        };
         let r = s.record();
         let result = async {
-            let parts = session.save_parts().await?;
+            let parts = parts?;
             let offset = chrono::Local::now().offset().local_minus_utc() / 60;
             let plans = parts.plan(&r.manifest.sheets, r.manifest.export, offset, &[]);
             if let Some(dir) = r.output_path.parent() {
@@ -785,6 +952,7 @@ impl Agent {
 
     /// 에이전트를 끝낼 때: 공유를 닫고(참여자에게는 잠시 멈춘 것으로 — 다시 켜면 이어서 한다), 계산 사본을 닫는다.
     pub async fn pause_all(&self) {
+        self.stopping.send_replace(true);
         for (slug, _) in self.hub.sessions() {
             self.hub.unpublish_as(&slug, Gone::Paused);
         }

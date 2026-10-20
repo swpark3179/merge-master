@@ -4,6 +4,7 @@ import type { Cell } from "./Cell";
 import type { CellRange } from "./CellRange";
 import type { CellRef } from "./CellRef";
 import type { CellStyle } from "./CellStyle";
+import type { RowCut } from "./RowCut";
 import type { Validation } from "./Validation";
 
 /**
@@ -35,9 +36,20 @@ headerRows: number,
  */
 frozenRows: number, frozenCols: number, validations: Array<Validation>, 
 /**
- * 숨긴 행/열(범위 기준). 참여자 화면에 보이지 않고 입력할 수 없다. '숨긴 행·열 포함'으로 불러오면 비어 있다.
+ * 숨긴 행/열(범위 기준). 참여자 화면에 보이지 않고 입력할 수 없다. 불러오기는 숨긴 줄을 펼치므로 채우지 않는다
+ * (예전 기록 파일, 시점별 '남의 행 숨김' 투영에 쓴다).
  */
 hiddenRows: Array<number>, hiddenCols: Array<number>, 
+/**
+ * Excel에서 숨겨져 있던 행/열(범위 기준). 불러올 때 기본 높이·너비로 펼쳐 읽고, 저장할 때 Excel에서도 숨김을 푼다.
+ * 원본에 반영하면 비운다.
+ */
+unhiddenRows?: Array<number>, unhiddenCols?: Array<number>, 
+/**
+ * 앱에서 지운 불러온 행(기준 시트에만 쓴다): 지운 순서대로, 그 순간의 기준 시트 좌표. 저장할 때 Excel에서 이 순서로
+ * 지우면 기준 시트와 같아진다. 원본에 반영하면 쓴 만큼 빠진다.
+ */
+deletedRows?: Array<RowCut>, 
 /**
  * 앱에서 표 아래에 붙인 행과 추가한 사람(행 오름차순). 원본에 저장해 기준 시트가 된 행은 빠진다.
  */

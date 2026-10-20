@@ -6,13 +6,16 @@
 //!   Excel(그 PC 사용자의 Excel)에는 열지 않는다.
 //!
 //! 쓰는 동안 화면 갱신·이벤트·자동 계산·경고를 끄고 끝나면 되돌린다. 값은 열마다 이어진 칸을 한 번에(`Value2` 배열) 쓰고,
-//! 저장한 뒤 다시 읽어 맞는지 확인한다. 수식 칸은 쓰지 않는다(계획에 들어 있지 않다).
+//! 저장한 뒤 다시 읽어 맞는지 확인한다. 수식 칸은 쓰지 않는다(계획에 들어 있지 않다 — 앱에서 값으로 바꾼 수식 칸은 값을
+//! 쓰므로 Excel에서도 값이 된다).
 //!
-//! 참여자가 표 아래에 붙인 행이 있으면 값을 쓰기 전에 그 자리에 행을 끼워 넣는다(아래 내용은 밀려 내려가고, 새 행은
-//! 위 행의 서식을 따른다). 위 행의 수식은 새 행까지 채워 내린다.
+//! 앱에서 지운 불러온 행은 무엇보다 먼저 지운 순서대로 그 행 전체(표 밖 칸 포함)를 지운다. 참여자가 표 아래에 붙인 행이
+//! 있으면 값을 쓰기 전에 그 자리에 행을 끼워 넣는다(아래 내용은 밀려 내려가고, 새 행은 위 행의 서식을 따른다). 위 행의
+//! 수식은 새 행까지 채워 내린다. Excel에서 숨겨져 있던 행·열(불러올 때 펼친 것)은 숨김을 푼다.
 
 use std::path::Path;
 
+use collect_core::RowCut;
 use collect_core::export::{ColInsert, ExportPlan, HistoryTable, RowInsert, ValueBlock};
 use collect_core::{CellRange, CellRef, CellStyle, CellValue, HAlign, SheetCell};
 use serde::Serialize;
@@ -63,6 +66,10 @@ pub struct SaveReport {
     pub inserted: u32,
     /// 표 오른쪽에 끼워 넣은 열 수(앱에서 추가한 열).
     pub inserted_cols: u32,
+    /// 지운 행 수(앱에서 지운 불러온 행).
+    pub deleted_rows: u32,
+    /// 숨김을 푼 행·열 수(불러올 때 펼친 줄).
+    pub unhidden: u32,
     /// 더한 '변경 이력' 시트 이름.
     #[ts(optional)]
     pub history_sheet: Option<String>,
@@ -163,10 +170,40 @@ fn set_col_width(t: &Target, col: u32, pt: f32) -> Result<()> {
     Ok(())
 }
 
+/// 앱에서 지운 불러온 행을 지운 순서대로 행 전체 지운다(아래 내용이 올라온다).
+fn delete_rows(t: &Target, cuts: &[RowCut]) -> Result<()> {
+    for cut in cuts.iter().filter(|c| c.count > 0) {
+        t.range(CellRange::new(cut.from, 0, cut.count, 1))?.obj("EntireRow")?.call("Delete", vec![])?;
+    }
+    Ok(())
+}
+
+/// Excel에서 숨겨져 있던 행·열의 숨김을 풀고 크기를 맞춘다.
+fn unhide(t: &Target, plan: &ExportPlan) -> Result<()> {
+    for &(row, pt) in &plan.unhide_rows {
+        let line = t.range(CellRange::new(row, 0, 1, 1))?.obj("EntireRow")?;
+        line.put("Hidden", Var::bool(false))?;
+        line.put("RowHeight", Var::f64(f64::from(pt)))?;
+    }
+    for &(col, pt) in &plan.unhide_cols {
+        let line = t.range(CellRange::new(0, col, 1, 1))?.obj("EntireColumn")?;
+        line.put("Hidden", Var::bool(false))?;
+        // 너비 0으로 숨긴 열은 숨김을 풀어도 0이다: 표준 너비로 편 뒤 맞춘다.
+        if line.get("Width")?.as_f64().unwrap_or(0.0) <= 0.0 {
+            line.put("ColumnWidth", Var::f64(8.43))?;
+        }
+        set_col_width(t, col, pt)?;
+    }
+    Ok(())
+}
+
 /// 표 오른쪽(`at`)에 열을 끼워 넣고 너비를 맞춘다(서식은 왼쪽 열을 따른다).
 fn insert_cols(t: &Target, ins: &ColInsert) -> Result<()> {
     // Insert(Shift, CopyOrigin)의 기본값: 오른쪽으로 밀고, 서식은 왼쪽 열을 따른다.
-    t.range(CellRange::new(0, ins.at, 1, ins.count))?.obj("EntireColumn")?.call("Insert", vec![])?;
+    let cols = t.range(CellRange::new(0, ins.at, 1, ins.count))?.obj("EntireColumn")?;
+    cols.call("Insert", vec![])?;
+    // 왼쪽 열이 숨긴 열이면 새 열도 숨겨진다.
+    t.range(CellRange::new(0, ins.at, 1, ins.count))?.obj("EntireColumn")?.put("Hidden", Var::bool(false))?;
     for (k, w) in ins.widths.iter().enumerate() {
         set_col_width(t, ins.at + k as u32, *w)?;
     }
@@ -177,6 +214,8 @@ fn insert_cols(t: &Target, ins: &ColInsert) -> Result<()> {
 fn insert_rows(t: &Target, ins: &RowInsert) -> Result<()> {
     // Insert(Shift, CopyOrigin)의 기본값: 아래로 밀고, 서식은 위 행을 따른다.
     t.range(CellRange::new(ins.at, 0, ins.count, 1))?.obj("EntireRow")?.call("Insert", vec![])?;
+    // 위 행이 숨긴 행이면 새 행도 숨겨진다.
+    t.range(CellRange::new(ins.at, 0, ins.count, 1))?.obj("EntireRow")?.put("Hidden", Var::bool(false))?;
     for (k, h) in ins.heights.iter().enumerate() {
         let row = t.range(CellRange::new(ins.at + k as u32, 0, 1, 1))?.obj("EntireRow")?;
         row.put("RowHeight", Var::f64(f64::from(*h)))?;
@@ -299,6 +338,9 @@ fn add_history(book: &Dispatch, table: &HistoryTable) -> Result<String> {
 /// 계획 하나를 그 시트에 쓴다(저장은 하지 않는다. '변경 이력' 시트는 [`apply_all`]이 한 번 더한다).
 fn apply_sheet(ws: &Dispatch, plan: &ExportPlan, report: &mut SaveReport) -> Result<()> {
     let t = Target { ws, origin: plan.origin };
+    // 지운 행을 먼저 지운다(그 뒤로는 기준 시트와 같은 좌표다).
+    delete_rows(&t, &plan.row_cuts)?;
+    report.deleted_rows += plan.deleted_rows();
     // 열을 먼저 끼워 넣는다(행을 끼우면 새 행이 새 열까지 위 행 서식을 따른다).
     if let Some(ins) = &plan.col_insert {
         insert_cols(&t, ins)?;
@@ -308,6 +350,8 @@ fn apply_sheet(ws: &Dispatch, plan: &ExportPlan, report: &mut SaveReport) -> Res
         insert_rows(&t, ins)?;
         report.inserted += ins.count;
     }
+    unhide(&t, plan)?;
+    report.unhidden += plan.unhidden();
     for m in &plan.merges_remove {
         t.range(*m)?.call("UnMerge", vec![])?;
     }

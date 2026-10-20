@@ -1,4 +1,5 @@
-//! 표 구조 바꾸기 단위 테스트: 행·열 붙이기, 앱에서 붙인 행·열 지우기(누가·어느 행), 구조 판, 취소 행, 마감 동작.
+//! 표 구조 바꾸기 단위 테스트: 행·열 붙이기, 행 지우기(엑셀에서 불러온 행 포함 — 누가·어느 행, 기준 시트·계산 사본·
+//! 저장 중), 앱에서 붙인 열 지우기, 구조 판, 취소 행, 마감 동작.
 
 use collect_core::config::DeadlineAction;
 use collect_core::structure::StructureEdit;
@@ -85,9 +86,9 @@ async fn participants_delete_only_rows_they_added() {
     });
     c[0].take();
     client(&mut st, &c[0], delete(rows + 1, 2, Some(0)));
-    assert!(errors(&c[0].take())[0].contains("내가 추가한 행만"));
+    assert!(errors(&c[0].take())[0].contains("내가 추가한 행이나 내게 배정된 행만"));
     client(&mut st, &c[0], delete(rows - 1, 1, Some(0)));
-    assert!(errors(&c[0].take())[0].contains("엑셀에서 불러온 행"));
+    assert!(errors(&c[0].take())[0].contains("내게 배정된 행만"), "남(김민지)의 불러온 행");
 
     let mut feed = st.host_feed.subscribe();
     client(&mut st, &c[0], delete(rows, 2, Some(0)));
@@ -131,7 +132,7 @@ async fn host_deletes_only_unassigned_added_rows_and_cols() {
 
     let del = |from, count| move |s: &mut Shared<'_>| s.structure(0, StructureEdit::DeleteRows { from, count });
     assert!(host_get(&mut st, del(rows, 1)).unwrap_err().contains("담당자(정하늘)"));
-    assert!(host_get(&mut st, del(1, 1)).unwrap_err().contains("엑셀에서 불러온 행"));
+    assert!(host_get(&mut st, del(1, 1)).unwrap_err().contains("머리글"));
     assert_eq!(host_get(&mut st, del(rows + 1, 2)), Ok(()));
     assert_eq!(st.sheets[0].model.rows, rows + 1);
 
@@ -159,6 +160,111 @@ async fn host_deletes_only_unassigned_added_rows_and_cols() {
         s.restore(id, "호스트")
     });
     assert!(n.is_ok(), "{n:?}");
+}
+
+#[tokio::test]
+async fn host_deletes_imported_rows_and_the_baseline_follows() {
+    let (mut st, mut c) = setup(&["이서연"], |cfg| cfg.assignment.key_col = None); // 행 배정 없음
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    st.handle(Command::SetRecalc(Some(tx)));
+    let (rows, base_rows) = (st.sheets[0].model.rows, st.sheets[0].baseline.rows);
+    set(&mut st, &c[0], "b1", rows - 1, H, text("마지막 행"), None);
+    set(&mut st, &c[0], "b2", rows - 2, H, text("지울 행"), None);
+    host(&mut st, |s| s.take_snapshot("지우기 전"));
+    rx.try_recv().unwrap();
+    rx.try_recv().unwrap();
+    c[0].take();
+    let epoch = st.calc_layout().epoch;
+
+    // 가운데 불러온 행 하나(병합 없는 행)를 지운다.
+    let r = rows - 2;
+    assert_eq!(host_get(&mut st, move |s| s.structure(0, StructureEdit::DeleteRows { from: r, count: 1 })), Ok(()));
+    assert_eq!((st.sheets[0].model.rows, st.sheets[0].baseline.rows), (rows - 1, base_rows - 1));
+    assert_eq!(st.sheets[0].baseline.deleted_rows, [RowCut { from: r, count: 1 }]);
+    assert_eq!(value(&st, rows - 2, H), text("마지막 행"), "아래 행이 당겨진다");
+    assert!(st.log.iter().any(|e| e.batch == "b2" && e.gone));
+    // 계산 사본에서도 지우고, 지우기 전 판의 결과는 버린다.
+    let req = rx.try_recv().expect("계산 사본 행 지우기");
+    assert_eq!(req.cuts, [(0, RowCut { from: r, count: 1 })]);
+    assert_eq!(req.epoch, epoch + 1);
+    let g = CellRef::new(rows - 2, 6);
+    let before = value(&st, rows - 2, 6);
+    st.handle(Command::Formulas { values: vec![(0, g, CellValue::Number(42.0))], epoch: Some(epoch) });
+    assert_eq!(value(&st, rows - 2, 6), before, "옛 판 결과는 버린다");
+    st.handle(Command::Formulas { values: vec![(0, g, CellValue::Number(42.0))], epoch: Some(epoch + 1) });
+    assert_eq!(value(&st, rows - 2, 6), CellValue::Number(42.0));
+    // 사본을 다시 열 때 맞출 것: 지운 행 순서, 수식 칸은 불러온 범위 안, 기록 재생은 지운 기록 빼고.
+    let layout = st.calc_layout();
+    assert_eq!(layout.epoch, epoch + 1);
+    assert_eq!(layout.sheets[0].cuts, [RowCut { from: r, count: 1 }]);
+    assert!(layout.sheets[0].formulas.iter().all(|at| at.row < base_rows - 1));
+    assert_eq!(layout.replay, [(0, CellRef::new(rows - 2, H), text("마지막 행"))]);
+    // 저장 계획: 먼저 Excel에서 그 행을 지운다.
+    let parts = host_get(&mut st, |s| s.save_parts());
+    let plan = parts.plan(&["예산신청서".into()], ExportOptions::default(), 0, &[]);
+    assert_eq!(plan[0].1.row_cuts, [RowCut { from: r, count: 1 }]);
+    // 스냅샷도 새 모양이라 복원할 수 있다.
+    let n = host_get(&mut st, |s| {
+        let id = s.snapshots()[0].id;
+        s.restore(id, "호스트")
+    });
+    assert!(n.is_ok(), "{n:?}");
+}
+
+/// 그 사람에게 배정된, 담당자 칸이 병합된 행 묶음 중 통째로 지울 수 있는 것(첫 행, 행 수).
+fn merged_group_of(st: &State, name: &str) -> (u32, u32) {
+    let (model, access) = (&st.sheets[0].model, &st.rt[0].access);
+    let key = st.sheets[0].config.assignment.key_col.unwrap();
+    let p = access.person(name).unwrap();
+    model
+        .merges
+        .iter()
+        .find(|m| {
+            m.col == key
+                && m.rows >= 2
+                && access.row_owner(m.row) == Some(p)
+                && collect_core::structure::cut_merge(model, m.row, m.rows).is_none()
+        })
+        .map(|m| (m.row, m.rows))
+        .expect("배정된 병합 행")
+}
+
+#[tokio::test]
+async fn participants_delete_their_assigned_imported_rows_and_stay() {
+    let (mut st, mut c) = setup(&["최도윤", "이서연"], |cfg| cfg.permissions.delete_rows = true);
+    let (from, count) = merged_group_of(&st, "최도윤");
+    let other = merged_group_of(&st, "이서연");
+    let delete = |from, count| ClientMsg::DeleteRows { sheet: 0, from, count, layout: Some(0) };
+    client(&mut st, &c[0], delete(from, 1));
+    assert!(errors(&c[0].take())[0].contains("첫 행만 지울 수는 없습니다"));
+    client(&mut st, &c[0], delete(other.0, other.1));
+    assert!(errors(&c[0].take())[0].contains("내게 배정된 행만"));
+    let base_rows = st.sheets[0].baseline.rows;
+    client(&mut st, &c[0], delete(from, count));
+    let msgs = c[0].take();
+    assert!(errors(&msgs).is_empty());
+    assert_eq!(st.sheets[0].baseline.deleted_rows, [RowCut { from, count }]);
+    assert_eq!(st.sheets[0].baseline.rows, base_rows - count);
+    assert!(st.rt[0].access.person("최도윤").is_some(), "명단에 남는다");
+    assert!(!c[0].closed);
+    assert!(msgs.iter().any(|m| matches!(m, ServerMsg::Welcome(_))));
+}
+
+#[tokio::test]
+async fn rows_and_cols_cannot_be_deleted_while_saving() {
+    let (mut st, mut c) = setup(&["최도윤"], |cfg| cfg.permissions.delete_rows = true);
+    let (r, n) = merged_group_of(&st, "최도윤");
+    st.handle(Command::SetSaving(true));
+    assert!(
+        host_get(&mut st, move |s| s.structure(0, StructureEdit::DeleteCols { from: 0, count: 1 }))
+            .unwrap_err()
+            .contains("저장하는 중")
+    );
+    client(&mut st, &c[0], ClientMsg::DeleteRows { sheet: 0, from: r, count: n, layout: Some(0) });
+    assert!(errors(&c[0].take())[0].contains("저장하는 중"));
+    st.handle(Command::SetSaving(false));
+    client(&mut st, &c[0], ClientMsg::DeleteRows { sheet: 0, from: r, count: n, layout: Some(0) });
+    assert!(errors(&c[0].take()).is_empty());
 }
 
 #[tokio::test]

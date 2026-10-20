@@ -37,6 +37,7 @@ function welcome(over: Partial<SheetView> = {}): SheetView {
       deleteRows: false,
       deadlineAction: "readOnly",
       resize: false,
+      overwriteFormulas: true,
     },
     rowOwner: [-1, 2, 2],
     progress: { name: "김민지", rows: 2, required: 0, filled: 0 },
@@ -107,6 +108,14 @@ describe("EditState", () => {
     expect(s.myChanges).toBe(1);
     // 같은 값이면 보내지 않는다.
     expect(s.edit([{ row: 1, col: 1, value: 9800 }])).toBeNull();
+  });
+
+  it("수식 칸은 다른 값을 넣을 때만 보낸다(칸을 거쳐 가기만 하면 수식이 그대로)", () => {
+    const w = welcome();
+    w.model.cells[3] = { s: 0, v: 0.1, f: "=A2*2" };
+    const s = new EditState(w, "c");
+    expect(s.edit([{ row: 1, col: 1, value: 0.1 }])).toBeNull();
+    expect(s.edit([{ row: 1, col: 1, value: 0.2 }])?.cells).toEqual([{ row: 1, col: 1, value: 0.2, base: 0 }]);
   });
 
   it("답을 기다리는 칸은 다른 사람의 수정이 와도 내 값을 보인다", () => {

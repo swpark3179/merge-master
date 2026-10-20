@@ -245,9 +245,11 @@ pub async fn agent_handoff(
     {
         state.agents.record_status(&id, status);
     }
+    // 관리자 연결을 바로 연다(넘긴 업무를 이어서 이 PC 업무처럼 다룬다).
+    crate::remote::sync(&app);
     crate::agent::emit(&app);
     tracing::info!(id, addr, "업무를 에이전트로 넘겼습니다");
-    state.agents.view(&id).ok_or_else(|| "넘긴 서비스를 찾을 수 없습니다".into())
+    state.agents.view(&id, &state.remotes).ok_or_else(|| "넘긴 서비스를 찾을 수 없습니다".into())
 }
 
 /// 임시 폴더를 지운다(넘기기가 어떻게 끝나든).

@@ -92,6 +92,11 @@ impl AgentClient {
         }
     }
 
+    /// 그 서비스의 관리자 연결 주소(`ws://host:port/agent/services/{id}/host`).
+    pub fn link_url(&self, id: &str) -> String {
+        format!("ws://{}{}", self.base_url().trim_start_matches("http://"), crate::link::link_path(id))
+    }
+
     pub async fn info(&self) -> Result<AgentInfo, ClientError> {
         self.call("GET", "/agent/info", None, Vec::new(), SHORT).await
     }

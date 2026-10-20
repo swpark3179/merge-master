@@ -21,11 +21,11 @@ pub use comms::CommsData;
 pub use comms::{CommsSnapshot, HighlightAudience, HighlightSummary, NoticeSummary, NoticeTarget};
 pub use persist::{
     BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_DEADLINE_FIRED, META_DISCARDED,
-    META_ENDED, META_JOB, META_SERVER, META_SHEETS, Recovered, Restore, ServerMeta, meta_sheets, recover,
+    META_ENDED, META_HELD, META_JOB, META_SERVER, META_SHEETS, Recovered, Restore, ServerMeta, meta_sheets, recover,
 };
 pub use snapshots::AUTO_SNAPSHOT;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -41,7 +41,7 @@ use collect_core::history::{BatchOrigin, SheetLabels};
 use collect_core::project::project_with;
 use collect_core::structure::{Actor, StructureEdit, check_add, check_delete_cols, check_delete_rows};
 use collect_core::view::{ConfigView, config_view_with, encode_flags};
-use collect_core::{CellRange, CellRef, CellStyle, CellValue, SheetCell, SheetModel};
+use collect_core::{CellRange, CellRef, CellStyle, CellValue, RowCut, SheetCell, SheetModel};
 use collect_store::{SnapshotKind, SnapshotMeta, Store};
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -50,8 +50,8 @@ use ts_rs::TS;
 
 use crate::ipnames::IpNames;
 use crate::protocol::{
-    CellUpdate, ChangeEntry, ChatReaction, ChatTo, ClientMsg, KickReason, LockEntry, PROTOCOL_VERSION, PersonProgress,
-    PresenceEntry, PresenceStatus, ServerMsg, SessionInfo, SheetView, StyleChange, Welcome,
+    CellUpdate, ChangeEntry, ChatReaction, ChatTo, ClientMsg, KickReason, LockEntry, PROTOCOL_VERSION, PendingReason,
+    PersonProgress, PresenceEntry, PresenceStatus, ServerMsg, SessionInfo, SheetView, StyleChange, Welcome,
 };
 
 /// 이만큼 입력·이동이 없으면 '자리 비움'.
@@ -64,6 +64,9 @@ const TICK: Duration = Duration::from_secs(5);
 /// 마감 시각 점검 주기(호스트 PC 시계로 마감 시각이 지나는 순간을 1초 안에 잡는다).
 const DEADLINE_TICK: Duration = Duration::from_secs(1);
 const MAX_NAME_CHARS: usize = 20;
+/// 자동 승인(에이전트 PC)으로 명단에 더할 수 있는 이름 수. 넘으면 호스트 승인을 기다린다(이름을 마구 만들어 명단을
+/// 부풀리지 못하게 — 새 이름마다 모두에게 새 시트가 간다).
+const MAX_AUTO_EXTRA: usize = 300;
 /// 재접속 토큰·묶음 ID의 최대 길이(이보다 길면 버린다).
 const MAX_TOKEN_CHARS: usize = 64;
 pub(crate) const MAX_BATCH_ID_CHARS: usize = 80;
@@ -192,6 +195,10 @@ pub struct ParticipantRow {
 pub struct PendingRow {
     pub name: String,
     pub ip: String,
+    /// 자동 승인(에이전트 PC)인데도 기다리는 까닭.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub reason: Option<PendingReason>,
 }
 
 /// 시트 하나의 필수 진행률(1c·1d 시트 탭).
@@ -228,7 +235,34 @@ pub struct HostSnapshot {
 /// 돌려준다.
 #[derive(Debug, Clone)]
 pub struct RecalcRequest {
+    /// 먼저 계산 사본에서 지울 행(시트 순번, 그 순간의 행 좌표 — 엑셀에서 불러온 행을 지웠다).
+    pub cuts: Vec<(u32, RowCut)>,
     pub writes: Vec<(u32, CellRef, CellValue)>,
+    /// 이 요청을 보낼 때의 계산 사본 판([`SessionHandle::formula_results_at`]에 돌려준다 — 행을 지우기 전에 계산한
+    /// 결과는 버린다).
+    pub epoch: u64,
+}
+
+/// 계산 사본을 열 때 맞출 것([`SessionHandle::calc_layout`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CalcLayout {
+    /// 계산 사본 판(행을 지울 때마다 는다). 사본을 연 뒤 재계산을 붙였을 때 판이 달라졌으면 다시 연다.
+    pub epoch: u64,
+    /// 세션 안 시트 순번 순서.
+    pub sheets: Vec<CalcSheetLayout>,
+    /// 기록에서 칸마다 마지막 값(지운 기록·계산 사본 밖 칸은 뺀다). 사본을 연 뒤 한 번 쓴다.
+    pub replay: Vec<(u32, CellRef, CellValue)>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CalcSheetLayout {
+    /// 결과를 읽을 수식 칸(모델 좌표, 엑셀에서 불러온 범위 안).
+    pub formulas: Vec<CellRef>,
+    /// 원본에서 이 순서로 지우면 지금 기준 시트와 같아지는 행.
+    pub cuts: Vec<RowCut>,
+    /// 원본에서 숨겨져 있던 행·열(펼친 줄).
+    pub unhide_rows: Vec<u32>,
+    pub unhide_cols: Vec<u32>,
 }
 
 /// 수식 재계산 상태(Excel 계산 사본). 호스트 앱 1c와 에이전트 상태에 보인다.
@@ -343,6 +377,8 @@ pub struct Shared<'a> {
     history: &'a [ChangeEntry],
     snapshots: &'a [(SnapshotMeta, Vec<u8>)],
     closed: bool,
+    /// 호스트가 Excel로 저장하는 중([`SessionHandle::set_saving`] — 행·열을 지우지 않는다).
+    saving: bool,
     host_name: String,
     changed: bool,
     replacement: Option<Vec<(SheetModel, CollectConfig)>>,
@@ -370,7 +406,8 @@ impl Shared<'_> {
         Ok(size)
     }
 
-    /// 호스트가 표 구조를 바꾼다(1b·1d 오른쪽 클릭 메뉴): 행·열 붙이기, 앱에서 붙인 행·열 지우기, 행 취소 표시.
+    /// 호스트가 표 구조를 바꾼다(1b·1d 오른쪽 클릭 메뉴): 행·열 붙이기, 행 지우기(엑셀에서 불러온 행도), 앱에서 붙인 열
+    /// 지우기, 행 취소 표시.
     /// 여기서 검사하고(지울 수 없는 행·열이면 이유), 작업이 끝난 뒤 시트·설정·편집 상태·기록을 함께 바꾸고 모두에게
     /// 새 시트를 보낸다. 같은 작업 안에서 여러 번 부르면 앞의 것이 반영되기 전 시트로 검사하므로 한 번씩 부른다.
     pub fn structure(&mut self, sheet: usize, edit: StructureEdit) -> Result<(), String> {
@@ -380,8 +417,11 @@ impl Shared<'_> {
             StructureEdit::AddRows { .. } | StructureEdit::AddCols { .. } => {
                 check_add(&slot.model, &slot.baseline, edit)?;
             }
+            StructureEdit::DeleteRows { .. } | StructureEdit::DeleteCols { .. } if self.saving => {
+                return Err(structure::SAVING.into());
+            }
             StructureEdit::DeleteRows { from, count } => {
-                check_delete_rows(&slot.model, slot.baseline.rows, &slot.config, &rt.access, from, count, Actor::Host)?;
+                check_delete_rows(&slot.model, &slot.config, &rt.access, from, count, Actor::Host)?;
             }
             StructureEdit::DeleteCols { from, count } => {
                 check_delete_cols(&slot.model, slot.baseline.cols, &slot.config, from, count)?;
@@ -481,8 +521,25 @@ impl Shared<'_> {
         self.history
     }
 
+    /// 엑셀 저장 재료(시트마다 기준·지금·설정·열 이름 + 모든 기록).
+    pub fn save_parts(&self) -> SaveParts {
+        SaveParts {
+            sheets: self
+                .sheets
+                .iter()
+                .map(|x| SaveSheet {
+                    baseline: x.baseline.clone(),
+                    current: x.model.clone(),
+                    config: x.config.clone(),
+                    labels: SheetLabels::of(&x.model).labels,
+                })
+                .collect(),
+            history: self.history.to_vec(),
+        }
+    }
+
     /// 호스트가 칸 값을 바꾼다(되돌리기·이 값으로·'Excel 값 유지'). 참여자 입력처럼 버전·이력·진행률에 반영하고 알린다.
-    /// 수식 칸은 건너뛴다.
+    /// 수식 칸이면 수식을 버리고 그 값으로 바꾼다(같은 값이어도).
     pub fn host_set(&mut self, user: &str, origin: BatchOrigin, sheet: usize, cells: Vec<(CellRef, CellValue)>) {
         if !cells.is_empty() && sheet < self.sheets.len() {
             self.actions.push(Action::Set { user: user.to_string(), origin, sheet, cells });
@@ -633,9 +690,18 @@ pub(crate) enum Command {
     With(HostJob),
     SetIpNames(IpNames),
     SetRecalc(Option<mpsc::UnboundedSender<RecalcRequest>>),
-    Formulas(Vec<(u32, CellRef, CellValue)>),
+    /// 다시 계산한 수식 칸 값. `epoch`가 있으면 그 판의 계산 사본에서 계산한 것(지금 판이 아니면 버린다).
+    Formulas {
+        values: Vec<(u32, CellRef, CellValue)>,
+        epoch: Option<u64>,
+    },
+    CalcLayout(oneshot::Sender<CalcLayout>),
+    /// 호스트가 Excel로 저장하는 중(그동안 행·열을 지우지 않는다 — 기준 시트가 저장하는 파일과 어긋나지 않게).
+    SetSaving(bool),
     /// 참여자에게 보일 호스트 이름을 정해 둔다(`None`이면 이 PC의 IP·요청자로 정한다).
     SetHostName(Option<String>),
+    /// 명단 밖 참여자를 입력한 이름 그대로 들인다(에이전트 PC에서 서비스).
+    SetAutoApprove(bool),
     /// 지금 상태를 모두 남긴 뒤 기록 파일의 사본을 만든다.
     Backup {
         to: PathBuf,
@@ -769,7 +835,29 @@ impl SessionHandle {
 
     /// 재계산된 수식 칸 값(시트 순번, 모델 좌표). 바뀐 칸만 참여자에게 보낸다.
     pub fn formula_results(&self, values: Vec<(u32, CellRef, CellValue)>) {
-        self.send(Command::Formulas(values));
+        self.send(Command::Formulas { values, epoch: None });
+    }
+
+    /// 계산 사본 판 `epoch`에서 계산한 수식 칸 값. 그사이 행을 지워 판이 바뀌었으면 버린다.
+    pub fn formula_results_at(&self, epoch: u64, values: Vec<(u32, CellRef, CellValue)>) {
+        self.send(Command::Formulas { values, epoch: Some(epoch) });
+    }
+
+    /// 계산 사본을 열 때 맞출 것: 수식 칸, 원본에서 지울 행·펼칠 줄, 기록을 되짚을 값, 지금 판.
+    pub async fn calc_layout(&self) -> Result<CalcLayout, String> {
+        self.ask(Command::CalcLayout).await
+    }
+
+    /// 호스트가 Excel로 저장하는 중이다(`true`) / 끝났다. 그동안 행·열 지우기는 거절한다.
+    pub fn set_saving(&self, on: bool) {
+        self.send(Command::SetSaving(on));
+    }
+
+    /// 명단 밖 참여자를 승인 없이 입력한 이름 그대로 들인다(에이전트 PC에서 서비스 — 관리자가 승인하지 못할 수 있다).
+    /// 같은 이름이 다른 기기에서 접속 중이면 그 연결이 끊길 때까지, 호스트가 끊었거나 거절한 이름은 승인할 때까지
+    /// 기다린다. 기록 파일에는 남기지 않는다(서비스하는 곳이 정한다).
+    pub fn set_auto_approve(&self, on: bool) {
+        self.send(Command::SetAutoApprove(on));
     }
 
     /// 참여자에게 보일 호스트 이름을 정해 둔다. 에이전트 PC에서 서비스하면 그 PC의 IP로 IP 명단을 찾으면 안 되므로,
@@ -780,20 +868,7 @@ impl SessionHandle {
 
     /// 엑셀 저장 재료를 한 번에 뜬다(시트마다 기준·지금·설정·열 이름 + 모든 기록).
     pub async fn save_parts(&self) -> Result<SaveParts, String> {
-        self.with(|s| SaveParts {
-            sheets: s
-                .sheets
-                .iter()
-                .map(|x| SaveSheet {
-                    baseline: x.baseline.clone(),
-                    current: x.model.clone(),
-                    config: x.config.clone(),
-                    labels: SheetLabels::of(&x.model).labels,
-                })
-                .collect(),
-            history: s.history().to_vec(),
-        })
-        .await
+        self.with(|s| s.save_parts()).await
     }
 
     /// 지금 상태(시트·설정·기준·소통·토큰·기록)를 모두 남긴 기록 파일의 사본을 `to`에 만든다(다른 PC로 넘길 때).
@@ -877,6 +952,7 @@ struct Person {
 struct Pending {
     name: String,
     conn: ConnId,
+    reason: Option<PendingReason>,
 }
 
 struct Lock {
@@ -955,12 +1031,21 @@ struct State {
     log: Vec<ChangeEntry>,
     next_seq: u64,
     recalc: Option<mpsc::UnboundedSender<RecalcRequest>>,
+    /// 계산 사본 판: 엑셀에서 불러온 행을 지울 때마다 는다([`RecalcRequest::epoch`]).
+    recalc_epoch: u64,
+    /// 호스트가 Excel로 저장하는 중([`SessionHandle::set_saving`]).
+    saving: bool,
     /// 호스트가 관리하는 IP별 이름: 이 IP에서 오면 이름을 묻지 않고 그 이름으로 들어온다.
     ip_names: IpNames,
     /// 이 PC(호스트)의 IP. IP 명단에 있으면 그 이름이 호스트 이름이다.
     host_ips: Vec<IpAddr>,
     /// 정해 둔 호스트 이름([`SessionHandle::set_host_name`], 에이전트 PC에서 서비스할 때). 있으면 이것을 쓴다.
     host_name: Option<String>,
+    /// 명단 밖 참여자를 입력한 이름 그대로 들인다([`SessionHandle::set_auto_approve`], 에이전트 PC). 기록 파일에는
+    /// 남기지 않는다(어디서 서비스하느냐에 따른다).
+    auto_approve: bool,
+    /// 자동 승인하지 않는 이름(호스트가 연결을 끊었거나 거절한 이름 — 메타 [`META_HELD`]). 승인하면 빠진다.
+    held: BTreeSet<String>,
     // ---- 6단계
     comms: comms::Comms,
     snapshots: snapshots::Snapshots,
@@ -1012,9 +1097,13 @@ impl State {
             log: Vec::new(),
             next_seq: 1,
             recalc: None,
+            recalc_epoch: 0,
+            saving: false,
             ip_names: IpNames::default(),
             host_ips: local_ips(),
             host_name: None,
+            auto_approve: false,
+            held: BTreeSet::new(),
             comms: comms::Comms::default(),
             snapshots: snapshots::Snapshots::default(),
             store,
@@ -1026,6 +1115,7 @@ impl State {
             Some(r) => {
                 s.restore(r);
                 s.deadline_fired = s.host_meta.get(META_DEADLINE_FIRED).cloned();
+                s.held = s.host_meta.get(META_HELD).and_then(|h| serde_json::from_str(h).ok()).unwrap_or_default();
                 s.recompile();
                 s.persist_sheet();
             }
@@ -1086,8 +1176,16 @@ impl State {
                     rt.recalc_cols = slot.baseline.cols;
                 }
             }
-            Command::Formulas(values) => self.formulas(values),
+            Command::Formulas { values, epoch } => self.formulas(values, epoch),
+            Command::CalcLayout(reply) => {
+                let _ = reply.send(self.calc_layout());
+            }
+            Command::SetSaving(on) => self.saving = on,
             Command::SetHostName(name) => self.host_name = name,
+            Command::SetAutoApprove(on) => {
+                self.auto_approve = on;
+                self.recheck_pending();
+            }
             Command::Backup { to, reply } => {
                 self.persist(true);
                 let out = match &self.store {
@@ -1222,7 +1320,16 @@ impl State {
             self.attach(conn, name, Some(token.clone()));
             return;
         }
-        // IP 명단 밖: 호스트 승인을 기다린다. 같은 이름으로 다시 요청하면 앞 요청을 대신한다.
+        // IP 명단 밖: 호스트 승인을 기다린다(에이전트 PC면 까닭이 없을 때 바로 들인다). 같은 이름으로 다시 요청하면 앞
+        // 요청을 대신한다.
+        let reason = if self.auto_approve {
+            match self.auto_gate(conn, name) {
+                None => return self.auto_admit(conn, name),
+                reason => reason,
+            }
+        } else {
+            None
+        };
         if let Some(i) = self.pending.iter().position(|p| p.name == name) {
             let old = self.pending.remove(i).conn;
             if old != conn {
@@ -1231,8 +1338,80 @@ impl State {
             }
         }
         self.pending.retain(|p| p.conn != conn);
-        self.pending.push(Pending { name: name.to_string(), conn });
-        self.send(conn, ServerMsg::Pending { name: name.to_string() });
+        self.pending.push(Pending { name: name.to_string(), conn, reason });
+        self.send(conn, ServerMsg::Pending { name: name.to_string(), reason });
+    }
+
+    /// 자동 승인(에이전트 PC)에서 이 연결을 그 이름으로 바로 들일 수 없는 까닭(들일 수 있으면 `None`).
+    fn auto_gate(&self, conn: ConnId, name: &str) -> Option<PendingReason> {
+        if self.held.contains(name) {
+            return Some(PendingReason::Approval);
+        }
+        // 같은 이름이 다른 기기에서 접속 중이면 저절로 끊지 않는다(그 연결이 끊기면 들인다).
+        if self.people.get(name).and_then(|p| p.conn).is_some_and(|c| c != conn) {
+            return Some(PendingReason::Online);
+        }
+        if self.person(name).is_none() && self.extra_people() >= MAX_AUTO_EXTRA {
+            return Some(PendingReason::Approval);
+        }
+        None
+    }
+
+    /// 직접 넣은 명단의 이름 수(자동 승인으로 늘어난다).
+    fn extra_people(&self) -> usize {
+        self.sheets[0].config.assignment.extra_people.len()
+    }
+
+    /// 자동 승인: 입력한 이름 그대로 들인다(명단에 없는 이름이면 명단에 더한다). 새 토큰을 준다.
+    fn auto_admit(&mut self, conn: ConnId, name: &str) {
+        self.pending.retain(|p| p.conn != conn);
+        if self.person(name).is_none() {
+            if let Err(e) = self.add_person(name) {
+                self.send(conn, ServerMsg::Rejected { reason: e });
+                return;
+            }
+            self.recompile();
+            self.resync();
+            self.persist(true);
+        }
+        let ip = self.conns.get(&conn).map(|c| c.ip.to_string()).unwrap_or_default();
+        tracing::info!("자동 승인: {name} ({ip})");
+        self.attach(conn, name, None);
+    }
+
+    /// 자동 승인(에이전트 PC)에서 기다리던 연결을 다시 본다: 까닭이 없어졌으면 들이고, 바뀌었으면 알린다(같은 이름의
+    /// 다른 기기가 끊겼을 때, 호스트가 끊거나 명단을 바꿨을 때).
+    fn recheck_pending(&mut self) {
+        if !self.auto_approve {
+            return;
+        }
+        let waiting: Vec<(ConnId, String, Option<PendingReason>)> =
+            self.pending.iter().map(|p| (p.conn, p.name.clone(), p.reason)).collect();
+        for (conn, name, before) in waiting {
+            match self.auto_gate(conn, &name) {
+                None => self.auto_admit(conn, &name),
+                now if now != before => {
+                    if let Some(p) = self.pending.iter_mut().find(|p| p.conn == conn) {
+                        p.reason = now;
+                    }
+                    self.send(conn, ServerMsg::Pending { name, reason: now });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 자동 승인하지 않을 이름을 바꾼다(호스트가 끊음·거절 → 넣고, 승인 → 뺀다). 기록 파일 메타에 남긴다.
+    fn set_held(&mut self, name: &str, on: bool) {
+        let changed = if on { self.held.insert(name.to_string()) } else { self.held.remove(name) };
+        if !changed {
+            return;
+        }
+        let json = serde_json::to_string(&self.held).unwrap_or_else(|_| "[]".into());
+        if let Some(store) = &self.store {
+            store.meta(META_HELD, &json);
+        }
+        self.host_meta.insert(META_HELD.to_string(), json);
     }
 
     /// 명단에 이름을 더한다(공통 명단 = 첫 시트 설정).
@@ -1284,6 +1463,7 @@ impl State {
             }
         }
         self.refresh_presence(); // 호스트 이름이 바뀌었을 수 있다
+        self.recheck_pending();
     }
 
     /// '이 기기로 전환': IP 명단의 이름으로 접속 중인 다른 연결을 끊고 이 연결로 들어온다.
@@ -1361,6 +1541,8 @@ impl State {
                 }
             }
             self.refresh_presence();
+            // 같은 이름으로 기다리던 다른 기기(자동 승인)를 들인다.
+            self.recheck_pending();
         }
     }
 
@@ -1394,6 +1576,7 @@ impl State {
 
     fn approve(&mut self, name: &str, range: Option<(u32, CellRange)>, note: String) -> Result<(), String> {
         let name = name.trim();
+        self.set_held(name, false);
         let waiting = self.pending.iter().find(|p| p.name == name).map(|p| p.conn);
         let mut changed = false;
         if self.person(name).is_none() {
@@ -1427,14 +1610,21 @@ impl State {
         let conn = self.pending.remove(i).conn;
         self.send(conn, ServerMsg::Rejected { reason: "호스트가 참여를 거절했습니다".into() });
         self.close(conn);
+        self.set_held(name, true);
         Ok(())
     }
 
+    /// 호스트가 연결을 끊는다. 그 사람의 토큰도 바꿔 다시 들어오려면 다시 승인받게 한다(자동 승인에서도).
     fn kick(&mut self, name: &str) -> Result<(), String> {
         let conn = self.people.get(name).and_then(|p| p.conn).ok_or("접속 중이 아닙니다")?;
         self.kick_conn(conn, KickReason::Host);
+        if let Some(p) = self.people.get_mut(name) {
+            p.token = new_token();
+        }
+        self.set_held(name, true);
         self.release_locks_of(name);
         self.refresh_presence();
+        self.recheck_pending();
         Ok(())
     }
 
@@ -1447,6 +1637,7 @@ impl State {
                 history: &self.log,
                 snapshots: &self.snapshots.list,
                 closed: self.closed,
+                saving: self.saving,
                 host_name,
                 changed: false,
                 replacement: None,
@@ -1784,6 +1975,7 @@ impl State {
             closed: self.closed,
             online: self.people.values().filter(|p| p.conn.is_some()).count() as u32,
             job: self.host_meta.get(META_JOB).cloned(),
+            auto_approve: self.auto_approve,
         }
     }
 
@@ -1842,6 +2034,7 @@ impl State {
                 .map(|p| PendingRow {
                     name: p.name.clone(),
                     ip: self.conns.get(&p.conn).map(|c| c.ip.to_string()).unwrap_or_default(),
+                    reason: p.reason,
                 })
                 .collect(),
             required: self.rt.iter().map(|rt| rt.progress.required).sum(),

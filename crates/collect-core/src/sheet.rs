@@ -190,11 +190,25 @@ pub struct SheetModel {
     pub frozen_rows: u32,
     pub frozen_cols: u32,
     pub validations: Vec<Validation>,
-    /// 숨긴 행/열(범위 기준). 참여자 화면에 보이지 않고 입력할 수 없다. '숨긴 행·열 포함'으로 불러오면 비어 있다.
+    /// 숨긴 행/열(범위 기준). 참여자 화면에 보이지 않고 입력할 수 없다. 불러오기는 숨긴 줄을 펼치므로 채우지 않는다
+    /// (예전 기록 파일, 시점별 '남의 행 숨김' 투영에 쓴다).
     #[serde(default)]
     pub hidden_rows: Vec<u32>,
     #[serde(default)]
     pub hidden_cols: Vec<u32>,
+    /// Excel에서 숨겨져 있던 행/열(범위 기준). 불러올 때 기본 높이·너비로 펼쳐 읽고, 저장할 때 Excel에서도 숨김을 푼다.
+    /// 원본에 반영하면 비운다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<u32>>", optional)]
+    pub unhidden_rows: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<u32>>", optional)]
+    pub unhidden_cols: Vec<u32>,
+    /// 앱에서 지운 불러온 행(기준 시트에만 쓴다): 지운 순서대로, 그 순간의 기준 시트 좌표. 저장할 때 Excel에서 이 순서로
+    /// 지우면 기준 시트와 같아진다. 원본에 반영하면 쓴 만큼 빠진다.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<RowCut>>", optional)]
+    pub deleted_rows: Vec<RowCut>,
     /// 앱에서 표 아래에 붙인 행과 추가한 사람(행 오름차순). 원본에 저장해 기준 시트가 된 행은 빠진다.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<AddedRow>>", optional)]
@@ -208,6 +222,14 @@ pub struct SheetModel {
     #[serde(default, skip_serializing_if = "is_zero")]
     #[ts(as = "Option<u32>", optional)]
     pub layout: u32,
+}
+
+/// 지운 행 묶음 하나: 그때의 행 `from`부터 `count`개([`SheetModel::deleted_rows`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RowCut {
+    pub from: u32,
+    pub count: u32,
 }
 
 /// 셀 → 병합 영역 인덱스. 셀마다 병합 목록을 훑지 않도록 한 번 만들어 쓴다.
@@ -311,8 +333,8 @@ impl SheetModel {
         CellRange::new(0, start, self.rows.max(1), count)
     }
 
-    /// 행 `from`부터 `count`개를 지운다(앱에서 붙인 행 지우기). 아래 행·병합·유효성·숨김·추가한 행·취소 표시를 당기고
-    /// 구조 판을 올린다.
+    /// 행 `from`부터 `count`개를 지운다. 아래 행·병합(한 칸만 남은 병합은 푼다)·유효성·숨김·추가한 행·취소 표시를
+    /// 당기고 구조 판을 올린다. [`SheetModel::deleted_rows`]는 건드리지 않는다(세션이 기준 시트에 남긴다).
     pub fn remove_rows(&mut self, from: u32, count: u32) {
         let end = from.saturating_add(count).min(self.rows);
         if from >= end {
@@ -323,7 +345,8 @@ impl SheetModel {
         self.cells.drain(from as usize * cols..end as usize * cols);
         self.row_heights.drain(from as usize..(end as usize).min(self.row_heights.len()));
         self.rows -= count;
-        self.merges = self.merges.iter().filter_map(|m| m.without_rows(from, count)).collect();
+        self.merges =
+            self.merges.iter().filter_map(|m| m.without_rows(from, count)).filter(|m| !m.is_single()).collect();
         self.validations.retain_mut(|v| match v.range.without_rows(from, count) {
             Some(r) => {
                 v.range = r;
@@ -334,6 +357,7 @@ impl SheetModel {
         let shift =
             |list: &mut Vec<u32>| *list = list.iter().filter_map(|&r| shift_after_removal(r, from, count)).collect();
         shift(&mut self.hidden_rows);
+        shift(&mut self.unhidden_rows);
         shift(&mut self.cancelled_rows);
         self.added_rows = self
             .added_rows
@@ -364,7 +388,8 @@ impl SheetModel {
         self.cells = cells;
         self.col_widths.drain(from as usize..(end as usize).min(self.col_widths.len()));
         self.cols -= count;
-        self.merges = self.merges.iter().filter_map(|m| m.without_cols(from, count)).collect();
+        self.merges =
+            self.merges.iter().filter_map(|m| m.without_cols(from, count)).filter(|m| !m.is_single()).collect();
         self.validations.retain_mut(|v| match v.range.without_cols(from, count) {
             Some(r) => {
                 v.range = r;
@@ -372,7 +397,10 @@ impl SheetModel {
             }
             None => false,
         });
-        self.hidden_cols = self.hidden_cols.iter().filter_map(|&c| shift_after_removal(c, from, count)).collect();
+        let shift =
+            |list: &mut Vec<u32>| *list = list.iter().filter_map(|&c| shift_after_removal(c, from, count)).collect();
+        shift(&mut self.hidden_cols);
+        shift(&mut self.unhidden_cols);
         self.frozen_cols -= self.frozen_cols.min(end).saturating_sub(from);
         self.layout += 1;
     }
@@ -433,6 +461,9 @@ mod tests {
             validations: vec![],
             hidden_rows: vec![],
             hidden_cols: vec![],
+            unhidden_rows: Vec::new(),
+            unhidden_cols: Vec::new(),
+            deleted_rows: Vec::new(),
             added_rows: vec![],
             cancelled_rows: vec![],
             layout: 0,

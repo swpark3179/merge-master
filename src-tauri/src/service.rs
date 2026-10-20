@@ -7,9 +7,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use collect_core::CellRef;
-use collect_core::a1::parse_sheet_range;
-use collect_server::{Gone, HostSnapshot, ServerConfig, SessionHandle};
+use collect_server::{Gone, ServerConfig, SessionHandle};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
@@ -210,57 +208,4 @@ pub async fn server_status(state: State<'_, AppState>) -> CmdResult<ServerStatus
         port: running.unwrap_or(*state.port.lock().unwrap()),
         published: state.hub.len() as u32,
     })
-}
-
-/// 시트를 확정했으면 지금의 접속자 표.
-#[tauri::command]
-pub fn participants_get(state: State<'_, AppState>, job: String) -> Option<HostSnapshot> {
-    state.session(&job).ok().map(|s| s.snapshot())
-}
-
-/// 명단에 없는 이름을 승인한다. `range`는 `sheet` 시트의 주소(예: H500:H620, `인력계획!E5:E9`처럼 시트 이름을 붙여도
-/// 된다)로, 주면 그 범위를 배정한다.
-#[tauri::command]
-pub async fn participant_approve(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    job: String,
-    name: String,
-    sheet: u32,
-    range: Option<String>,
-    note: String,
-) -> CmdResult<()> {
-    let session = state.session(&job)?;
-    let range = match range.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
-        Some(text) => {
-            let sheets: Vec<(String, CellRef)> =
-                session.with(|s| s.sheets.iter().map(|x| (x.model.sheet.clone(), x.model.origin)).collect()).await?;
-            let names: Vec<&str> = sheets.iter().map(|(n, _)| n.as_str()).collect();
-            let (i, range) = parse_sheet_range(text, &names, sheet as usize).map_err(|e| e.to_string())?;
-            let origin = sheets.get(i).map(|(_, o)| *o).ok_or("없는 시트입니다")?;
-            let range = range.relative_to(origin).ok_or_else(|| format!("{text}은(는) 불러온 표 밖입니다"))?;
-            Some((i as u32, range))
-        }
-        None => None,
-    };
-    // 설정은 세션이 가진다: 1b 화면은 바뀌었다는 알림을 받고 세션에서 다시 읽는다.
-    session.approve(&name, range, &note).await?;
-    let _ = app.emit(&event("config-changed", &job), ());
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn participant_reject(state: State<'_, AppState>, job: String, name: String) -> CmdResult<()> {
-    state.session(&job)?.reject(&name).await
-}
-
-#[tauri::command]
-pub async fn participant_kick(state: State<'_, AppState>, job: String, name: String) -> CmdResult<()> {
-    state.session(&job)?.kick(&name).await
-}
-
-/// 그 사람이 잡고 있는 편집 잠금을 푼다(편집기를 열어 둔 채 자리를 비운 경우).
-#[tauri::command]
-pub async fn participant_unlock(state: State<'_, AppState>, job: String, name: String) -> CmdResult<()> {
-    state.session(&job)?.unlock(&name).await
 }

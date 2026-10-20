@@ -1,17 +1,19 @@
 //! 표 구조 바꾸기: 표 아래에 행·오른쪽에 열 붙이기, 앱에서 붙인 행·열 지우기, 행 취소 표시.
 //!
 //! 판정은 [`collect_core::structure`]가 하고, 여기서는 시트·설정과 함께 세션 상태(칸 버전·잠금·마지막 작성자, 변경 기록,
-//! 스냅샷, 강조, 커서)를 맞춘 뒤 모두에게 새 시트를 보낸다. 붙인 행·열만 지우므로 엑셀에서 불러온 칸의 좌표와 기준
-//! 시트·계산 사본은 그대로다.
+//! 스냅샷, 강조, 커서)를 맞춘 뒤 모두에게 새 시트를 보낸다. 엑셀에서 불러온 행을 지우면 기준 시트에서도 지우고 그 순서를
+//! 남기며([`collect_core::SheetModel::deleted_rows`] — 저장할 때 Excel에서도 지운다), 계산 사본에서도 지우게 한다. 행·열을
+//! 지울 때의 기록 파일 쓰기(기록·스냅샷·시트·기준 시트)는 한 묶음이다(그사이 꺼져도 서로 어긋나지 않는다).
 
 use std::collections::HashMap;
 
 use collect_core::a1::shift_after_removal;
-use collect_core::config::{CellException, ExceptionKind};
+use collect_core::access::union_roster;
+use collect_core::config::{CellException, ColumnRole, ExceptionKind};
 use collect_core::format::Axis;
 use collect_core::history::{BatchOrigin, ChangeKind};
 use collect_core::structure::{Actor, StructureEdit, check_add, check_delete_rows, remap_entries, reshape_values};
-use collect_core::{AddedRow, CellRange, CellRef, CellValue, SheetCell};
+use collect_core::{AddedRow, CellRange, CellRef, CellValue, RowCut, SheetCell};
 use collect_store::{pack_sheets, unpack_sheets};
 
 use super::edit::{READ_ONLY, STALE_LAYOUT, now_ms};
@@ -20,10 +22,12 @@ use crate::protocol::{ChangeEntry, ServerMsg};
 
 /// 참여자가 추가한 행에 거는 셀 예외의 메모(호스트 1b '셀 예외'에 보인다).
 pub const ADDED_ROWS_NOTE: &str = "참여자가 추가한 행";
+/// 호스트가 Excel로 저장하는 중에 행·열을 지우려 했다.
+pub(super) const SAVING: &str = "엑셀로 저장하는 중에는 행·열을 지울 수 없습니다. 저장이 끝난 뒤 다시 해 주세요";
 
 impl State {
-    /// 참여자 요청: 행 추가(권한 '행 추가'), 내가 추가한 행 지우기(권한 '행 삭제'), 취소 표시(내가 입력할 수 있는 칸이
-    /// 있는 행). 열은 호스트만 바꾼다.
+    /// 참여자 요청: 행 추가(권한 '행 추가'), 내가 추가했거나 내게 배정된 행 지우기(권한 '행 삭제'), 취소 표시(내가 입력할
+    /// 수 있는 칸이 있는 행). 열은 호스트만 바꾼다.
     pub(super) fn participant_structure(&mut self, conn: ConnId, sheet: u32, edit: StructureEdit, layout: Option<u32>) {
         let Some((name, p)) = self.person_of(conn) else { return };
         self.touch(conn);
@@ -45,17 +49,10 @@ impl State {
             StructureEdit::DeleteRows { .. } if !permissions.delete_rows => {
                 Err("이 시트에서는 행을 지울 수 없습니다".to_string())
             }
+            StructureEdit::DeleteRows { .. } if self.saving => Err(SAVING.to_string()),
             StructureEdit::DeleteRows { from, count } => {
                 let access = &self.rt[si].access;
-                check_delete_rows(
-                    &slot.model,
-                    slot.baseline.rows,
-                    &slot.config,
-                    access,
-                    from,
-                    count,
-                    Actor::Person(&name),
-                )
+                check_delete_rows(&slot.model, &slot.config, access, from, count, Actor::Person(&name))
             }
             StructureEdit::CancelRows { from, count, .. } => {
                 let model = &slot.model;
@@ -115,9 +112,18 @@ impl State {
                 self.restructured(si, true);
             }
             StructureEdit::DeleteRows { from, count } => {
+                if let Some(store) = &self.store {
+                    store.begin_group();
+                }
                 let cols = self.sheets[si].model.cols;
                 let slot = &mut self.sheets[si];
+                // 엑셀에서 불러온 행(기준 시트에 있는 행)은 기준 시트에서도 지우고 그 순서를 남긴다.
+                let imported = from.saturating_add(count).min(slot.baseline.rows).saturating_sub(from);
                 slot.model.remove_rows(from, count);
+                if imported > 0 {
+                    slot.baseline.remove_rows(from, imported);
+                    slot.baseline.deleted_rows.push(RowCut { from, count: imported });
+                }
                 slot.config.on_rows_removed(from, count);
                 self.reindex(si, cols, cols, |at| {
                     Some(CellRef::new(shift_after_removal(at.row, from, count)?, at.col))
@@ -126,10 +132,26 @@ impl State {
                 self.remap_log(si, Axis::Row, from, count, edit);
                 self.remap_highlights(si, |r| r.without_rows(from, count));
                 self.move_cursors(si, |at| Some(CellRef::new(shift_after_removal(at.row, from, count)?, at.col)));
+                if imported > 0 {
+                    self.cut_recalc(si, from, imported);
+                }
+                // 내게 배정된 행을 모두 지운 참여자도 명단에 남는다(새 시트를 받을 때 끊기지 않게).
+                if person.is_some() {
+                    let roster = union_roster(self.sheets.iter().map(|s| (&s.model, &s.config)));
+                    if !roster.iter().any(|n| n.trim() == by.trim()) {
+                        let _ = self.add_person(by);
+                    }
+                }
                 self.restructured(si, true);
+                if let Some(store) = &self.store {
+                    store.end_group();
+                }
                 self.broadcast(&ServerMsg::RowsDeleted { by: by.to_string(), sheet, from, count }, None);
             }
             StructureEdit::DeleteCols { from, count } => {
+                if let Some(store) = &self.store {
+                    store.begin_group();
+                }
                 let before = self.sheets[si].model.cols;
                 let slot = &mut self.sheets[si];
                 slot.model.remove_cols(from, count);
@@ -143,6 +165,9 @@ impl State {
                 self.remap_highlights(si, |r| r.without_cols(from, count));
                 self.move_cursors(si, |at| Some(CellRef::new(at.row, shift_after_removal(at.col, from, count)?)));
                 self.restructured(si, true);
+                if let Some(store) = &self.store {
+                    store.end_group();
+                }
             }
             StructureEdit::CancelRows { from, count, on } => {
                 if self.sheets[si].model.set_cancelled(from, count, on) {
@@ -221,11 +246,18 @@ impl State {
         }
     }
 
-    /// 참여자가 추가한 행을 입력 칸으로 여는 셀 예외(입력 가능 + 행 배정 기준 칸은 입력 금지). 바로 위에 이어지는 같은
-    /// 예외가 있으면 그 범위를 늘린다(행을 여러 번 추가해도 예외는 늘지 않는다).
+    /// 참여자가 추가한 행을 입력 칸으로 여는 셀 예외(입력 가능 + 행 배정 기준 칸·잠금 열의 수식 칸은 입력 금지). 바로 위에
+    /// 이어지는 같은 예외가 있으면 그 범위를 늘린다(행을 여러 번 추가해도 예외는 늘지 않는다).
     fn open_added_rows(&mut self, sheet: usize, range: CellRange) {
         let slot = &mut self.sheets[sheet];
         let key = slot.config.assignment.key_col.filter(|&k| k < slot.model.cols);
+        // 잠금 열의 수식(위 행에서 내려 쓴 것)은 새 행에서도 Excel이 계산하게 둔다.
+        let formula_locked: Vec<u32> = (0..slot.model.cols)
+            .filter(|&c| {
+                slot.config.columns.get(c as usize).is_some_and(|r| r.role == ColumnRole::Locked)
+                    && slot.model.cell(CellRef::new(range.row, c)).is_some_and(|cell| cell.f.is_some())
+            })
+            .collect();
         let mut add = |kind: ExceptionKind, r: CellRange| {
             let list = &mut slot.config.exceptions;
             let prev = list.iter_mut().rev().find(|e| {
@@ -243,6 +275,9 @@ impl State {
         add(ExceptionKind::Input, range);
         if let Some(key) = key {
             add(ExceptionKind::Locked, CellRange::new(range.row, key, range.rows, 1));
+        }
+        for c in formula_locked.into_iter().filter(|&c| Some(c) != key) {
+            add(ExceptionKind::Locked, CellRange::new(range.row, c, range.rows, 1));
         }
     }
 

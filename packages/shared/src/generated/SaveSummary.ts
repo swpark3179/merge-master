@@ -37,6 +37,14 @@ cancelledRows: number,
  */
 cancelChanges: number, 
 /**
+ * 앱에서 지운 불러온 행 수(저장할 때 Excel에서도 지운다).
+ */
+deletedRows: number, 
+/**
+ * Excel에서 숨겨져 있던 행·열 수(저장할 때 숨김을 푼다).
+ */
+unhidden: number, 
+/**
  * 시트마다(불러온 순서).
  */
 sheets: Array<SheetSummary>, };
