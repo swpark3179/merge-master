@@ -399,12 +399,6 @@ pub async fn save_run(
     Ok(SaveResult { report, original, kept: kept_count, closed, stopped })
 }
 
-/// 취합 마감(참여자 입력을 막음) / 다시 열기.
-#[tauri::command]
-pub async fn collect_close(state: State<'_, AppState>, job: String, closed: bool) -> CmdResult<()> {
-    state.session(&job)?.with(move |s| s.set_closed(closed)).await
-}
-
 /// 저장한 파일을 탐색기에서 보여 준다.
 #[tauri::command]
 pub fn reveal_file(path: String) -> CmdResult<()> {

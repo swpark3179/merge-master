@@ -12,6 +12,7 @@
 //! 빠진다(세션과 편집 내용은 그대로 남는다). 서버는 공개 중인 업무가 있는 동안 열어 둔다.
 
 mod guard;
+pub mod host;
 pub mod hub;
 pub mod ipnames;
 mod net;
