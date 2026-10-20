@@ -1,7 +1,7 @@
 //! Excel 스레드가 소유하는 상태: 열거한 통합문서 핸들, 직접 띄운 백그라운드 인스턴스, 수식 계산 사본.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -65,9 +65,27 @@ pub struct Session {
     adopted_more: Vec<(Dispatch, Option<u32>)>,
     /// 수식 재계산용 사본(업무 id별, [`Session::open_calc_for`]).
     pub(crate) calc: HashMap<String, CalcCopy>,
+    /// 계산 사본을 둘 폴더([`Session::set_work_dir`]). 없으면 임시 폴더의 `merge-master`.
+    work_dir: Option<PathBuf>,
 }
 
 impl Session {
+    /// Excel이 설치되어 있는가(등록만 본다 — Excel을 띄우지 않는다).
+    pub fn excel_installed(&self) -> bool {
+        excel_clsid().is_ok()
+    }
+
+    /// 계산 사본을 둘 폴더를 정한다(에이전트는 호스트 앱과 다른 폴더를 써서, 같은 PC에서 호스트 앱이 켜져도 서로의 사본을
+    /// 남은 것으로 보고 닫지 않는다).
+    pub fn set_work_dir(&mut self, dir: impl Into<PathBuf>) {
+        self.work_dir = Some(dir.into());
+    }
+
+    /// 계산 사본을 두는 폴더.
+    pub(crate) fn calc_dir(&self) -> PathBuf {
+        self.work_dir.clone().unwrap_or_else(|| std::env::temp_dir().join("merge-master"))
+    }
+
     /// 실행 중인 Excel의 통합문서를 모두 나열한다.
     ///
     /// `GetActiveObject`는 ROT에 먼저 등록된 Excel 인스턴스 하나만 돌려주므로, 다른 인스턴스에 열린 파일은
@@ -179,18 +197,18 @@ impl Session {
 
     /// 앞서 실행된 앱(강제 종료 등)이 남긴 숨은 Excel을 정리한다.
     ///
-    /// - 계산 사본(임시 폴더 `merge-master\calc-*`)이 열려 있으면 닫고, 그 Excel에 다른 문서가 없으면 끝낸다
+    /// - 계산 사본(작업 폴더 — 기본은 임시 폴더 `merge-master` — 의 `calc-*`)이 열려 있으면 닫고, 그 Excel에 다른 문서가 없으면 끝낸다
     ///   (이 앱이 지금 연 사본 — 다른 업무의 것 포함 — 은 그대로).
     /// - `sources`(되살린 업무들의 원본 통합문서)가 보이지 않는 Excel에 열려 있으면 이 앱이 띄운 숨은 인스턴스로 받아들인다
     ///   (앱을 끝낼 때 함께 닫힌다).
     pub fn adopt_orphans_many(&mut self, sources: &[String]) -> Result<OrphanReport> {
         let mut report = OrphanReport::default();
-        let calc_dir = std::env::temp_dir().join("merge-master").to_string_lossy().to_lowercase();
+        let calc_dir = self.calc_dir();
         let own_calc: Vec<String> = self.calc.values().map(|c| c.path.to_string_lossy().to_lowercase()).collect();
         for book in rot_workbooks()? {
             let Ok(id) = book.get_string("FullName") else { continue };
             let lower = id.to_lowercase();
-            let is_calc = lower.starts_with(&calc_dir) && lower.contains("calc-");
+            let is_calc = is_calc_copy_of(&calc_dir, &id);
             if is_calc && !own_calc.contains(&lower) {
                 let app = book.obj("Application").ok();
                 let pid = app.as_ref().and_then(excel_pid);
@@ -230,7 +248,7 @@ impl Session {
             }
         }
         // 닫혀서 남은 옛 계산 사본 파일(잠겨 있으면 지우지 못하고 넘어간다).
-        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir().join("merge-master")) {
+        if let Ok(entries) = std::fs::read_dir(&calc_dir) {
             let mine = format!("calc-{}-", std::process::id());
             for e in entries.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
@@ -261,6 +279,17 @@ impl Session {
             }
         }
     }
+}
+
+/// `path`가 작업 폴더(`dir`) 바로 아래의 계산 사본(`calc-*`)인가. 폴더 이름이 같게 시작하는 다른 폴더
+/// (`merge-master-agent` 등)는 아니다.
+fn is_calc_copy_of(dir: &Path, path: &str) -> bool {
+    let path = Path::new(path);
+    let parent = path.parent().map(|p| p.to_string_lossy().to_lowercase());
+    let dir = dir.to_string_lossy().to_lowercase();
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    parent.as_deref().map(|p| p.trim_end_matches(['\\', '/'])) == Some(dir.trim_end_matches(['\\', '/']))
+        && name.starts_with("calc-")
 }
 
 /// 받아들인(앞 앱이 띄운) 숨은 Excel을 끝낸다. 남은 문서(앞 앱이 함께 열어 둔 파일 등)는 저장된 상태면 닫아도 잃는 것이
@@ -403,4 +432,19 @@ fn describe(book: &Dispatch, id: &str, background: bool) -> Result<WorkbookInfo>
         active_sheet,
         background,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calc_copies_are_matched_by_their_folder() {
+        let dir = Path::new(r"C:\Users\a\AppData\Local\Temp\merge-master");
+        assert!(is_calc_copy_of(dir, r"C:\Users\a\AppData\Local\Temp\merge-master\calc-12-1.xlsx"));
+        assert!(is_calc_copy_of(dir, r"c:\users\a\appdata\local\temp\MERGE-MASTER\CALC-12-1.xlsx"));
+        // 에이전트의 작업 폴더(이름이 같게 시작하는 다른 폴더)는 호스트 앱의 것이 아니다.
+        assert!(!is_calc_copy_of(dir, r"C:\Users\a\AppData\Local\Temp\merge-master-agent\calc-12-1.xlsx"));
+        assert!(!is_calc_copy_of(dir, r"C:\Users\a\AppData\Local\Temp\merge-master\budget.xlsx"));
+    }
 }

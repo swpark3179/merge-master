@@ -28,6 +28,8 @@ pub enum StoreError {
     Decode(String),
     #[error("저장소 스레드가 끝났습니다")]
     Gone,
+    #[error("기록 사본을 만들 수 없습니다: {0}")]
+    Backup(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -141,6 +143,8 @@ enum Op {
     /// 다른 시트로 바꿈: 기록·스냅샷을 비운다.
     Reset,
     Flush(mpsc::SyncSender<()>),
+    /// 그때까지의 쓰기를 모두 반영한 사본을 한 파일로(`VACUUM INTO`).
+    Backup(PathBuf, mpsc::SyncSender<Result<()>>),
 }
 
 /// 쓰기 전용 손잡이. 버리면 남은 쓰기를 마치고 닫는다.
@@ -266,7 +270,24 @@ fn write(conn: &mut Connection, op: Op) -> rusqlite::Result<()> {
             let _ = done.send(());
             Ok(())
         }
+        Op::Backup(to, done) => {
+            let _ = done.send(backup(conn, &to));
+            Ok(())
+        }
     }
+}
+
+/// 이 연결(쓰기 스레드)로 사본을 만든다: 큐에서 앞선 쓰기는 이미 반영됐고, WAL까지 합친 한 파일이 된다.
+fn backup(conn: &Connection, to: &Path) -> Result<()> {
+    if to.exists() {
+        return Err(StoreError::Backup(format!("{}이(가) 이미 있습니다", to.display())));
+    }
+    if let Some(dir) = to.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let target = to.to_str().ok_or_else(|| StoreError::Backup("경로에 쓸 수 없는 글자가 있습니다".into()))?;
+    conn.execute("VACUUM INTO ?1", [target])?;
+    Ok(())
 }
 
 impl Store {
@@ -333,6 +354,19 @@ impl Store {
     /// 스냅샷 값을 바꿔 쓴다(표 구조가 바뀌어 지금 시트 모양에 맞춘 값).
     pub fn replace_snapshot(&self, id: u32, data: Vec<u8>) {
         self.send(Op::ReplaceSnapshot(id, data));
+    }
+
+    /// 그때까지 보낸 쓰기를 모두 반영한 사본을 `to`에 한 파일로 만들라고 보낸다(대상 파일이 있으면 실패).
+    /// 받는 쪽은 다른 PC로 옮길 기록 파일(에이전트로 넘기기)을 기다린다. 다른 쓰기를 막지 않으려고 기다림은 맡긴다.
+    pub fn backup_request(&self, to: impl Into<PathBuf>) -> Result<mpsc::Receiver<Result<()>>> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.tx.as_ref().ok_or(StoreError::Gone)?.send(Op::Backup(to.into(), tx)).map_err(|_| StoreError::Gone)?;
+        Ok(rx)
+    }
+
+    /// [`Store::backup_request`]하고 끝날 때까지 기다린다.
+    pub fn backup_to(&self, to: impl Into<PathBuf>) -> Result<()> {
+        self.backup_request(to)?.recv().map_err(|_| StoreError::Gone)?
     }
 
     /// 그때까지 보낸 쓰기가 끝날 때까지 기다린다.
@@ -489,6 +523,27 @@ mod tests {
         let path = dir.join(name);
         let _ = std::fs::remove_file(&path);
         path
+    }
+
+    #[test]
+    fn backup_has_every_write_queued_before_it() {
+        let path = temp("backup-src.sqlite");
+        let copy = temp("backup-copy.sqlite");
+        let store = Store::open(&path).unwrap();
+        store.append(&[entry(1, CellValue::Number(1.0)), entry(2, CellValue::Number(2.0))]);
+        store.meta("job", "j-1");
+        store.blob("sheet", 2, b"blob".to_vec());
+        store.backup_to(&copy).unwrap();
+        // 같은 대상에 다시 만들면 덮지 않고 실패한다.
+        assert!(matches!(store.backup_to(&copy), Err(StoreError::Backup(_))));
+        store.append(&[entry(3, CellValue::Number(3.0))]);
+        drop(store);
+        let saved = load(&copy).unwrap();
+        assert_eq!(saved.changes.len(), 2, "사본 뒤의 쓰기는 들지 않는다");
+        assert_eq!(saved.meta.get("job").map(String::as_str), Some("j-1"));
+        assert_eq!(saved.blobs.get("sheet").map(|(seq, d)| (*seq, d.as_slice())), Some((2, b"blob".as_slice())));
+        assert!(!copy.with_extension("sqlite-wal").exists(), "사본은 한 파일");
+        let _ = std::fs::remove_file(&copy);
     }
 
     #[test]

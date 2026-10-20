@@ -14,7 +14,8 @@ use ts_rs::TS;
 use crate::{IpNames, SessionHandle};
 
 /// 주소 경로로 쓸 수 없는 이름(서버가 쓰는 경로·흔한 파일 이름).
-pub const RESERVED_SLUGS: &[&str] = &["api", "ws", "assets", "__dev", "index.html", "favicon.ico", "robots.txt"];
+pub const RESERVED_SLUGS: &[&str] =
+    &["api", "ws", "assets", "__dev", "agent", "index.html", "favicon.ico", "robots.txt"];
 pub const MAX_SLUG_CHARS: usize = 32;
 
 /// 주소 경로: 영문·숫자·`-`·`_` 1~32자, 예약어가 아닐 것(대소문자 무시).

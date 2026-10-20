@@ -35,7 +35,7 @@ pub(crate) struct Job {
     pub pending: tokio::sync::Mutex<Option<Previews>>,
     /// 확정한 시트·취합 설정·편집 내용을 가진 세션. 시트를 처음 확정할 때 만들고, 다시 확정하면 내용을 바꾼다.
     pub session: std::sync::Mutex<Option<SessionHandle>>,
-    pub recalc: recalc::Recalc,
+    pub recalc: collect_excel::Recalc,
     /// 확정한 시트의 출처(저장할 원본).
     pub source: std::sync::Mutex<Option<save::Source>>,
     pub last_save: std::sync::Mutex<Option<save::LastSave>>,
@@ -58,7 +58,7 @@ impl Job {
             id,
             pending: Default::default(),
             session: Default::default(),
-            recalc: recalc::Recalc::default(),
+            recalc: collect_excel::Recalc::default(),
             source: Default::default(),
             last_save: Default::default(),
             service: std::sync::Mutex::new(JobService { slug, published: false }),
@@ -286,7 +286,7 @@ pub struct JobState {
     pub snapshot: Option<HostSnapshot>,
     #[ts(optional)]
     pub comms: Option<CommsSnapshot>,
-    pub recalc: recalc::Status,
+    pub recalc: collect_server::RecalcStatus,
 }
 
 #[tauri::command]
@@ -313,17 +313,35 @@ pub async fn job_state(state: State<'_, AppState>, job: String) -> CmdResult<Job
 #[tauri::command]
 pub async fn job_end(app: AppHandle, state: State<'_, AppState>, job: String) -> CmdResult<Vec<JobSummary>> {
     let job = state.job(&job)?;
+    end_local(&app, &state, &job, Vec::new()).await?;
+    Ok(summaries(&state))
+}
+
+/// 이 PC에서 업무를 끝낸다([`job_end`], 에이전트로 넘긴 뒤). `meta`는 기록 파일에 함께 남길 값(넘긴 곳 등).
+pub(crate) async fn end_local(
+    app: &AppHandle,
+    state: &AppState,
+    job: &Job,
+    meta: Vec<(&'static str, String)>,
+) -> CmdResult<()> {
     job.ending.store(true, Ordering::SeqCst);
-    crate::service::unpublish(&app, &state, &job, true).await?;
+    crate::service::unpublish(app, state, job, true).await?;
     let session = job.session.lock().unwrap().take();
     job.recalc.stop(&state.excel, &job.id);
     if let Some(session) = session {
         session.set_recalc(None);
-        session.with(|s| s.set_meta(META_ENDED, "1")).await?;
+        session
+            .with(move |s| {
+                for (k, v) in &meta {
+                    s.set_meta(k, v);
+                }
+                s.set_meta(META_ENDED, "1");
+            })
+            .await?;
     }
     state.jobs.lock().unwrap().remove(&job.id);
-    emit_jobs(&app);
-    Ok(summaries(&state))
+    emit_jobs(app);
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -409,7 +427,9 @@ async fn restore_all(app: &AppHandle, state: &AppState) -> RestoreReport {
         }
     }
     for (job, session, models, workbook_id, sheets) in &started {
-        job.recalc.start(app, state.excel.clone(), &job.id, session.clone(), models, workbook_id, sheets);
+        let source = collect_excel::CalcSource::Workbook(workbook_id.clone());
+        let notify = recalc::notify(app, &job.id);
+        job.recalc.start(state.excel.clone(), &job.id, session.clone(), models, source, sheets, notify);
     }
 
     // 공개 중이던 업무를 다시 공개한다. 포트는 모든 업무가 같이 쓰므로 가장 최근 업무의 포트로.

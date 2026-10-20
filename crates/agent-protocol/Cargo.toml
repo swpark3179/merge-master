@@ -1,0 +1,19 @@
+[package]
+name = "agent-protocol"
+description = "호스트 앱 ↔ 에이전트 관리 API(/agent/*)의 형식"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+collect-core.workspace = true
+collect-server.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ts-rs.workspace = true
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[features]
+# 호스트 앱이 에이전트에 요청을 보내는 작은 HTTP/1.1 클라이언트(시험은 에이전트 크레이트에서).
+client = ["dep:tokio"]

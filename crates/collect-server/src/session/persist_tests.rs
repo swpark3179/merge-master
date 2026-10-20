@@ -216,3 +216,42 @@ async fn job_id_survives_recover_and_new_store() {
     let peek = collect_store::peek(&next).unwrap();
     assert_eq!(peek.meta.get(META_JOB).map(String::as_str), Some("20261011-093012-123"));
 }
+
+#[tokio::test]
+async fn backup_copy_can_be_recovered_elsewhere() {
+    // 에이전트로 넘길 때: 지금 상태를 모두 남긴 사본을 만들고, 그 사본으로 다른 곳에서 되살린다.
+    let path = temp("backup-src.sqlite");
+    let copy = temp("backup-copy.sqlite");
+    let mut init = fixture();
+    let store = Store::open(&path).unwrap();
+    store.meta("workbook", r"C:\work\budget.xlsx");
+    init.store = Some(store);
+    let session = SessionHandle::spawn(init);
+    session
+        .with(|s| {
+            s.sheets[0].config.title = "넘길 업무".into();
+            s.changed();
+            let at = CellRef::new(2, F);
+            s.host_set("박지훈", BatchOrigin::Edit, 0, vec![(at, CellValue::Number(42.0))]);
+        })
+        .await
+        .unwrap();
+    session.backup_store(copy.clone()).await.unwrap();
+    assert!(session.backup_store(copy.clone()).await.is_err(), "같은 대상에 다시 만들지 않는다");
+    let rec = recover(&copy).unwrap();
+    assert_eq!(rec.workbook_id, r"C:\work\budget.xlsx");
+    let (model, config) = &rec.init.sheets[0];
+    assert_eq!(config.title, "넘길 업무");
+    assert_eq!(model.cell(CellRef::new(2, F)).unwrap().v, CellValue::Number(42.0));
+    let parts = SessionHandle::spawn(rec.init).save_parts().await.unwrap();
+    assert_eq!(parts.history.len(), 1);
+    assert_eq!(parts.sheets[0].current.cell(CellRef::new(2, F)).unwrap().v, CellValue::Number(42.0));
+    let names = vec![parts.sheets[0].current.sheet.clone()];
+    let plans = parts.plan(&names, ExportOptions { history: true, ..Default::default() }, 0, &[]);
+    assert_eq!(plans[0].1.cells, [CellRef::new(2, F)]);
+    assert!(plans[0].1.history.is_some());
+
+    // 기록 파일이 없는 세션은 넘길 수 없다.
+    let memory = SessionHandle::spawn(fixture());
+    assert!(memory.backup_store(temp("none.sqlite")).await.is_err());
+}

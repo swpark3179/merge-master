@@ -27,6 +27,7 @@ pub use snapshots::AUTO_SNAPSHOT;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use collect_core::a1::sheet_prefix;
@@ -34,8 +35,9 @@ use collect_core::access::{Access, ProgressStats, Viewer, union_roster};
 use collect_core::config::{CollectConfig, DeadlineAction, OthersRows, SessionCommon};
 use collect_core::detect::{TableGuess, column_labels};
 use collect_core::edit::{ConfigEdit, EditReach};
+use collect_core::export::{ExportOptions, ExportPlan, SheetPlanInput, plan_workbook};
 use collect_core::format::Axis;
-use collect_core::history::BatchOrigin;
+use collect_core::history::{BatchOrigin, SheetLabels};
 use collect_core::project::project_with;
 use collect_core::structure::{Actor, StructureEdit, check_add, check_delete_cols, check_delete_rows};
 use collect_core::view::{ConfigView, config_view_with, encode_flags};
@@ -227,6 +229,58 @@ pub struct HostSnapshot {
 #[derive(Debug, Clone)]
 pub struct RecalcRequest {
     pub writes: Vec<(u32, CellRef, CellValue)>,
+}
+
+/// 수식 재계산 상태(Excel 계산 사본). 호스트 앱 1c와 에이전트 상태에 보인다.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, serde::Deserialize, TS)]
+#[serde(tag = "state", rename_all = "camelCase")]
+#[ts(export)]
+pub enum RecalcStatus {
+    /// 수식이 없는 시트(모든 시트).
+    #[default]
+    None,
+    Opening,
+    Ready {
+        formulas: u32,
+    },
+    /// 수식은 저장할 때 계산한다.
+    Unavailable {
+        message: String,
+    },
+}
+
+/// 엑셀 저장 재료: 시트마다 기준 시트·지금 시트·설정·열 이름, 그리고 모든 변경 기록([`SessionHandle::save_parts`]).
+#[derive(Debug, Clone)]
+pub struct SaveParts {
+    pub sheets: Vec<SaveSheet>,
+    pub history: Vec<ChangeEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SaveSheet {
+    pub baseline: SheetModel,
+    pub current: SheetModel,
+    pub config: CollectConfig,
+    pub labels: Vec<String>,
+}
+
+impl SaveParts {
+    /// 통합문서 저장 계획(`names`는 Excel의 시트 이름, 세션 안 순번 순서). `keep`은 시트마다 쓰지 않을 칸.
+    pub fn plan(
+        &self,
+        names: &[String],
+        opts: ExportOptions,
+        offset_minutes: i32,
+        keep: &[HashSet<CellRef>],
+    ) -> Vec<(String, ExportPlan)> {
+        let inputs: Vec<SheetPlanInput<'_>> = self
+            .sheets
+            .iter()
+            .zip(names)
+            .map(|(x, name)| SheetPlanInput { name, baseline: &x.baseline, current: &x.current, labels: &x.labels })
+            .collect();
+        plan_workbook(&inputs, &self.history, opts, offset_minutes, keep)
+    }
 }
 
 /// 호스트가 `with` 안에서 요청한 일(작업이 끝난 뒤 순서대로 한다). `Resized`는 호스트가 바꾼 열 너비·행 높이(시트에는
@@ -580,6 +634,13 @@ pub(crate) enum Command {
     SetIpNames(IpNames),
     SetRecalc(Option<mpsc::UnboundedSender<RecalcRequest>>),
     Formulas(Vec<(u32, CellRef, CellValue)>),
+    /// 참여자에게 보일 호스트 이름을 정해 둔다(`None`이면 이 PC의 IP·요청자로 정한다).
+    SetHostName(Option<String>),
+    /// 지금 상태를 모두 남긴 뒤 기록 파일의 사본을 만든다.
+    Backup {
+        to: PathBuf,
+        reply: oneshot::Sender<Result<std::sync::mpsc::Receiver<collect_store::Result<()>>, String>>,
+    },
     Tick,
     /// 마감 시각 점검(1초마다).
     DeadlineTick,
@@ -709,6 +770,41 @@ impl SessionHandle {
     /// 재계산된 수식 칸 값(시트 순번, 모델 좌표). 바뀐 칸만 참여자에게 보낸다.
     pub fn formula_results(&self, values: Vec<(u32, CellRef, CellValue)>) {
         self.send(Command::Formulas(values));
+    }
+
+    /// 참여자에게 보일 호스트 이름을 정해 둔다. 에이전트 PC에서 서비스하면 그 PC의 IP로 IP 명단을 찾으면 안 되므로,
+    /// 넘긴 호스트가 정한 이름을 쓴다. `None`이면 원래대로(이 PC의 IP가 IP 명단에 있으면 그 이름, 없으면 요청자).
+    pub fn set_host_name(&self, name: Option<String>) {
+        self.send(Command::SetHostName(name.filter(|n| !n.trim().is_empty())));
+    }
+
+    /// 엑셀 저장 재료를 한 번에 뜬다(시트마다 기준·지금·설정·열 이름 + 모든 기록).
+    pub async fn save_parts(&self) -> Result<SaveParts, String> {
+        self.with(|s| SaveParts {
+            sheets: s
+                .sheets
+                .iter()
+                .map(|x| SaveSheet {
+                    baseline: x.baseline.clone(),
+                    current: x.model.clone(),
+                    config: x.config.clone(),
+                    labels: SheetLabels::of(&x.model).labels,
+                })
+                .collect(),
+            history: s.history().to_vec(),
+        })
+        .await
+    }
+
+    /// 지금 상태(시트·설정·기준·소통·토큰·기록)를 모두 남긴 기록 파일의 사본을 `to`에 만든다(다른 PC로 넘길 때).
+    /// 대상 파일이 있으면 실패한다. 기록 파일이 없는 세션(메모리에만)이면 실패한다.
+    pub async fn backup_store(&self, to: PathBuf) -> Result<(), String> {
+        let rx = self.ask(|reply| Command::Backup { to, reply }).await??;
+        tokio::task::spawn_blocking(move || rx.recv())
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|_| GONE.to_string())?
+            .map_err(|e| e.to_string())
     }
 
     pub fn snapshot(&self) -> HostSnapshot {
@@ -863,6 +959,8 @@ struct State {
     ip_names: IpNames,
     /// 이 PC(호스트)의 IP. IP 명단에 있으면 그 이름이 호스트 이름이다.
     host_ips: Vec<IpAddr>,
+    /// 정해 둔 호스트 이름([`SessionHandle::set_host_name`], 에이전트 PC에서 서비스할 때). 있으면 이것을 쓴다.
+    host_name: Option<String>,
     // ---- 6단계
     comms: comms::Comms,
     snapshots: snapshots::Snapshots,
@@ -916,6 +1014,7 @@ impl State {
             recalc: None,
             ip_names: IpNames::default(),
             host_ips: local_ips(),
+            host_name: None,
             comms: comms::Comms::default(),
             snapshots: snapshots::Snapshots::default(),
             store,
@@ -988,6 +1087,16 @@ impl State {
                 }
             }
             Command::Formulas(values) => self.formulas(values),
+            Command::SetHostName(name) => self.host_name = name,
+            Command::Backup { to, reply } => {
+                self.persist(true);
+                let out = match &self.store {
+                    Some(store) => store.backup_request(to).map_err(|e| e.to_string()),
+                    None => Err("기록 파일이 없는 업무라 넘길 수 없습니다".into()),
+                };
+                let _ = reply.send(out);
+                return None;
+            }
             Command::Tick => {
                 self.expire_locks();
                 self.refresh_presence();

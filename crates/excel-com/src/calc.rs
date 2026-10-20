@@ -10,7 +10,7 @@
 //! 호스트가 여러 업무를 함께 진행하면 업무마다 사본이 하나씩 있다(키 = 업무 id, `*_for` 메서드). 키 없는 옛 메서드는
 //! 키 `""` 사본 하나를 다룬다.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use collect_core::{CellRange, CellRef, CellValue};
@@ -125,18 +125,36 @@ impl Session {
         self.close_calc_for(key);
         let source = self.workbook(workbook_id)?;
         let name = source.get_string("Name")?;
-        let ext = std::path::Path::new(&name)
+        let path = self.next_calc_path(&name)?;
+        source.call("SaveCopyAs", vec![Var::str(&path.to_string_lossy())])?;
+        self.open_copy(key, path, targets)
+    }
+
+    /// 업무(`key`)의 계산 사본을 원본 **파일**에서 연다(에이전트 PC에 넘겨받은 사본). 파일을 작업 폴더로 복사해 숨은
+    /// Excel에서 연다 — 실행 중인 Excel(그 PC 사용자의 Excel)에는 열지 않는다.
+    pub fn open_calc_file_for(&mut self, key: &str, source: &Path, targets: Vec<CalcTarget>) -> Result<CalcInfo> {
+        self.close_calc_for(key);
+        let path = self.next_calc_path(&source.to_string_lossy())?;
+        std::fs::copy(source, &path).map_err(|e| ExcelError::Type(format!("원본을 복사할 수 없습니다: {e}")))?;
+        self.open_copy(key, path, targets)
+    }
+
+    /// 다음 계산 사본 파일 이름(작업 폴더의 `calc-<프로세스>-<번호>.<원본 확장자>`).
+    fn next_calc_path(&self, name: &str) -> Result<PathBuf> {
+        let ext = Path::new(name)
             .extension()
             .map(|e| e.to_string_lossy().to_lowercase())
             .filter(|e| ["xlsx", "xlsm", "xlsb", "xls"].contains(&e.as_str()))
             .unwrap_or_else(|| "xlsx".into());
-        let dir = std::env::temp_dir().join("merge-master");
+        let dir = self.calc_dir();
         std::fs::create_dir_all(&dir).map_err(|e| ExcelError::Type(format!("임시 폴더: {e}")))?;
         let n = NEXT_COPY.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("calc-{}-{n}.{ext}", std::process::id()));
-        let full = path.to_string_lossy().to_string();
-        source.call("SaveCopyAs", vec![Var::str(&full)])?;
+        Ok(dir.join(format!("calc-{}-{n}.{ext}", std::process::id())))
+    }
 
+    /// 복사해 둔 사본 파일(`path`)을 숨은 Excel에서 열어 업무(`key`)의 계산 사본으로 둔다. 실패하면 그 파일을 지운다.
+    fn open_copy(&mut self, key: &str, path: PathBuf, targets: Vec<CalcTarget>) -> Result<CalcInfo> {
+        let full = path.to_string_lossy().to_string();
         let opened = (|| -> Result<CalcCopy> {
             let app = create_excel()?;
             app.put("Visible", Var::bool(false))?;

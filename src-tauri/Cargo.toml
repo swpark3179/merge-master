@@ -13,7 +13,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+agent-protocol = { workspace = true, features = ["client"] }
 collect-core.workspace = true
+collect-excel.workspace = true
 collect-server.workspace = true
 collect-store.workspace = true
 excel-com.workspace = true
@@ -26,3 +28,4 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 ts-rs.workspace = true
+uuid = { version = "1", features = ["v4"] }

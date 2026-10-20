@@ -21,6 +21,8 @@ use tauri::{AppHandle, Manager, RunEvent, State};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
+mod agent;
+mod handoff;
 mod history;
 mod jobs;
 mod monitor;
@@ -48,6 +50,8 @@ pub(crate) struct AppState {
     restored: tokio::sync::OnceCell<jobs::RestoreReport>,
     /// 마지막으로 보낸 업무 목록(바뀌었을 때만 보낸다).
     last_jobs: std::sync::Mutex<Vec<jobs::JobSummary>>,
+    /// 에이전트 PC로 넘긴 서비스(`agents.json`).
+    agents: agent::Agents,
 }
 
 /// 1a에서 읽었지만 아직 확정하지 않은 시트들(미리보기, 시트 이름별)과 그 통합문서. 다른 통합문서를 읽으면 비운다.
@@ -66,12 +70,7 @@ where
     R: Send + 'static,
     F: FnOnce(&mut Session) -> excel_com::Result<R> + Send + 'static,
 {
-    let excel = excel.clone();
-    tauri::async_runtime::spawn_blocking(move || excel.run(f))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    collect_excel::run_excel(excel, f).await
 }
 
 async fn on_excel<R, F>(state: &AppState, f: F) -> CmdResult<R>
@@ -223,7 +222,8 @@ async fn import_commit(
         let _ = session.with(|s| s.set_meta(collect_server::META_ENDED, "1")).await;
         return Err(jobs::NO_JOB.into());
     }
-    job.recalc.start(&app, state.excel.clone(), &job.id, session, &models, &workbook_id, &names);
+    let source = collect_excel::CalcSource::Workbook(workbook_id.clone());
+    job.recalc.start(state.excel.clone(), &job.id, session, &models, source, &names, recalc::notify(&app, &job.id));
     *job.source.lock().unwrap() = Some(save::Source { workbook_id, sheets: names });
     job.last_save.lock().unwrap().take();
     jobs::emit_jobs(&app);
@@ -402,6 +402,7 @@ pub fn run() {
             ip_names: std::sync::Mutex::new(collect_server::IpNames::default()),
             restored: tokio::sync::OnceCell::new(),
             last_jobs: Default::default(),
+            agents: Default::default(),
         })
         .invoke_handler(tauri::generate_handler![
             excel_list_workbooks,
@@ -460,6 +461,18 @@ pub fn run() {
             people::ip_names_put,
             people::ip_names_import,
             people::ip_names_export,
+            agent::agent_last_addr,
+            agent::agent_connect,
+            agent::agent_folders,
+            agent::agent_services,
+            agent::agent_refresh,
+            agent::agent_approve,
+            agent::agent_reject,
+            agent::agent_finish,
+            agent::agent_retry,
+            agent::agent_forget,
+            handoff::agent_handoff_check,
+            handoff::agent_handoff,
         ])
         .setup(|app| {
             // 오래된 기록 파일 정리(최근 것만 남긴다).
@@ -470,6 +483,9 @@ pub fn run() {
             let names = people::load(app.handle());
             state.hub.set_ip_names(names.clone());
             *state.ip_names.lock().unwrap() = names;
+            // 에이전트로 넘긴 서비스: 기억을 읽고 상태를 묻기 시작한다.
+            state.agents.load(app.handle());
+            agent::spawn_poller(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

@@ -1,8 +1,10 @@
-import type { JobSummary } from "@mm/shared";
+import type { AgentServiceView, JobSummary } from "@mm/shared";
+import { formatDeadline } from "@mm/shared";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AgentWorkspace, agentStateLabel } from "./AgentWorkspace";
 import { appApi, errorText, jobApi } from "./api";
 import { JobProvider } from "./job";
 import type { Step } from "./JobWorkspace";
@@ -27,6 +29,9 @@ export function App() {
   const [toastId, setToastId] = useState(0);
   const toastTimer = useRef(0);
   const [ending, setEnding] = useState<JobSummary | null>(null);
+  /** 에이전트 PC로 넘긴 서비스들과 지금 보는 것(고르면 업무 대신 보인다). */
+  const [agents, setAgents] = useState<AgentServiceView[]>([]);
+  const [agentView, setAgentView] = useState<string | null>(null);
 
   const toast = useCallback((msg: string) => {
     setToastText(msg);
@@ -40,7 +45,15 @@ export function App() {
       .then(setVersion)
       .catch(() => {});
     const off = listen<JobSummary[]>("jobs", (e) => setJobs(e.payload));
-    return () => void off.then((f) => f());
+    void appApi
+      .agentServices()
+      .then(setAgents)
+      .catch(() => {});
+    const offAgents = listen<AgentServiceView[]>("agent-services", (e) => setAgents(e.payload));
+    return () => {
+      void off.then((f) => f());
+      void offAgents.then((f) => f());
+    };
   }, []);
 
   // 앱을 켤 때 한 번: 끝내지 않은 업무를 되살린다(백엔드가 한 번만 하므로 다시 불러도 같은 결과). 업무가 없으면 빈 업무.
@@ -65,21 +78,34 @@ export function App() {
       .catch((e) => setBanner(errorText(e)));
   }, [toast]);
 
-  // 보던 업무가 끝났으면(다른 창이 아니라 여기서만 끝내므로 대개 목록이 먼저 바뀜) 남은 업무로.
-  useEffect(() => {
-    if (job && jobs.length > 0 && !jobs.some((j) => j.id === job)) setJob(jobs[jobs.length - 1]!.id);
-  }, [job, jobs]);
-
   const createJob = useCallback(async () => {
     try {
       const created = await appApi.jobCreate();
       setJobs(await appApi.jobsList());
       steps.current.set(created.id, "import");
+      setAgentView(null);
       setJob(created.id);
     } catch (e) {
       setBanner(errorText(e));
     }
   }, []);
+
+  // 보던 업무가 끝났으면(다른 창이 아니라 여기서만 끝내므로 대개 목록이 먼저 바뀜) 남은 업무로. 에이전트로 넘겨 업무가
+  // 하나도 남지 않았으면 에이전트 서비스를 보다가 다른 것을 고를 때 새 업무를 만든다.
+  useEffect(() => {
+    if (!job || jobs.some((j) => j.id === job)) return;
+    if (jobs.length > 0) setJob(jobs[jobs.length - 1]!.id);
+    else if (!agentView) void createJob();
+  }, [job, jobs, agentView, createJob]);
+
+  const onHandedOff = useCallback(
+    (view: AgentServiceView) => {
+      setAgents((list) => [view, ...list.filter((a) => a.id !== view.id)]);
+      setAgentView(view.id);
+      toast("에이전트로 넘겼어요. 이 PC를 꺼도 서비스가 계속됩니다");
+    },
+    [toast],
+  );
 
   const endJob = useCallback(
     async (id: string) => {
@@ -106,11 +132,17 @@ export function App() {
   const sidebar = (
     <JobList
       jobs={jobs}
-      current={job}
+      current={agentView ? null : job}
       chatSeen={chatSeen}
-      onPick={setJob}
+      onPick={(id) => {
+        setAgentView(null);
+        setJob(id);
+      }}
       onCreate={() => void createJob()}
       onEnd={setEnding}
+      agents={agents}
+      currentAgent={agentView}
+      onPickAgent={setAgentView}
     />
   );
   const bannerNode = banner ? (
@@ -123,9 +155,23 @@ export function App() {
     </div>
   ) : null;
 
+  const agent = agentView ? agents.find((a) => a.id === agentView) : undefined;
   return (
     <>
-      {job ? (
+      {agent ? (
+        <AgentWorkspace
+          key={agent.id}
+          view={agent}
+          sidebar={sidebar}
+          banner={bannerNode}
+          toast={toast}
+          version={version}
+          onForgotten={() => {
+            setAgentView(null);
+            toast("목록에서 지웠어요");
+          }}
+        />
+      ) : job ? (
         <JobProvider key={job} job={job}>
           <JobWorkspace
             jobs={jobs}
@@ -140,6 +186,7 @@ export function App() {
               const j = jobs.find((x) => x.id === job);
               if (j) setEnding(j);
             }}
+            onHandedOff={onHandedOff}
             sidebar={sidebar}
             banner={bannerNode}
             toast={toast}
@@ -176,7 +223,7 @@ function percent(j: JobSummary): number | null {
   return j.required > 0 ? Math.round((j.filled / j.required) * 100) : null;
 }
 
-/** 사이드바 위쪽: 진행 중인 취합 업무 목록(업무명·파일·공유 상태·승인 대기·진행률). */
+/** 사이드바 위쪽: 진행 중인 취합 업무 목록(업무명·파일·공유 상태·승인 대기·진행률), 에이전트에서 진행 중인 것. */
 function JobList(props: {
   jobs: JobSummary[];
   current: string | null;
@@ -184,8 +231,12 @@ function JobList(props: {
   onPick: (id: string) => void;
   onCreate: () => void;
   onEnd: (j: JobSummary) => void;
+  agents: AgentServiceView[];
+  currentAgent: string | null;
+  onPickAgent: (id: string) => void;
 }) {
-  const { jobs, current, chatSeen } = props;
+  const { jobs, current, chatSeen, agents } = props;
+  const activeAgents = agents.filter((a) => a.status?.state !== "done" && a.status?.state !== "cancelled").length;
   return (
     <div className="jobs" role="group" aria-label="취합 업무">
       <div className="steps-title">취합 업무 {jobs.length > 1 ? jobs.length : ""}</div>
@@ -236,6 +287,47 @@ function JobList(props: {
       <button className="ghost small new-job" onClick={props.onCreate}>
         + 새 취합
       </button>
+      {agents.length > 0 && (
+        <>
+          <div className="steps-title">에이전트에서 진행 중 {activeAgents > 0 ? activeAgents : ""}</div>
+          <ul className="job-list agent-list" aria-label="에이전트에서 진행 중">
+            {agents.map((a) => {
+              const s = a.status;
+              const name = a.title || "새 취합";
+              const pct = s && s.required > 0 ? Math.round((s.filled / s.required) * 100) : null;
+              const label = agentStateLabel(a);
+              const warn = !a.reachable || s?.state === "failed";
+              return (
+                <li key={a.id} className={`job-item${a.id === props.currentAgent ? " active" : ""}`} data-agent={a.id}>
+                  <button
+                    className="job-pick"
+                    aria-current={a.id === props.currentAgent ? "page" : undefined}
+                    aria-label={`에이전트 업무 ${name}`}
+                    title={`${a.agentName} · ${a.workbook}`}
+                    onClick={() => props.onPickAgent(a.id)}
+                  >
+                    <span className="job-title">{name}</span>
+                    <span className="job-file">
+                      {a.agentName} · {a.workbook}
+                    </span>
+                    <span className="job-chips">
+                      <span className={`job-chip${s?.state === "running" ? " on" : warn ? " warn" : ""}`}>
+                        {s?.state === "running" ? `공유 중 ${s.online}/${s.roster}` : label}
+                      </span>
+                      {s && s.pending.length > 0 && <span className="job-chip warn">승인 대기 {s.pending.length}</span>}
+                      {pct !== null && <span className="job-chip">{pct}%</span>}
+                      {s && s.state === "running" && (
+                        <span className="job-chip">마감 {formatDeadline(s.deadline)}</span>
+                      )}
+                      {s?.state === "running" && !a.reachable && <span className="job-chip warn">연결 안 됨</span>}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
     </div>
   );
 }

@@ -7,10 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use collect_core::a1::sheet_prefix;
-use collect_core::config::CollectConfig;
 use collect_core::export::{self, CheckReport, ExportOptions, ExportPlan, SaveSummary, SummaryInput};
-use collect_core::history::{BatchOrigin, ChangeEntry, SheetLabels};
+use collect_core::history::BatchOrigin;
 use collect_core::{CellRef, CellValue, SheetCell, SheetModel};
+use collect_server::SaveParts;
 use excel_com::{SaveReport, SourceStatus};
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -139,47 +139,21 @@ pub struct SaveResult {
     pub stopped: bool,
 }
 
-/// 세션에서 한 번에 뜬 저장 재료(시트마다 + 모든 기록).
-struct Snapshot {
-    sheets: Vec<SheetParts>,
-    history: Vec<ChangeEntry>,
-}
-
-struct SheetParts {
-    baseline: SheetModel,
-    current: SheetModel,
-    config: CollectConfig,
-    labels: Vec<String>,
-}
-
-fn source(job: &Job) -> CmdResult<Source> {
+pub(crate) fn source(job: &Job) -> CmdResult<Source> {
     job.source.lock().unwrap().clone().ok_or_else(|| crate::NO_SHEET.to_string())
 }
 
-async fn snapshot(job: &Job) -> CmdResult<Snapshot> {
-    job.session()?
-        .with(|s| Snapshot {
-            sheets: s
-                .sheets
-                .iter()
-                .map(|x| SheetParts {
-                    baseline: x.baseline.clone(),
-                    current: x.model.clone(),
-                    config: x.config.clone(),
-                    labels: SheetLabels::of(&x.model).labels,
-                })
-                .collect(),
-            history: s.history().to_vec(),
-        })
-        .await
+/// 세션에서 한 번에 뜬 저장 재료(시트마다 + 모든 기록).
+async fn snapshot(job: &Job) -> CmdResult<SaveParts> {
+    job.session()?.save_parts().await
 }
 
-fn utc_offset_minutes() -> i32 {
+pub(crate) fn utc_offset_minutes() -> i32 {
     chrono::Local::now().offset().local_minus_utc() / 60
 }
 
 /// `budget.xlsx` → `budget_취합_20261009.xlsx` (원본 폴더, 새 문서면 문서 폴더).
-fn default_copy_path(name: &str, folder: &str) -> String {
+pub(crate) fn default_copy_path(name: &str, folder: &str) -> String {
     let path = Path::new(name);
     let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| name.to_string());
     let ext = path.extension().map(|e| e.to_string_lossy().to_string()).unwrap_or_else(|| "xlsx".into());
@@ -232,11 +206,11 @@ pub async fn save_info(state: State<'_, AppState>, job: String) -> CmdResult<Sav
 }
 
 /// 지금 Excel에 있는 값과 비교한다(원본이 닫혔으면 다시 연다). 시트마다 Excel 값(행 우선)도 돌려준다.
-async fn check(
+pub(crate) async fn check(
     state: &AppState,
     job: &Job,
     opts: &SaveOptions,
-) -> CmdResult<(Snapshot, SaveCheck, Vec<Vec<CellValue>>)> {
+) -> CmdResult<(SaveParts, SaveCheck, Vec<Vec<CellValue>>)> {
     let src = source(job)?;
     let snap = snapshot(job).await?;
     if src.sheets.len() != snap.sheets.len() {
@@ -348,26 +322,8 @@ pub async fn save_run(
             keep_excel.iter().filter(|c| c.sheet == i as u32 && conflicts.contains(&c.at())).map(|c| c.at()).collect()
         })
         .collect();
-    let offset = utc_offset_minutes();
-    let mut plans: Vec<(String, ExportPlan)> = snap
-        .sheets
-        .iter()
-        .zip(&src.sheets)
-        .zip(&keep)
-        .map(|((x, name), keep)| {
-            let opts = ExportOptions { history: false, ..options.export };
-            (name.clone(), export::plan(&x.baseline, &x.current, &[], &[], opts, offset, keep))
-        })
-        .collect();
     // '변경 이력' 시트는 하나(시트가 둘 이상이면 '시트' 열).
-    if options.export.history && !snap.history.is_empty() {
-        let labels: Vec<SheetLabels> = snap
-            .sheets
-            .iter()
-            .map(|x| SheetLabels { name: x.current.sheet.clone(), origin: x.current.origin, labels: x.labels.clone() })
-            .collect();
-        plans[0].1.history = Some(export::history_table(&labels, &snap.history, offset));
-    }
+    let plans: Vec<(String, ExportPlan)> = snap.plan(&src.sheets, options.export, utc_offset_minutes(), &keep);
     let original = matches!(options.target, SaveTarget::Original);
     let (id, target) = (src.workbook_id.clone(), options.target.clone());
     let plans_for_excel = plans.clone();

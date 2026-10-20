@@ -4,7 +4,8 @@
 // 참여자(Chrome) 접속 → 동시 편집(진행률·Excel 수식 재계산·편집 잠금 해제) → 6 저장·마감(다른 이름으로 저장·원본에 반영·
 // 원본 충돌·마감) → 7단계 세션 복구(앱 강제 종료 → 다시 켜면 끝내지 않은 업무를 저절로 이어서 엶 → 같은 포트 ·
 // 참여자 자동 재접속 · 끊긴 동안의 입력 반영 · 앞 앱이 남긴 Excel 정리) → 9단계 여러 업무(두 번째 업무를 같은 포트에
-// 다른 주소 경로로 공유 · 참여자 업무 목록 · 업무 끝내기)까지 확인한다. 저장 시험은 픽스처를 test-results로 복사한 통합문서로
+// 다른 주소 경로로 공유 · 참여자 업무 목록 · 업무 끝내기) → 10 에이전트(같은 PC에 띄운 에이전트로 넘기기 · 승인 · 지금 저장하고
+// 끝내기)까지 확인한다. 저장 시험은 픽스처를 test-results로 복사한 통합문서로
 // 하므로 픽스처는 바뀌지 않는다. 네이티브 파일 대화상자는 자동화할 수 없어 같은 command(excel_open_file)를 직접 부른다.
 //
 // 실행: pnpm smoke:host                     (Excel이 없을 때: '파일 열기'가 숨은 Excel 인스턴스를 쓴다)
@@ -12,7 +13,7 @@
 //                                             Excel이 이미 떠 있으면 건너뛴다. 끝나면 띄운 Excel을 저장 없이 닫는다)
 //       pnpm smoke:release                   (pnpm app:build 로 만든 release 실행 파일 — 내장 화면 · 내장 참여자 웹)
 import { execSync, spawn } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { chromium, expect } from "@playwright/test";
@@ -22,8 +23,10 @@ const budget = join(root, "fixtures/generated/budget.xlsx");
 const variants = join(root, "fixtures/generated/variants.xlsx");
 const release = process.argv.includes("--release");
 const exe = join(root, `target/${release ? "release" : "debug"}/merge-master.exe`);
+const agentExe = join(root, `target/${release ? "release" : "debug"}/merge-master-agent.exe`);
 const CDP_PORT = 9333;
 const SERVICE_PORT = 8091;
+const AGENT_PORT = 8092;
 const shots = join(root, "test-results");
 mkdirSync(shots, { recursive: true });
 
@@ -92,6 +95,7 @@ if (runningMode) {
 
 const vite = release ? null : spawn("pnpm --filter @mm/host dev", { cwd: root, shell: true, stdio: "ignore" });
 let app;
+let agent;
 let participant;
 try {
   if (vite) await waitHttp("http://localhost:1420", 60_000);
@@ -101,14 +105,14 @@ try {
   // 앞 실행이 끝내지 않고 남긴 업무는 다시 켜면 저절로 열린다: 모두 끝내고 빈 업무로 시작한다.
   await page.getByRole("group", { name: "취합 업무" }).waitFor({ timeout: 60_000 });
   await sleep(1000);
-  const leftJobs = page.locator(".job-item").filter({ hasNotText: "파일 없음" });
+  const leftJobs = page.locator(".job-item[data-job]").filter({ hasNotText: "파일 없음" });
   while ((await leftJobs.count()) > 0) {
     await leftJobs.first().locator(".job-end").click();
     await page.getByRole("alertdialog", { name: "업무 끝내기" }).getByRole("button", { name: "업무 끝내기" }).click();
     await expect(page.getByRole("alertdialog")).toHaveCount(0);
     await sleep(500);
   }
-  await page.locator(".job-item").filter({ hasText: "파일 없음" }).first().locator(".job-pick").click();
+  await page.locator(".job-item[data-job]").filter({ hasText: "파일 없음" }).first().locator(".job-pick").click();
   await page.getByRole("heading", { name: "불러오기" }).waitFor();
   if (release) check(page.url().includes("tauri.localhost"), `release 빌드: 내장 화면 (${page.url()})`);
 
@@ -116,7 +120,7 @@ try {
   const waitRead = () => expect(commitButton).toBeEnabled({ timeout: 60_000 });
   const invoke = (cmd, args) => page.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a), [cmd, args]);
   /** 지금 보는 업무의 id(업무에 딸린 command를 직접 부를 때). */
-  const jobId = () => page.locator(".job-item.active").getAttribute("data-job");
+  const jobId = () => page.locator(".job-item.active[data-job]").getAttribute("data-job");
   const facts = async () =>
     Object.fromEntries(
       await page
@@ -767,7 +771,7 @@ try {
   const second = await launch();
   app = second.proc;
   const page2 = second.page;
-  const restoredJob = page2.locator(".job-item").filter({ hasText: "smoke-budget.xlsx" });
+  const restoredJob = page2.locator(".job-item[data-job]").filter({ hasText: "smoke-budget.xlsx" });
   await expect(restoredJob).toBeVisible({ timeout: 60_000 });
   await expect(restoredJob).toContainText("공유 중", { timeout: 60_000 });
   check(true, "다시 켜면 끝내지 않은 업무를 저절로 이어서 열고 같은 포트·주소로 다시 공유");
@@ -815,7 +819,7 @@ try {
   console.log("[9 여러 업무]");
   const invoke2 = (cmd, args) => page2.evaluate(([c, a]) => window.__TAURI_INTERNALS__.invoke(c, a), [cmd, args]);
   const endJob = async (hasText) => {
-    await page2.locator(".job-item").filter({ hasText }).locator(".job-end").click();
+    await page2.locator(".job-item[data-job]").filter({ hasText }).locator(".job-end").click();
     await page2.getByRole("alertdialog", { name: "업무 끝내기" }).getByRole("button", { name: "업무 끝내기" }).click();
     await expect(page2.getByRole("alertdialog")).toHaveCount(0);
   };
@@ -865,13 +869,94 @@ try {
   await expect(p4.getByText("● 실시간 동기화")).toBeVisible();
   check(true, "두 번째 업무 끝내기 → 그 업무 참여자만 '끝났습니다', 첫 업무 참여자는 계속");
 
+  // ------------------------------------------------------------ 10: 에이전트 PC에서 서비스
+  if (!existsSync(agentExe)) {
+    console.log(`[10 에이전트] 건너뜀: ${agentExe} 가 없습니다(pnpm build:agent 또는 cargo build -p collect-agent)`);
+  } else {
+    console.log("[10 에이전트]");
+    // 같은 PC에 에이전트를 띄운다(창 없이, 자기 데이터 폴더·포트). Excel로 저장한다.
+    const agentData = join(shots, "agent");
+    const agentOut = join(shots, "agent-out");
+    rmSync(agentData, { recursive: true, force: true });
+    rmSync(agentOut, { recursive: true, force: true });
+    mkdirSync(agentData, { recursive: true });
+    writeFileSync(join(agentData, "agent.json"), JSON.stringify({ baseDir: agentOut, port: AGENT_PORT, maxDays: 60 }));
+    agent = spawn(agentExe, ["--headless", "--data-dir", agentData], { cwd: root, stdio: "ignore" });
+    await waitHttp(`http://127.0.0.1:${AGENT_PORT}/api/health`, 30_000);
+
+    await page2.getByRole("button", { name: "+ 새 취합" }).click();
+    await page2.getByRole("heading", { name: "불러오기" }).waitFor();
+    await invoke2("excel_open_file", { path: variants });
+    await page2.getByRole("button", { name: "↻ 다시 찾기" }).click();
+    await page2.getByRole("button", { name: /variants\.xlsx/ }).click();
+    await page2.getByRole("button", { name: "제목있음", exact: true }).click();
+    await page2.getByRole("checkbox", { name: "다른시트 불러오기" }).uncheck();
+    await expect(page2.getByLabel("데이터 범위")).toHaveValue("A4:G25", { timeout: 30_000 });
+    await expect(commit2).toBeEnabled({ timeout: 60_000 });
+    await commit2.click();
+    await page2.getByRole("button", { name: "다음: 서비스 →" }).click();
+    const svc4 = page2.locator(".service-screen");
+    await svc4.getByLabel("내 이름").fill("박지훈 (기획팀)");
+    await svc4.getByLabel("취합 제목").fill("교육 수요 3차(에이전트)");
+    await svc4.getByRole("button", { name: "에이전트 PC" }).click();
+    await expect(svc4.getByRole("button", { name: "에이전트에서 공유 시작" })).toBeDisabled();
+    await expect(svc4.getByText("입력 마감(날짜·시·분)을 정해 주세요")).toBeVisible();
+    check(true, "에이전트 PC: 마감이 없으면 넘길 수 없음");
+    await svc4.getByLabel("에이전트 주소").fill(`127.0.0.1:${AGENT_PORT}`);
+    await svc4.getByRole("button", { name: "연결 확인" }).click();
+    await expect(svc4.getByLabel("에이전트 정보")).toContainText("●", { timeout: 10_000 });
+    const tomorrow = new Date(Date.now() + 86_400_000);
+    const day = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+    await svc4.getByLabel("마감 날짜").fill(day);
+    await expect(svc4.getByLabel("마감 시", { exact: true })).toHaveValue("18");
+    check(true, "마감 날짜를 고르면 18:00이 채워짐(시·분은 고르기만)");
+    await svc4.getByRole("button", { name: "폴더 고르기…" }).click();
+    const dlg = page2.getByRole("dialog", { name: "저장할 폴더 고르기" });
+    await dlg.getByLabel("새 폴더 이름").fill("smoke");
+    await dlg.getByRole("button", { name: "새 폴더", exact: true }).click();
+    await expect(dlg.getByText("아직 없는 폴더예요")).toBeVisible();
+    await dlg.getByRole("button", { name: "이 폴더에 저장" }).click();
+    await svc4.getByLabel("에이전트 주소 경로").fill("agent-hr");
+    const fileName = await svc4.getByLabel("저장 파일 이름").inputValue();
+    check(/^variants_취합_\d{8}\.xlsx$/.test(fileName), `저장 파일 이름 기본값 ${fileName}`);
+    await svc4.getByRole("button", { name: "에이전트에서 공유 시작" }).click();
+    await page2.getByRole("alertdialog", { name: "에이전트로 넘기기" }).getByRole("button", { name: "넘기기" }).click();
+    await expect(page2.locator(".service-badge")).toContainText("에이전트 · 서비스 중", { timeout: 60_000 });
+    await expect(page2.locator(".job-item[data-job]").filter({ hasText: "교육 수요 3차" })).toHaveCount(0);
+    check(true, "넘기기 → 이 PC의 업무는 끝나고 '에이전트에서 진행 중'에 보임");
+
+    const p6 = await participant.newPage();
+    await p6.goto(`http://127.0.0.1:${AGENT_PORT}/agent-hr`);
+    await expect(p6.getByRole("heading", { name: "교육 수요 3차(에이전트)" })).toBeVisible();
+    await p6.getByLabel("이름").fill("정하늘");
+    await p6.getByRole("button", { name: "참여하기" }).click();
+    await expect(p6.getByText("호스트 승인을 기다리는 중")).toBeVisible();
+    const pending = page2.getByRole("region", { name: "승인 대기" });
+    await expect(pending).toContainText("정하늘", { timeout: 15_000 });
+    await pending.getByRole("button", { name: "승인", exact: true }).click();
+    await p6.getByText("실시간 동기화").waitFor({ timeout: 15_000 });
+    check(true, "에이전트의 참여자: 이름 입력 → 호스트 앱에서 승인 → 입장");
+
+    await page2.getByRole("button", { name: "지금 저장하고 끝내기" }).click();
+    await page2.getByRole("alertdialog").getByRole("button", { name: "지금 저장하고 끝내기" }).click();
+    await expect(page2.locator(".service-badge")).toContainText("저장하고 끝냄", { timeout: 120_000 });
+    const saved = join(agentOut, "smoke", fileName);
+    check(existsSync(saved) && statSync(saved).size > 0, `에이전트가 엑셀로 저장: ${saved}`);
+    await expect(p6.getByText("호스트가 이 업무를 끝냈습니다")).toBeVisible({ timeout: 10_000 });
+    check(true, "참여자에게 '끝났습니다'");
+    await page2.getByRole("button", { name: "목록에서 지우기" }).click();
+    await expect(page2.locator(".agent-list")).toHaveCount(0);
+    check(readdirSync(join(agentOut, "smoke")).length === 1, "저장 폴더에 파일 하나");
+    await restoredJob.locator(".job-pick").click();
+  }
+
   await step2("3 서비스").click();
   await svc2.getByRole("button", { name: "공유 중지" }).click();
   await expect(p4.getByText("서비스가 중지되었습니다")).toBeVisible({ timeout: 10_000 });
   check(true, "서비스 중지 → 참여자에게 안내");
   // 시험 업무도 끝내 둔다(다시 켜도 되살리지 않는다).
   await endJob("smoke-budget.xlsx");
-  await expect(page2.locator(".job-item")).toHaveCount(1);
+  await expect(page2.locator(".job-item[data-job]")).toHaveCount(1);
   check(true, "업무 끝내기 → 목록에서 빠지고 빈 업무만 남음");
   await second.browser.close();
 } finally {
@@ -880,6 +965,11 @@ try {
   if (app?.pid) {
     try {
       execSync(`taskkill /PID ${app.pid}`, { stdio: "ignore" });
+    } catch {}
+  }
+  if (agent?.pid) {
+    try {
+      execSync(`taskkill /PID ${agent.pid} /T /F`, { stdio: "ignore" });
     } catch {}
   }
   if (vite?.pid) {
