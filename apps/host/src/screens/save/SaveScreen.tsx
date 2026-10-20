@@ -10,9 +10,9 @@ import type {
   SaveResult,
   SheetCell,
 } from "@mm/shared";
-import { a1, personColor, sheetPrefix } from "@mm/shared";
+import { a1, sheetPrefix } from "@mm/shared";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { errorText } from "../../api";
 import { useApi } from "../../job";
@@ -33,6 +33,13 @@ const MARK = 0xfff3b0;
 
 /** 저장 중 단추 글자. */
 const SAVING = "저장하는 중…";
+
+/** 저장 뒤 처리 고르기. 가장 중요한 설정이라 옵션에 숨기지 않고 카드로 보인다(기본: 이 업무 공유 중지). */
+const AFTER_CHOICES: readonly { v: AfterSave; title: string; desc: string }[] = [
+  { v: "stop", title: "이 업무 공유 중지", desc: "이 업무만 공유를 멈춰요. 다른 업무는 계속돼요." },
+  { v: "keep", title: "서비스 계속", desc: "참여자가 계속 입력할 수 있어요." },
+  { v: "readOnly", title: "읽기 전용으로 전환", desc: "취합을 마감해요. 참여자는 볼 수만 있어요." },
+];
 
 function show(v: CellValue | undefined): string {
   if (v === undefined || v === null || v === "") return "(빈 칸)";
@@ -70,12 +77,12 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
   const [info, setInfo] = useState<SaveInfo | null>(null);
   const [target, setTarget] = useState<"original" | "copy">("copy");
   const [path, setPath] = useState("");
-  const [history, setHistory] = useState(true);
+  const [history, setHistory] = useState(false);
   const [mark, setMark] = useState(false);
   const [styles, setStyles] = useState(true);
   /** 취소 표시한 행에 취소선 + 회색 채우기를 쓴다. */
   const [cancelled, setCancelled] = useState(true);
-  const [after, setAfter] = useState<AfterSave>("keep");
+  const [after, setAfter] = useState<AfterSave>("stop");
   const [check, setCheck] = useState<SaveCheck | null>(null);
   /** 충돌 칸 → 어느 값을 쓸지. */
   const [choice, setChoice] = useState<Record<string, "collected" | "excel">>({});
@@ -165,19 +172,15 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
   };
 
   const s = info?.summary;
-  const pct = s && s.required > 0 ? Math.round((s.filled / s.required) * 100) : 100;
   const since = info?.lastSave && s ? s.historyEntries - info.lastSave.historyEntries : 0;
-  const people = useMemo(
-    () => (s?.people ?? []).slice().sort((a, b) => b.required - b.filled - (a.required - a.filled)),
-    [s],
-  );
   const addr = (sheet: number, at: CellRef) => checkAddr(check, sheet, at);
   const conflicts: SheetConflict[] = (check?.sheets ?? []).flatMap((sc, sheet) =>
     sc.report.conflicts.map((c) => ({ sheet, c })),
   );
   const drifted = (check?.sheets ?? []).map((sc, sheet) => ({ sc, sheet })).filter((x) => x.sc.report.driftCount > 0);
   const reviewReady = !check?.suspicious || force;
-  const perSheet = s && s.sheets.length > 1 ? s.sheets : [];
+  /** '저장 옵션'을 접어 둔 줄에 보이는 현재 설정. */
+  const optionsNote = [history ? "변경 이력 시트" : "", mark ? "노란 표시" : ""].filter(Boolean).join(" · ");
 
   if (!info) {
     return (
@@ -235,96 +238,13 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
   return (
     <div className="screen save-screen">
       <div className="save-body">
-        {s && (
-          <>
-            <div className="tiles" aria-label="취합 요약">
-              <div className="tile">
-                <div className="tile-v">{s.changedCells.toLocaleString()}</div>
-                <div className="tile-l">바뀐 칸</div>
-              </div>
-              <div className="tile">
-                <div className="tile-v">{s.changedBy.length}</div>
-                <div className="tile-l">입력한 참여자</div>
-              </div>
-              <div className="tile" aria-label="필수 완료율">
-                <div className={`tile-v ${s.required - s.filled > 0 ? "warn" : "ok"}`}>
-                  {(s.required - s.filled).toLocaleString()}
-                  <span className="tile-sub">완료 {pct}%</span>
-                </div>
-                <div className="tile-l">
-                  {s.required - s.filled > 0 ? "필수 칸이 비어 있어요 (그대로 저장 가능)" : "필수 칸 모두 채움"}
-                </div>
-              </div>
-            </div>
-            <div className="stat-row small muted">
-              <span>
-                바뀐 칸 <b>{s.changedCells.toLocaleString()}</b>
-              </span>
-              <span>
-                입력한 사람 <b>{s.changedBy.length}</b>명
-              </span>
-              <span>
-                변경 기록 <b>{s.historyEntries.toLocaleString()}</b>건
-              </span>
-              <span>마지막 변경 {s.lastChangeMs ? clock(s.lastChangeMs) : "–"}</span>
-              {s.addedRows > 0 && (
-                <span title="앱에서 표 아래에 추가한 행. 저장하면 Excel 표 아래에 끼워 넣습니다">
-                  추가된 행 <b>{s.addedRows.toLocaleString()}</b>
-                </span>
-              )}
-              {s.addedCols > 0 && (
-                <span title="앱에서 표 오른쪽에 추가한 열. 저장하면 Excel 표 오른쪽에 끼워 넣습니다">
-                  추가된 열 <b>{s.addedCols.toLocaleString()}</b>
-                </span>
-              )}
-              {s.cancelledRows > 0 && (
-                <span title="취소 표시한 행(필수 칸으로 세지 않습니다)">
-                  취소 행 <b>{s.cancelledRows.toLocaleString()}</b>
-                </span>
-              )}
-              {s.deletedRows > 0 && (
-                <span title="앱에서 지운 엑셀 행. 저장하면 Excel에서도 그 행 전체를 지웁니다">
-                  지운 행 <b>{s.deletedRows.toLocaleString()}</b>
-                </span>
-              )}
-              {s.unhidden > 0 && (
-                <span title="Excel에서 숨겨져 있던 행·열(펼쳐서 불러옴). 저장하면 Excel에서도 숨김을 풉니다">
-                  숨김을 풀 행·열 <b>{s.unhidden.toLocaleString()}</b>줄
-                </span>
-              )}
-              {s.unassigned > 0 && <span>담당자 없는 필수 칸 {s.unassigned}(누구나 입력)</span>}
-              <span className="spacer" />
-              {info.closed ? (
-                <span className="warn">● 마감됨 (참여자 읽기 전용)</span>
-              ) : (
-                <span className="ok">● 입력 받는 중{info.running ? "" : " (서비스 중지됨)"}</span>
-              )}
-            </div>
-            {perSheet.length > 0 && (
-              <div className="sheet-summary small" role="table" aria-label="시트별 요약">
-                {perSheet.map((x) => (
-                  <div key={x.name} className="stat-row" role="row" aria-label={x.name}>
-                    <b>{x.name}</b>
-                    <span>
-                      바뀐 칸 <b>{x.changedCells.toLocaleString()}</b>
-                    </span>
-                    <span className={x.required > x.filled ? "warn" : "ok"}>
-                      {x.required > x.filled
-                        ? `필수 미입력 ${(x.required - x.filled).toLocaleString()}`
-                        : "필수 칸 모두 채움"}
-                    </span>
-                    {x.addedRows > 0 && <span>추가된 행 {x.addedRows.toLocaleString()}</span>}
-                    {x.addedCols > 0 && <span>추가된 열 {x.addedCols.toLocaleString()}</span>}
-                    {x.cancelledRows > 0 && <span>취소 행 {x.cancelledRows.toLocaleString()}</span>}
-                    {x.deletedRows > 0 && <span>지운 행 {x.deletedRows.toLocaleString()}</span>}
-                    {x.unhidden > 0 && <span>숨김 풀 줄 {x.unhidden.toLocaleString()}</span>}
-                    {x.styleCells > 0 && <span className="muted">서식 {x.styleCells.toLocaleString()}칸</span>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        )}
+        <div className="save-status small">
+          {info.closed ? (
+            <span className="warn">● 마감됨 (참여자 읽기 전용)</span>
+          ) : (
+            <span className="ok">● 입력 받는 중{info.running ? "" : " (서비스 중지됨)"}</span>
+          )}
+        </div>
 
         {check && (
           <div className="review" role="region" aria-label="저장 전 확인">
@@ -473,62 +393,64 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
           )}
         </section>
 
-        <details className="more" open>
-          <summary>저장 옵션</summary>
-          <div className="more-body save-options">
-            <div className="field">
-              <span className="section-label">함께 넣기</span>
+        <details className="more">
+          <summary>저장 옵션 {optionsNote && <span className="muted small">{optionsNote}</span>}</summary>
+          <div className="more-body">
+            <label className="check">
+              <input type="checkbox" checked={history} onChange={(e) => setHistory(e.target.checked)} />
+              ‘변경 이력’ 시트 추가 {s ? `(${s.historyEntries.toLocaleString()}건)` : ""}
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={mark} onChange={(e) => setMark(e.target.checked)} />
+              바뀐 칸을 노란색으로 표시
+            </label>
+            {s && (s.styleCells > 0 || s.mergeChanges > 0 || s.sizeChanges > 0) && (
               <label className="check">
-                <input type="checkbox" checked={history} onChange={(e) => setHistory(e.target.checked)} />
-                ‘변경 이력’ 시트 추가 {s ? `(${s.historyEntries.toLocaleString()}건)` : ""}
+                <input type="checkbox" checked={styles} onChange={(e) => setStyles(e.target.checked)} />
+                앱에서 바꾼 서식·병합·크기도 반영 (
+                {[
+                  s.styleCells > 0 ? `서식 ${s.styleCells.toLocaleString()}칸` : "",
+                  s.mergeChanges > 0 ? `병합 ${s.mergeChanges}` : "",
+                  s.sizeChanges > 0 ? `열 너비·행 높이 ${s.sizeChanges}줄` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+                )
               </label>
+            )}
+            {s && (s.cancelledRows > 0 || s.cancelChanges > 0) && (
               <label className="check">
-                <input type="checkbox" checked={mark} onChange={(e) => setMark(e.target.checked)} />
-                바뀐 칸을 노란색으로 표시
+                <input type="checkbox" checked={cancelled} onChange={(e) => setCancelled(e.target.checked)} />
+                취소 표시한 행: 취소선 + 회색 채우기 ({s.cancelledRows.toLocaleString()}행
+                {s.cancelChanges > s.cancelledRows ? ` · 표시를 푼 행은 원래 서식으로` : ""})
               </label>
-              {s && (s.styleCells > 0 || s.mergeChanges > 0 || s.sizeChanges > 0) && (
-                <label className="check">
-                  <input type="checkbox" checked={styles} onChange={(e) => setStyles(e.target.checked)} />
-                  앱에서 바꾼 서식·병합·크기도 반영 (
-                  {[
-                    s.styleCells > 0 ? `서식 ${s.styleCells.toLocaleString()}칸` : "",
-                    s.mergeChanges > 0 ? `병합 ${s.mergeChanges}` : "",
-                    s.sizeChanges > 0 ? `열 너비·행 높이 ${s.sizeChanges}줄` : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                  )
-                </label>
-              )}
-              {s && (s.cancelledRows > 0 || s.cancelChanges > 0) && (
-                <label className="check">
-                  <input type="checkbox" checked={cancelled} onChange={(e) => setCancelled(e.target.checked)} />
-                  취소 표시한 행: 취소선 + 회색 채우기 ({s.cancelledRows.toLocaleString()}행
-                  {s.cancelChanges > s.cancelledRows ? ` · 표시를 푼 행은 원래 서식으로` : ""})
-                </label>
-              )}
-              <span className="muted small">
-                원래 서식은 건드리지 않습니다. 수식은 저장할 때 Excel이 다시 계산합니다(앱에서 값으로 바꾼 수식 칸은 그
-                값으로 저장합니다).
-              </span>
-            </div>
-            <div className="field">
-              <span className="section-label">저장 뒤</span>
-              {(
-                [
-                  ["keep", "서비스 계속 (참여자가 계속 입력)"],
-                  ["readOnly", "읽기 전용으로 전환 (취합 마감)"],
-                  ["stop", "이 업무 공유 중지 (다른 업무는 계속)"],
-                ] as const
-              ).map(([v, label]) => (
-                <label key={v} className="check">
-                  <input type="radio" name="after" checked={after === v} onChange={() => setAfter(v)} />
-                  {label}
-                </label>
-              ))}
-            </div>
+            )}
+            <span className="muted small">
+              원래 서식은 건드리지 않습니다. 수식은 저장할 때 Excel이 다시 계산합니다(앱에서 값으로 바꾼 수식 칸은 그
+              값으로 저장합니다).
+            </span>
           </div>
         </details>
+
+        <section className="save-after" aria-label="저장 뒤">
+          <div className="card-head">
+            <b>저장한 뒤에는?</b>
+            <span className="muted small">저장이 끝나면 고른 대로 처리해요.</span>
+          </div>
+          <div className="choice-cards three">
+            {AFTER_CHOICES.map(({ v, title, desc }) => (
+              <label key={v} className={`choice${after === v ? " on" : ""}`}>
+                <input type="radio" name="after" checked={after === v} onChange={() => setAfter(v)} />
+                <span className="ring" />
+                <span>
+                  <b>{title}</b>
+                  {v === "stop" && <span className="choice-tag">기본</span>}
+                  <span className="choice-desc">{desc}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </section>
 
         {error && <div className="error small">{error}</div>}
         {info.lastSave && (
@@ -566,47 +488,6 @@ export function SaveScreen({ active, snapshot, onStopped, onRestart, onEndJob }:
             </button>
           )}
         </div>
-
-        {s && people.length > 0 && (
-          <details className="more">
-            <summary>
-              담당자별 미입력{" "}
-              <span className="muted small">{people.filter((p) => p.required > p.filled).length}명</span>
-            </summary>
-            <div className="more-body">
-              <div className="missing-table" role="table" aria-label="담당자별 미입력">
-                <div className="mrow mhead" role="row">
-                  <span role="columnheader">담당자</span>
-                  <span role="columnheader">필수 입력</span>
-                  <span role="columnheader">미입력 칸</span>
-                </div>
-                {people.map((p) => {
-                  const left = p.required - p.filled;
-                  const ratio = p.required > 0 ? Math.round((p.filled / p.required) * 100) : 100;
-                  return (
-                    <div key={p.name} className="mrow" role="row" aria-label={p.name}>
-                      <span className="pname">
-                        <span className="mmg-dot" style={{ background: personColor(p.color) }} />
-                        {p.name}
-                      </span>
-                      <span className="pprogress">
-                        <span className="bar">
-                          <span style={{ width: `${ratio}%` }} />
-                        </span>
-                        {p.filled.toLocaleString()} / {p.required.toLocaleString()}
-                      </span>
-                      <span className={`mono small${left > 0 ? "" : " ok"}`}>
-                        {left === 0
-                          ? "✓ 완료"
-                          : `${p.missing.join(", ")}${p.more > 0 ? ` 외 ${p.more.toLocaleString()}칸` : ""}`}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </details>
-        )}
       </div>
     </div>
   );
