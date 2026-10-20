@@ -1,0 +1,14 @@
+[package]
+name = "agent-protocol"
+description = "호스트 앱 ↔ 에이전트 관리 API(/agent/*)의 형식"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+collect-core.workspace = true
+collect-server.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ts-rs.workspace = true
