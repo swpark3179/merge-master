@@ -10,6 +10,7 @@ import type {
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { AgentPanel, agentStateLabel } from "./AgentPanel";
 import { errorText } from "./api";
 import type { FooterOverride } from "./frame";
 import { FrameContext } from "./frame";
@@ -21,9 +22,11 @@ import { MonitorScreen } from "./screens/monitor/MonitorScreen";
 import { SaveScreen } from "./screens/save/SaveScreen";
 import { ServiceScreen } from "./screens/service/ServiceScreen";
 
-export type Step = "import" | "config" | "service" | "monitor" | "history" | "save";
+export type Step = "import" | "config" | "service" | "monitor" | "history" | "save" | "agent";
 
-const STEPS: { id: Step; label: string; desc: string }[] = [
+type StepInfo = { id: Step; label: string; desc: string };
+
+const STEPS: StepInfo[] = [
   { id: "import", label: "불러오기", desc: "참여자와 함께 채울 엑셀 파일을 고르세요." },
   { id: "config", label: "설정", desc: "참여자가 어느 칸을 채울지 정하세요." },
   { id: "service", label: "서비스", desc: "주소를 공유하면 참여자가 브라우저로 접속합니다." },
@@ -31,6 +34,17 @@ const STEPS: { id: Step; label: string; desc: string }[] = [
   { id: "history", label: "히스토리", desc: "누가 언제 무엇을 바꿨는지 확인하세요." },
   { id: "save", label: "저장", desc: "모은 내용을 엑셀 파일로 저장하세요." },
 ];
+
+/** 에이전트 업무: 저장 대신 에이전트(마감 시각에 에이전트 PC가 저장하고 끝낸다). */
+const AGENT_STEPS: StepInfo[] = STEPS.map((s) =>
+  s.id === "save"
+    ? {
+        id: "agent",
+        label: "에이전트",
+        desc: "마감 시각이 되면 에이전트 PC가 엑셀로 저장하고 끝냅니다. 지금 저장하고 끝낼 수도 있어요.",
+      }
+    : s,
+);
 
 /** 아직 만들지 않은 단계. */
 const NOT_YET: Step[] = [];
@@ -52,6 +66,13 @@ interface Props {
   onEndJob: () => void;
   /** 이 업무를 에이전트로 넘겼다(이 PC의 업무는 끝났다). */
   onHandedOff: (view: AgentServiceView) => void;
+  /**
+   * 에이전트로 넘긴 업무(관리자 연결 — 업무 id 자리에 서비스 id). 이 PC 업무처럼 다루되 다시 불러오기·이 PC 공유·저장은
+   * 없고, 마지막 단계가 '에이전트'다.
+   */
+  remote?: AgentServiceView;
+  /** 에이전트 업무를 목록에서 지웠다. */
+  onForgotten?: () => void;
   /** 사이드바 위쪽(업무 목록). */
   sidebar: ReactNode;
   /** 화면 위 알림(앱을 켜며 되살린 업무 등). */
@@ -65,9 +86,10 @@ interface Props {
  * 새로 그린다(`key` = 업무 id) — 단계는 업무마다 기억하고, 시트·공개 상태·접속자 표·소통은 처음 그릴 때 백엔드에서 읽는다.
  */
 export function JobWorkspace(props: Props) {
-  const { jobs, onStep, chatSeen, onChatSeen, toast } = props;
+  const { jobs, onStep, chatSeen, onChatSeen, toast, remote } = props;
   const api = useApi();
-  const [step, setStepState] = useState<Step>(props.initialStep ?? "import");
+  const steps = remote ? AGENT_STEPS : STEPS;
+  const [step, setStepState] = useState<Step>(props.initialStep ?? (remote ? "monitor" : "import"));
   const setStep = useCallback(
     (s: Step) => {
       setStepState(s);
@@ -93,7 +115,10 @@ export function JobWorkspace(props: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const frame = useMemo(() => ({ setFooter, toast }), [toast]);
 
+  /** 에이전트 업무는 관리자 연결이 열려야 읽을 수 있다(열리면 다시 읽어 본다). */
+  const linked = remote ? remote.linked : true;
   useEffect(() => {
+    if (ready || !linked) return;
     void api
       .jobState()
       .then((st) => {
@@ -103,13 +128,14 @@ export function JobWorkspace(props: Props) {
         if (st.snapshot) setSnapshot(st.snapshot);
         if (st.comms) setComms(st.comms);
         // 처음 여는 업무: 시트가 있으면(되살린 업무) 공개 중이면 모니터링, 아니면 서비스로.
-        if (!props.initialStep && st.models.length > 0) setStep(st.service ? "monitor" : "service");
+        if (!props.initialStep && !remote && st.models.length > 0) setStep(st.service ? "monitor" : "service");
+        setLoadError(null);
         setReady(true);
       })
       .catch((e) => setLoadError(errorText(e)));
-    // 업무마다 한 번(업무를 바꾸면 이 화면이 새로 그려진다).
+    // 업무마다 한 번(업무를 바꾸면 이 화면이 새로 그려진다). 에이전트 업무는 연결될 때까지.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api]);
+  }, [api, linked, ready]);
 
   // 접속자 표·소통은 백엔드가 바뀔 때마다 밀어 준다(폴링하지 않음).
   useJobListen<HostSnapshot>("participants", setSnapshot);
@@ -143,16 +169,18 @@ export function JobWorkspace(props: Props) {
   );
 
   const unreadChat = (comms?.chat ?? []).filter((m) => !m.host && m.id > chatSeen).length;
-  const canGo = (s: Step) => !NOT_YET.includes(s) && (s === "import" || loaded);
+  const canGo = (s: Step) => !NOT_YET.includes(s) && (remote ? s !== "import" && loaded : s === "import" || loaded);
+  /** 참여자가 접속할 수 있다(이 PC 공유 중, 또는 에이전트가 서비스 중). */
+  const running = remote ? remote.status?.state === "running" : service !== null;
 
-  const index = STEPS.findIndex((s) => s.id === step);
-  const cur = STEPS[index]!;
-  const prevStep = STEPS[index - 1];
-  const nextStep = STEPS[index + 1];
+  const index = steps.findIndex((s) => s.id === step);
+  const cur = steps[index]!;
+  const prevStep = steps[index - 1];
+  const nextStep = steps[index + 1];
   const defaultHint =
     step === "config"
       ? "설정은 공유 중에도 바꿀 수 있어요"
-      : step === "service" && !service
+      : step === "service" && !running
         ? "공유를 시작해야 참여자가 접속할 수 있어요"
         : "";
   const hint = footer?.hint ?? defaultHint;
@@ -171,21 +199,28 @@ export function JobWorkspace(props: Props) {
           <span className="divider" />
           <span className="file">
             {!loaded
-              ? "열린 파일 없음"
+              ? remote
+                ? `${remote.workbook} · 에이전트 ${remote.agentName}`
+                : "열린 파일 없음"
               : sheets.length === 1
                 ? `${sheets[0]!.workbook} · ${sheets[0]!.sheet}`
                 : `${sheets[0]!.workbook} · 시트 ${sheets.length}개`}
+            {loaded && remote && ` · 에이전트 ${remote.agentName}`}
           </span>
           <span className="spacer" />
-          {props.excelRunning !== null && (
+          {props.excelRunning !== null && !remote && (
             <span className={`excel ${props.excelRunning ? "ok" : "muted"}`}>
               {props.excelRunning ? "● Excel 연결됨 (COM)" : "○ 실행 중인 Excel 없음"}
             </span>
           )}
-          <div className={`service-badge${service ? " on" : ""}`} aria-live="polite">
-            {service ? `공유 중 · 접속 ${snapshot?.online ?? 0} / ${snapshot?.roster ?? 0}` : "공유 전"}
+          <div className={`service-badge${running ? " on" : ""}`} aria-live="polite">
+            {remote
+              ? `에이전트 · ${agentStateLabel(remote)}${running ? ` · 접속 ${snapshot?.online ?? 0} / ${snapshot?.roster ?? 0}` : ""}`
+              : service
+                ? `공유 중 · 접속 ${snapshot?.online ?? 0} / ${snapshot?.roster ?? 0}`
+                : "공유 전"}
             {snapshot?.closed && <span className="warn"> · 취합 마감됨</span>}
-            {published > (service ? 1 : 0) && (
+            {!remote && published > (service ? 1 : 0) && (
               <span className="muted" title="같은 포트로 공유 중인 다른 업무">
                 {" "}
                 · 다른 업무 {published - (service ? 1 : 0)}개 공유 중
@@ -197,7 +232,7 @@ export function JobWorkspace(props: Props) {
           <nav className="steps" aria-label="진행 단계">
             {props.sidebar}
             <div className="steps-title">진행 단계</div>
-            {STEPS.map((s, i) => {
+            {steps.map((s, i) => {
               const done = i < index || (s.id === "import" && loaded && step !== "import");
               return (
                 <button
@@ -206,7 +241,13 @@ export function JobWorkspace(props: Props) {
                   aria-label={`${i + 1} ${s.label}`}
                   aria-current={s.id === step ? "step" : undefined}
                   disabled={!canGo(s.id)}
-                  title={NOT_YET.includes(s.id) ? "다음 단계에서 구현" : undefined}
+                  title={
+                    remote && s.id === "import"
+                      ? "에이전트로 넘긴 업무는 다시 불러올 수 없어요"
+                      : NOT_YET.includes(s.id)
+                        ? "다음 단계에서 구현"
+                        : undefined
+                  }
                   onClick={() => setStep(s.id)}
                 >
                   <span className="mark">{done ? "✓" : i + 1}</span>
@@ -223,27 +264,43 @@ export function JobWorkspace(props: Props) {
           <div className="main">
             <div className="step-head">
               <div>
-                <div className="step-no">{index + 1} / 6 단계</div>
+                <div className="step-no">
+                  {index + 1} / {steps.length} 단계{remote ? " · 에이전트에서 진행 중" : ""}
+                </div>
                 <h1>{cur.label}</h1>
                 <p>{cur.desc}</p>
               </div>
             </div>
             <main className="content">
               {props.banner}
-              {loadError && <div className="error small">{loadError}</div>}
+              {remote &&
+                !remote.linked &&
+                (ready ? (
+                  <div className="warn small" role="status">
+                    에이전트에 연결할 수 없어요(다시 연결하는 중) — 보이는 내용은 마지막으로 받은 것이에요.
+                    {remote.problem ? ` ${remote.problem}` : ""}
+                  </div>
+                ) : (
+                  <div className="muted small" role="status">
+                    에이전트({remote.agentName})에 연결하는 중…
+                  </div>
+                ))}
+              {loadError && (!remote || remote.linked) && <div className="error small">{loadError}</div>}
               {ready && (
                 <>
                   {/* 불러오기·설정 화면은 단계를 옮겨도 상태를 잃지 않도록 숨기기만 한다. */}
-                  <div className="screen-slot" hidden={step !== "import"}>
-                    <ImportScreen
-                      active={step === "import"}
-                      committed={loaded}
-                      jobs={jobs}
-                      onExcelStatus={props.onExcelStatus}
-                      onCommitted={onCommitted}
-                      onNext={() => setStep("config")}
-                    />
-                  </div>
+                  {!remote && (
+                    <div className="screen-slot" hidden={step !== "import"}>
+                      <ImportScreen
+                        active={step === "import"}
+                        committed={loaded}
+                        jobs={jobs}
+                        onExcelStatus={props.onExcelStatus}
+                        onCommitted={onCommitted}
+                        onNext={() => setStep("config")}
+                      />
+                    </div>
+                  )}
                   {loaded && (
                     <div className="screen-slot" hidden={step !== "config"}>
                       <ConfigScreen
@@ -267,6 +324,7 @@ export function JobWorkspace(props: Props) {
                       sheets={sheets}
                       onGoConfig={() => setStep("config")}
                       onHandedOff={props.onHandedOff}
+                      remote={remote}
                     />
                   )}
                   {step === "monitor" && (
@@ -274,7 +332,7 @@ export function JobWorkspace(props: Props) {
                       active
                       snapshot={snapshot}
                       comms={comms}
-                      running={service !== null}
+                      running={running}
                       chatSeen={chatSeen}
                       onChatSeen={onChatSeen}
                       sheets={sheets}
@@ -284,7 +342,10 @@ export function JobWorkspace(props: Props) {
                     />
                   )}
                   {step === "history" && <HistoryScreen active sheets={sheets} sheet={current} />}
-                  {step === "save" && (
+                  {step === "agent" && remote && (
+                    <AgentPanel view={remote} toast={toast} onForgotten={props.onForgotten ?? (() => {})} />
+                  )}
+                  {step === "save" && !remote && (
                     <SaveScreen
                       active
                       snapshot={snapshot}

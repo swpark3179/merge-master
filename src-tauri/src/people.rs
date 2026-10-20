@@ -1,8 +1,8 @@
 //! 1c IP 명단: IP별 참여자 이름. 이 명단에 있는 IP에서 접속하면 이름을 묻지 않고 그 이름으로 들어오고, 명단 밖 IP는
 //! 이름을 입력한 뒤 호스트가 승인한다. 호스트 PC의 IP가 명단에 있으면 그 이름이 호스트 이름이다.
 //!
-//! 앱 설정 폴더의 `ip-names.json`에 두고(앱을 다시 켜도 남는다), 바꾸면 모든 업무의 세션에 알린다(명단은 업무 공통).
-//! JSON 파일로 내보내고 불러온다.
+//! 앱 설정 폴더의 `ip-names.json`에 두고(앱을 다시 켜도 남는다), 바꾸면 모든 업무의 세션에 알린다(명단은 업무 공통 —
+//! 에이전트 업무에도 보낸다. 에이전트 PC의 명단에 같은 IP가 있으면 그쪽이 이긴다). JSON 파일로 내보내고 불러온다.
 
 use std::path::{Path, PathBuf};
 
@@ -57,6 +57,7 @@ fn replace(app: &AppHandle, state: &AppState, names: IpNames) -> CmdResult<IpNam
         }
     }
     state.hub.set_ip_names(names.clone());
+    crate::remote::send_ip_names(state, &names);
     let out = view(app, &names);
     *state.ip_names.lock().unwrap() = names;
     Ok(out)

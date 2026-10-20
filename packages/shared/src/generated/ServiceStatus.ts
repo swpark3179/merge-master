@@ -16,6 +16,6 @@ nowMs: number, online: number, roster: number, pending: Array<PendingPerson>, re
  */
 attempts: number, lastError?: string, 
 /**
- * 마지막 채팅 시각(채팅은 호스트 앱에서 볼 수 없다 — 있었다는 것만 알린다).
+ * 마지막 채팅 시각.
  */
 lastChatMs?: number, createdAtMs: number, };

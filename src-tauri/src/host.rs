@@ -1,5 +1,6 @@
 //! 업무에 딸린 호스트 command(1b 설정·4 모니터링·1i 소통·5 히스토리·1c 참여자·6 취합 마감). 하는 일은
-//! [`collect_server::host`]가 하고, 여기서는 그 업무의 세션을 찾아 요청을 넘긴다(command 이름·인수는 그대로).
+//! [`collect_server::host`]가 하고, 여기서는 그 업무의 세션을 찾아 요청을 넘긴다(command 이름·인수는 그대로). 에이전트로
+//! 넘긴 업무(`job` = 서비스 id)는 관리자 연결로 보낸다([`crate::remote`]).
 //! 결과는 JSON 그대로 웹뷰에 간다(TS 타입은 `@mm/shared`의 생성 타입).
 
 use std::path::PathBuf;
@@ -16,11 +17,15 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::jobs::event;
+use crate::remote::Target;
 use crate::{AppState, CmdResult};
 
-/// 그 업무의 세션에서 요청 하나를 한다.
+/// 그 업무의 세션(또는 에이전트 업무)에서 요청 하나를 한다.
 pub(crate) async fn run(state: &AppState, job: &str, req: HostRequest) -> CmdResult<Value> {
-    collect_server::host::execute(&state.session(job)?, req).await
+    match state.target(job)? {
+        Target::Local(session) => collect_server::host::execute(&session, req).await,
+        Target::Remote(remote) => remote.host(req).await,
+    }
 }
 
 /// 1b 화면이 그릴 설정 보기(그 시트). `viewer`를 주면 그 참여자 시점으로 계산한다(참여자 시점으로 보기).

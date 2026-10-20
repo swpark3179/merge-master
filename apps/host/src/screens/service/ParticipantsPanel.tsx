@@ -130,6 +130,10 @@ export function ParticipantsPanel({
           <span>
             ‘{p.name}’ — {rows.some((r) => r.name === p.name) ? "명단에 있는 이름" : "명단에 없는 이름"} · IP 명단 밖{" "}
             <span className="mono">{p.ip}</span>
+            {p.reason === "online" && (
+              <span className="warn"> · 같은 이름이 다른 기기에서 접속 중(승인하면 그 기기는 끊겨요)</span>
+            )}
+            {p.reason === "approval" && <span className="muted"> · 호스트가 끊었거나 거절한 이름</span>}
           </span>
           <span className="spacer" />
           {approving === p.name ? (

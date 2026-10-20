@@ -1,7 +1,8 @@
 //! 에이전트: 호스트 앱이 넘긴 취합 업무를 이 PC에서 서비스하고(참여자 서버), 마감이 되면 엑셀로 저장해 끝낸다.
 //! 창 없이 Windows 트레이에서 돈다(`merge-master-agent.exe`).
 //!
-//! - 포트 하나(기본 8090)에 참여자 서버(`/`, `/{slug}`, `/ws` …)와 관리 API(`/agent/*`, [`api`])를 함께 둔다.
+//! - 포트 하나(기본 8090)에 참여자 서버(`/`, `/{slug}`, `/ws` …)와 관리 API(`/agent/*`, [`api`] — 넘긴 호스트 앱의
+//!   관리자 연결 [`host_link`] 포함)를 함께 둔다.
 //! - 데이터 폴더(`%LOCALAPPDATA%\merge-master-agent`): `agent.json`(설정), `ip-names.json`(에이전트 PC의 IP 명단),
 //!   `services\<id>\`(서비스마다 기록 파일·원본·상태), `logs\`, `calc\`(Excel 계산 사본), `webview\`(IP 명단 창).
 //! - 플랫폼과 상관없는 부분(관리 API·서비스·마감·되살리기·경로)은 Linux에서도 시험한다([`FakeEngine`]).
@@ -14,6 +15,7 @@ pub mod api;
 pub mod engine;
 #[cfg(windows)]
 pub mod excel;
+pub mod host_link;
 pub mod logging;
 pub mod paths;
 pub mod record;

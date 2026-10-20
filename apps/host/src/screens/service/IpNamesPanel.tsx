@@ -13,6 +13,8 @@ interface Props {
   onError: (e: string) => void;
   /** 명단을 읽거나 바꿀 때마다(1c '내 이름'을 이 PC의 이름으로 채운다). */
   onChange?: (view: IpNamesView) => void;
+  /** 에이전트로 넘긴 업무면 그 에이전트 PC 이름(이 명단도 보내지만 에이전트 PC 명단이 먼저다). */
+  agentName?: string;
 }
 
 const JSON_FILTER = [{ name: "JSON", extensions: ["json"] }];
@@ -21,7 +23,7 @@ const JSON_FILTER = [{ name: "JSON", extensions: ["json"] }];
  * 1c IP 명단: IP별 참여자 이름. 명단의 IP에서 접속하면 이름을 묻지 않고 그 이름으로 바로 들어오고, 명단 밖 IP는 이름을
  * 입력한 뒤 호스트가 승인한다. 이 PC(호스트)의 IP가 명단에 있으면 그 이름이 호스트 이름이다. JSON 파일로 내보내고 불러온다.
  */
-export function IpNamesPanel({ snapshot, rev, onError, onChange }: Props) {
+export function IpNamesPanel({ snapshot, rev, onError, onChange, agentName }: Props) {
   const api = useApi();
   const [view, setViewState] = useState<IpNamesView | null>(null);
   const [ip, setIp] = useState("");
@@ -192,6 +194,12 @@ export function IpNamesPanel({ snapshot, rev, onError, onChange }: Props) {
           </button>
         </form>
       </div>
+      {agentName && (
+        <div className="muted small">
+          이 명단은 에이전트 PC({agentName})에도 보냅니다. 에이전트 PC의 명단(트레이 ‘IP 명단 관리’)에 같은 IP가 있으면
+          그쪽 이름이 먼저예요.
+        </div>
+      )}
       {view?.path && <div className="muted small">명단 파일: {view.path}</div>}
     </section>
   );

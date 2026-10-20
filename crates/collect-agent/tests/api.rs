@@ -584,3 +584,191 @@ async fn agent_ip_list_wins_and_received_lists_stay_per_service() {
     assert_eq!((v.entries.len(), v.received.len()), (2, 1));
     running.stop().await;
 }
+
+/// 관리자 연결(호스트 앱의 `HostLink`)과 그 연결이 받은 것.
+struct Link {
+    link: agent_protocol::link_client::HostLink,
+    events: Arc<Mutex<Vec<agent_protocol::link_client::LinkEvent>>>,
+}
+
+impl Link {
+    fn start(port: u16, id: &str, token: &str) -> Link {
+        let client = agent_protocol::client::AgentClient::new(&format!("127.0.0.1:{port}")).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let seen = events.clone();
+        let link = agent_protocol::link_client::HostLink::start(&client, id, token, move |e| {
+            seen.lock().unwrap().push(e);
+        });
+        Link { link, events }
+    }
+
+    /// 붙거나 멈출 때까지.
+    async fn settle(&self) -> agent_protocol::link_client::LinkStatus {
+        use agent_protocol::link_client::LinkStatus;
+        let mut rx = self.link.subscribe();
+        let wait = rx.wait_for(|s| *s != LinkStatus::Connecting);
+        tokio::time::timeout(Duration::from_secs(10), wait).await.expect("연결 결과").unwrap().clone()
+    }
+
+    async fn host(&self, req: serde_json::Value) -> Result<serde_json::Value, String> {
+        let req = serde_json::from_value(req).unwrap();
+        self.link.call(agent_protocol::link::LinkCall::Host { req }).await
+    }
+
+    /// 밀어 준 것 중 `kind`(`snapshot`, `event` …)가 `pred`를 만족하는 것이 올 때까지.
+    async fn pushed(&self, kind: &str, pred: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        use agent_protocol::link_client::LinkEvent;
+        for _ in 0..250 {
+            let found = self.events.lock().unwrap().iter().find_map(|e| match e {
+                LinkEvent::Push(p) => {
+                    let v = serde_json::to_value(p).unwrap();
+                    (v["kind"] == kind && pred(&v["value"])).then(|| v["value"].clone())
+                }
+                _ => None,
+            });
+            if let Some(v) = found {
+                return v;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("‘{kind}’ 알림이 오지 않았습니다");
+    }
+}
+
+#[tokio::test]
+async fn admin_link_gives_the_host_full_control() {
+    use agent_protocol::link::{LinkCall, LinkState};
+    use agent_protocol::link_client::LinkStatus;
+    use serde_json::json;
+
+    let env = Env::new("link");
+    let running = env.start().await;
+    let port = running.port();
+    let p = package(&env.data, "svc-l", "q4", "l.xlsx").await;
+    let token = p.manifest.token.clone();
+    assert_eq!(create(port, &p).await.status, 200);
+
+    // 키·서비스·판이 맞아야 붙는다. 브라우저는 붙지 못한다.
+    let wrong = Link::start(port, "svc-l", "틀린 키");
+    assert!(matches!(wrong.settle().await, LinkStatus::Stopped(m) if m.contains("관리 키")));
+    let missing = Link::start(port, "svc-없음", &token);
+    assert!(matches!(missing.settle().await, LinkStatus::Stopped(m) if m.contains("없는 서비스")));
+    let refused = |headers: Vec<(&'static str, String)>| async move {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = format!("ws://127.0.0.1:{port}/agent/services/svc-l/host").into_client_request().unwrap();
+        for (k, v) in headers {
+            req.headers_mut().insert(k, v.parse().unwrap());
+        }
+        match tokio_tungstenite::connect_async(req).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => resp.status().as_u16(),
+            other => panic!("거절해야 합니다: {:?}", other.map(|_| ())),
+        }
+    };
+    assert_eq!(refused(vec![("x-mm-agent", "1".into()), ("x-mm-token", token.clone())]).await, 426, "옛 호스트 앱");
+    let browser = vec![
+        ("x-mm-agent", PROTOCOL.to_string()),
+        ("x-mm-token", token.clone()),
+        ("origin", format!("http://127.0.0.1:{port}")),
+    ];
+    assert_eq!(refused(browser).await, 403);
+
+    let link = Link::start(port, "svc-l", &token);
+    assert_eq!(link.settle().await, LinkStatus::Connected);
+    link.pushed("status", |v| v["state"] == "running").await;
+    link.pushed("snapshot", |_| true).await;
+    let state: LinkState = serde_json::from_value(link.link.call(LinkCall::State).await.unwrap()).unwrap();
+    assert_eq!(state.models.as_array().map(Vec::len), Some(1));
+    assert_eq!(state.status.state, ServiceState::Running);
+
+    // 참여자는 자동 승인으로 들어온다. 호스트가 끊으면 다시 승인해야 하고, 범위를 붙여 승인할 수 있다.
+    let mut ws = join_ws(port, "q4", "이영희").await;
+    assert_eq!(next_welcome(&mut ws).await.name, "이영희");
+    link.host(json!({ "req": "participantKick", "name": "이영희" })).await.unwrap();
+    let mut again = join_ws(port, "q4", "이영희").await;
+    link.pushed("snapshot", |v| v["pending"].as_array().is_some_and(|p| p.iter().any(|x| x["name"] == "이영희"))).await;
+    link.host(json!({ "req": "participantApprove", "name": "이영희", "sheet": 0, "range": "F5:F9", "note": "검토" }))
+        .await
+        .unwrap();
+    assert_eq!(next_welcome(&mut again).await.name, "이영희");
+    let view = link.host(json!({ "req": "configView", "sheet": 0 })).await.unwrap();
+    let ranges = view["config"]["assignment"]["ranges"].as_array().unwrap().clone();
+    assert!(
+        ranges
+            .iter()
+            .any(|r| r["person"] == "이영희" && r["range"] == json!({ "row": 4, "col": 5, "rows": 5, "cols": 1 }))
+    );
+
+    // 칸 쓰기·채팅·히스토리.
+    link.host(json!({ "req": "sheetSetCells", "sheet": 0, "cells": [{ "row": 4, "col": 5, "value": 4321 }] }))
+        .await
+        .unwrap();
+    link.pushed("event", |v| v["type"] == "cells").await;
+    let data = link.host(json!({ "req": "monitorGet", "sheet": 0 })).await.unwrap();
+    let model: SheetModel = serde_json::from_value(data["model"].clone()).unwrap();
+    assert_eq!(model.cell(collect_core::CellRef::new(4, 5)).unwrap().v, collect_core::CellValue::Number(4321.0));
+    link.host(json!({ "req": "chatSend", "to": { "kind": "all" }, "text": "확인 부탁드립니다" })).await.unwrap();
+    link.pushed("comms", |v| v["chat"].as_array().is_some_and(|c| c.iter().any(|m| m["text"] == "확인 부탁드립니다")))
+        .await;
+    let csv = link.host(json!({ "req": "historyCsv", "filter": {}, "offsetMinutes": 540 })).await.unwrap();
+    assert!(csv["count"].as_u64().unwrap() >= 2, "{csv}");
+    assert!(csv["csv"].as_str().unwrap().contains("4321"));
+
+    // 마감: 비울 수 없고 범위 안이어야 한다. 바꾸면 에이전트가 그 시각에 저장한다. 마감 동작은 늘 '읽기 전용'.
+    let meta = |deadline: serde_json::Value| {
+        json!({ "req": "configApply", "sheet": 0, "edit": {
+            "op": "setMeta", "title": "2026 예산", "description": "", "requester": "박지훈", "deadline": deadline } })
+    };
+    assert!(link.host(meta(json!(null))).await.unwrap_err().contains("마감"));
+    assert!(link.host(meta(json!("  "))).await.unwrap_err().contains("마감"));
+    assert!(link.host(meta(json!("2027-01-30T10:00"))).await.unwrap_err().contains("60일"));
+    link.host(meta(json!("2026-10-21T12:00"))).await.unwrap();
+    link.pushed("status", |v| v["deadline"] == "2026-10-21T12:00").await;
+    let mut permissions = view["config"]["permissions"].clone();
+    permissions["deadlineAction"] = json!("stopSharing");
+    let edit =
+        json!({ "req": "configApply", "sheet": 0, "edit": { "op": "setPermissions", "permissions": permissions } });
+    let v = link.host(edit).await.unwrap();
+    assert_eq!(v["config"]["permissions"]["deadlineAction"], "readOnly");
+    assert_eq!(v["config"]["deadline"], "2026-10-21T12:00");
+    env.clock.set("2026-10-20T18:30"); // 처음 마감은 지났다
+    assert!(running.agent.tick().is_empty(), "바꾼 마감까지 서비스");
+    assert_eq!(status(port, "svc-l", &token).await.status.unwrap().state, ServiceState::Running);
+
+    // 연결이 열려 있어도 에이전트는 바로 끝난다. 다시 켜도 바꾼 마감·값이 남아 있다.
+    drop(ws);
+    drop(again);
+    tokio::time::timeout(Duration::from_secs(5), running.stop()).await.expect("관리자 연결이 끝내기를 막지 않는다");
+    let running = env.start().await;
+    let port = running.port();
+    let s = status(port, "svc-l", &token).await.status.unwrap();
+    assert_eq!((s.state, s.deadline.as_str()), (ServiceState::Running, "2026-10-21T12:00"));
+    let link = Link::start(port, "svc-l", &token);
+    assert_eq!(link.settle().await, LinkStatus::Connected);
+    let data = link.host(json!({ "req": "monitorGet", "sheet": 0 })).await.unwrap();
+    assert_eq!(data["view"]["config"]["deadline"], "2026-10-21T12:00");
+    let model: SheetModel = serde_json::from_value(data["model"].clone()).unwrap();
+    assert_eq!(model.cell(collect_core::CellRef::new(4, 5)).unwrap().v, collect_core::CellValue::Number(4321.0));
+    // 호스트 PC의 IP 명단은 그 서비스의 넘겨받은 명단이 된다.
+    let names = std::collections::BTreeMap::from([("127.0.0.1".to_string(), "박지훈".to_string())]);
+    link.link.call(LinkCall::IpNames { names }).await.unwrap();
+    assert_eq!(first_known(port, "q4").await.as_deref(), Some("박지훈"));
+
+    // 저장을 시작하면 쓰기는 막히고(읽기는 된다), 끝나면 연결이 닫히고 다시 붙지 않는다.
+    assert_eq!(finish(port, "svc-l", &token, true).await.status, 200);
+    let service = running.agent.services_now().into_iter().find(|s| s.id == "svc-l").unwrap();
+    let write = serde_json::from_value(json!({ "req": "snapshotTake", "label": "늦은 쓰기" })).unwrap();
+    assert!(running.agent.host_request(&service, write).await.unwrap_err().contains("서비스 중이 아닙니다"));
+    until(port, "svc-l", &token, ServiceState::Done).await;
+    assert!(matches!(link.settle_stopped().await, LinkStatus::Stopped(m) if m.contains("서비스 중이 아닙니다")));
+    running.stop().await;
+}
+
+impl Link {
+    /// 멈출 때까지(끊긴 뒤 다시 붙어 보다가 거절당한다).
+    async fn settle_stopped(&self) -> agent_protocol::link_client::LinkStatus {
+        use agent_protocol::link_client::LinkStatus;
+        let mut rx = self.link.subscribe();
+        let wait = rx.wait_for(|s| matches!(s, LinkStatus::Stopped(_)));
+        tokio::time::timeout(Duration::from_secs(10), wait).await.expect("연결이 멈춤").unwrap().clone()
+    }
+}

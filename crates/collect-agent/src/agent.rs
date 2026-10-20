@@ -8,6 +8,8 @@
 //! - 참여자: 명단 밖에서도 입력한 이름 그대로 들어온다(자동 승인 — 관리자가 승인하지 못할 수 있다).
 //! - IP 명단: 에이전트 PC의 명단(`ip-names.json`, 트레이 'IP 명단 관리')이 이긴다. 서비스마다 넘겨받은 명단은 에이전트
 //!   명단에 없는 IP만 그 서비스에서 쓴다(에이전트 명단에 섞지 않는다).
+//! - 관리자 연결([`crate::host_link`]): 넘긴 호스트 앱이 설정·모니터링·소통·히스토리·참여자 승인을 이 PC 업무처럼 한다
+//!   ([`Agent::host_request`]). 마감은 비울 수 없고, 마감 동작은 '읽기 전용'(에이전트가 저장한다)으로 둔다.
 
 use std::collections::{BTreeMap, HashSet};
 use std::net::IpAddr;
@@ -16,6 +18,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
+use agent_protocol::link::LinkState;
 use agent_protocol::{
     AgentInfo, Approve, Created, FolderList, MIN_LEAD_MINUTES, PROTOCOL, Package, ServiceState, ServiceStatus,
     StatusItem, StatusQuery, check_deadline, check_name, extension,
@@ -23,6 +26,7 @@ use agent_protocol::{
 use chrono::{NaiveDateTime, TimeZone};
 use collect_core::config::DeadlineAction;
 use collect_core::edit::ConfigEdit;
+use collect_server::host::{self, HostRequest};
 use collect_server::{Gone, Hub, IpNames, META_ENDED, SessionHandle, lan_addresses, recover, validate_slug};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -114,6 +118,8 @@ pub struct Agent {
     /// 에이전트 PC의 IP 명단(`ip-names.json`).
     ip_names: RwLock<IpNames>,
     ip_names_path: PathBuf,
+    /// 에이전트를 끝내는 중(관리자 연결을 닫는다).
+    stopping: watch::Sender<bool>,
 }
 
 /// 에이전트 PC의 IP 명단 파일 이름(데이터 폴더).
@@ -146,6 +152,7 @@ impl Agent {
             changes: watch::channel(0).0,
             ip_names: RwLock::new(ip_names),
             ip_names_path,
+            stopping: watch::channel(false).0,
         })
     }
 
@@ -201,6 +208,11 @@ impl Agent {
         self.changes.send_modify(|n| *n += 1);
     }
 
+    /// 에이전트를 끝낼 때 `true`가 된다.
+    pub fn stopping(&self) -> watch::Receiver<bool> {
+        self.stopping.subscribe()
+    }
+
     fn now(&self) -> NaiveDateTime {
         (self.opts.clock)()
     }
@@ -238,7 +250,7 @@ impl Agent {
         f(&View { urls: &urls, now_ms: self.now_ms(), deadline_ms: &deadline_ms })
     }
 
-    fn owned(&self, id: &str, token: Option<&str>) -> Result<Arc<Service>, AgentError> {
+    pub(crate) fn owned(&self, id: &str, token: Option<&str>) -> Result<Arc<Service>, AgentError> {
         let service = self.service(id).ok_or_else(AgentError::missing)?;
         match token {
             Some(t) if !service.token_ok(t) => Err(AgentError::forbidden()),
@@ -570,7 +582,7 @@ impl Agent {
         Ok(self.view(|v| s.status(v)))
     }
 
-    fn live_session(&self, s: &Service) -> Result<SessionHandle, AgentError> {
+    pub(crate) fn live_session(&self, s: &Service) -> Result<SessionHandle, AgentError> {
         match (s.state(), s.session()) {
             (ServiceState::Running, Some(session)) => Ok(session),
             _ => Err(AgentError::conflict("서비스 중이 아닙니다")),
@@ -589,6 +601,63 @@ impl Agent {
         self.live_session(&s)?.reject(name).await?;
         self.changed();
         self.status_of(id, token)
+    }
+
+    // ------------------------------------------------------------------ 관리자 연결
+
+    /// 관리자 연결의 요청 하나([`crate::host_link`]). 보기는 세션이 남아 있으면 언제든, 바꾸기는 서비스 중일 때만(저장을
+    /// 시작하면 막는다 — 저장하는 파일에 빠진 값이 생기지 않게). 에이전트 업무의 규칙: 마감은 비울 수 없고 바꾸면 받을 때와
+    /// 같은 범위(지금부터 1분 뒤 ~ 최대 서비스 기간)여야 하며 저장할 때도 그 시각을 쓴다. 마감 동작은 늘 '읽기 전용'
+    /// (마감 순간 입력을 막고 에이전트가 이어서 저장한다).
+    pub async fn host_request(&self, s: &Service, req: HostRequest) -> Result<serde_json::Value, String> {
+        if req.is_read() {
+            let session = s.session().ok_or("이 서비스는 끝났습니다")?;
+            return host::execute(&session, req).await;
+        }
+        let _edit = s.edits.read().await;
+        let session = self.live_session(s).map_err(|e| e.message)?;
+        let mut req = req;
+        let mut moved = None;
+        if let HostRequest::ConfigApply { edit, .. } = &mut req {
+            match edit {
+                ConfigEdit::SetMeta { deadline, .. } => {
+                    let text = deadline
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .ok_or("에이전트 PC에서 서비스하는 업무는 마감 일시를 비울 수 없습니다")?
+                        .to_string();
+                    if text != s.record().manifest.deadline {
+                        check_deadline(&text, self.now(), MIN_LEAD_MINUTES, self.settings().max_days)?;
+                        moved = Some(text.clone());
+                    }
+                    *deadline = Some(text);
+                }
+                ConfigEdit::SetPermissions { permissions } => permissions.deadline_action = DeadlineAction::ReadOnly,
+                _ => {}
+            }
+        }
+        let out = host::execute(&session, req).await?;
+        if let Some(deadline) = moved {
+            tracing::info!(id = %s.id, "마감을 바꿨습니다: {deadline}");
+            s.update(|r| r.manifest.deadline = deadline);
+            self.changed();
+        }
+        Ok(out)
+    }
+
+    /// 관리자 연결이 처음 그릴 것.
+    pub async fn link_state(&self, s: &Service) -> Result<LinkState, String> {
+        let session = s.session().ok_or("이 서비스는 끝났습니다")?;
+        let models = host::execute(&session, HostRequest::Models).await?;
+        let value = |v: serde_json::Result<serde_json::Value>| v.map_err(|e| e.to_string());
+        Ok(LinkState {
+            models,
+            snapshot: value(serde_json::to_value(session.snapshot()))?,
+            comms: value(serde_json::to_value(session.comms()))?,
+            recalc: s.recalc_status(),
+            status: self.view(|v| s.status(v)),
+        })
     }
 
     // ------------------------------------------------------------------ 끝내기·저장
@@ -670,11 +739,16 @@ impl Agent {
             self.changed();
             return;
         };
-        // 저장하는 동안 입력을 막는다(참여자는 보기만).
-        let _ = session.with(|s| s.set_closed(true)).await;
+        // 저장하는 동안 입력을 막는다(참여자는 보기만). 관리자 연결의 쓰기가 끝나기를 기다린 뒤 저장할 내용을 뜬다(그 뒤의
+        // 쓰기는 '서비스 중이 아님'으로 거절된다).
+        let parts = {
+            let _edits = s.edits.write().await;
+            let _ = session.with(|s| s.set_closed(true)).await;
+            session.save_parts().await
+        };
         let r = s.record();
         let result = async {
-            let parts = session.save_parts().await?;
+            let parts = parts?;
             let offset = chrono::Local::now().offset().local_minus_utc() / 60;
             let plans = parts.plan(&r.manifest.sheets, r.manifest.export, offset, &[]);
             if let Some(dir) = r.output_path.parent() {
@@ -878,6 +952,7 @@ impl Agent {
 
     /// 에이전트를 끝낼 때: 공유를 닫고(참여자에게는 잠시 멈춘 것으로 — 다시 켜면 이어서 한다), 계산 사본을 닫는다.
     pub async fn pause_all(&self) {
+        self.stopping.send_replace(true);
         for (slug, _) in self.hub.sessions() {
             self.hub.unpublish_as(&slug, Gone::Paused);
         }

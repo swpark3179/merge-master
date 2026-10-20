@@ -18,7 +18,11 @@ pub(crate) fn notify(app: &AppHandle, job: &str) -> Notify {
     })
 }
 
+/// 에이전트 업무면 에이전트가 마지막으로 알린 상태.
 #[tauri::command]
 pub(crate) fn recalc_status(state: State<'_, AppState>, job: String) -> CmdResult<RecalcStatus> {
-    Ok(state.job(&job)?.recalc.status())
+    match state.job(&job) {
+        Ok(job) => Ok(job.recalc.status()),
+        Err(e) => state.remotes.get(&job).map(|r| r.recalc()).ok_or(e),
+    }
 }

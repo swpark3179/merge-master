@@ -127,10 +127,6 @@ export const appApi = {
 
   agentRefresh: () => invoke<AgentServiceView[]>("agent_refresh"),
 
-  agentApprove: (id: string, name: string) => invoke<AgentServiceView>("agent_approve", { id, name }),
-
-  agentReject: (id: string, name: string) => invoke<AgentServiceView>("agent_reject", { id, name }),
-
   /** 지금 저장하고 끝내기(`save`) / 저장 없이 끝내기. 저장은 에이전트가 뒤에서 한다(상태 '저장 중'). */
   agentFinish: (id: string, save: boolean) => invoke<AgentServiceView>("agent_finish", { id, save }),
 

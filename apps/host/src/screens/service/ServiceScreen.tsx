@@ -10,12 +10,14 @@ import type {
   RecalcStatus,
   ServerStatus,
   ServiceInfo,
+  ServiceStatus,
   SheetModel,
 } from "@mm/shared";
-import { formatDeadline } from "@mm/shared";
+import { formatDeadline, parseDeadline } from "@mm/shared";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useAgentNow } from "../../AgentPanel";
 import { errorText, jobEvent } from "../../api";
 import { DeadlineInput } from "../../DeadlineInput";
 import { AgentClock, AgentHandoff, agentToday } from "./AgentHandoff";
@@ -39,6 +41,8 @@ interface Props {
   onGoConfig: () => void;
   /** 에이전트로 넘겼다(이 PC의 업무는 끝났다). */
   onHandedOff: (view: AgentServiceView) => void;
+  /** 에이전트로 넘긴 업무: 서비스 위치는 그 에이전트 PC로 정해져 있고, 공유는 에이전트가 한다(마감 필수). */
+  remote?: AgentServiceView;
 }
 
 /**
@@ -46,10 +50,14 @@ interface Props {
  * (다른 업무의 공유는 그대로). 참여자는 업무 목록 주소(`http://IP:포트/`)에서 업무를 골라 들어올 수도 있다.
  */
 export function ServiceScreen(props: Props) {
-  const { active, hasSheet, service, onService, snapshot, sheets, onGoConfig, jobs } = props;
+  const { active, hasSheet, service, onService, snapshot, sheets, onGoConfig, jobs, remote } = props;
   /** 서비스 위치: 이 PC(앱 안의 서버) / 에이전트 PC(넘김). 이 PC에서 공유 중이면 넘길 수 없다. */
   const [where, setWhere] = useState<"local" | "agent">("local");
-  const agentMode = where === "agent" && !service;
+  /** 에이전트로 넘기는 중(넘길 곳 고르기). 이미 넘긴 업무(`remote`)는 아니다. */
+  const agentMode = where === "agent" && !service && !remote;
+  const status = remote?.status;
+  /** 마감이 필수다(넘기기, 넘긴 업무). */
+  const deadlineRequired = agentMode || !!remote;
   const [conn, setConn] = useState<AgentConnection | null>(null);
   const api = useApi();
   const job = useJobId();
@@ -116,8 +124,17 @@ export function ServiceScreen(props: Props) {
     });
   }, [active, reload]);
 
-  const url = service ? `http://${ip ?? service.urls[0]?.ip ?? "127.0.0.1"}:${service.port}/${service.slug}` : null;
-  const listUrl = service ? `http://${ip ?? service.urls[0]?.ip ?? "127.0.0.1"}:${service.port}/` : null;
+  const url = remote
+    ? (status?.urls[0] ?? null)
+    : service
+      ? `http://${ip ?? service.urls[0]?.ip ?? "127.0.0.1"}:${service.port}/${service.slug}`
+      : null;
+  const listUrl = remote
+    ? (status?.listUrls[0] ?? null)
+    : service
+      ? `http://${ip ?? service.urls[0]?.ip ?? "127.0.0.1"}:${service.port}/`
+      : null;
+  const running = remote ? status?.state === "running" : service !== null;
   /** 다른 업무가 공유 중이다(포트는 그 업무들과 같이 쓴다). */
   const others = jobs.filter((j) => j.id !== job && j.published);
   const portLocked = !!service || ((server?.running ?? false) && others.length > 0);
@@ -222,8 +239,10 @@ export function ServiceScreen(props: Props) {
       config?.description || "",
       config?.deadline ? `마감: ${formatDeadline(config.deadline)}` : "",
       `접속: ${url}`,
-      others.length > 0 ? `(다른 취합 업무 목록: ${listUrl})` : "",
-      "같은 사내망에서 위 주소를 여세요. 등록된 PC는 바로 들어오고, 그 밖은 이름을 입력하면 호스트가 승인합니다.",
+      others.length > 0 && !remote ? `(다른 취합 업무 목록: ${listUrl})` : "",
+      remote
+        ? "같은 사내망에서 위 주소를 여세요. 등록된 PC는 바로 들어오고, 그 밖은 이름을 입력하면 그 이름으로 바로 참여합니다."
+        : "같은 사내망에서 위 주소를 여세요. 등록된 PC는 바로 들어오고, 그 밖은 이름을 입력하면 호스트가 승인합니다.",
     ]
       .filter(Boolean)
       .join("\n");
@@ -240,24 +259,30 @@ export function ServiceScreen(props: Props) {
           <div className="card-head">
             <span className="card-title">접속 조건</span>
             <span className="spacer" />
-            <div className="segmented where-seg" role="group" aria-label="서비스 위치">
-              <button className={!agentMode ? "on" : ""} aria-pressed={!agentMode} onClick={() => setWhere("local")}>
-                이 PC
-              </button>
-              <button
-                className={agentMode ? "on" : ""}
-                aria-pressed={agentMode}
-                disabled={!!service}
-                title={
-                  service
-                    ? "이 PC에서 공유 중에는 넘길 수 없어요. 공유를 멈춘 뒤 넘겨 주세요"
-                    : "에이전트가 설치된 다른 PC에서 서비스합니다(이 PC를 꺼도 계속)"
-                }
-                onClick={() => setWhere("agent")}
-              >
-                에이전트 PC
-              </button>
-            </div>
+            {remote ? (
+              <span className="pill ok-pill" title={remote.addr}>
+                에이전트 PC · {remote.agentName}
+              </span>
+            ) : (
+              <div className="segmented where-seg" role="group" aria-label="서비스 위치">
+                <button className={!agentMode ? "on" : ""} aria-pressed={!agentMode} onClick={() => setWhere("local")}>
+                  이 PC
+                </button>
+                <button
+                  className={agentMode ? "on" : ""}
+                  aria-pressed={agentMode}
+                  disabled={!!service}
+                  title={
+                    service
+                      ? "이 PC에서 공유 중에는 넘길 수 없어요. 공유를 멈춘 뒤 넘겨 주세요"
+                      : "에이전트가 설치된 다른 PC에서 서비스합니다(이 PC를 꺼도 계속)"
+                  }
+                  onClick={() => setWhere("agent")}
+                >
+                  에이전트 PC
+                </button>
+              </div>
+            )}
           </div>
           {!hasSheet && <div className="warn small">먼저 시트를 불러와 확정해 주세요(1 불러오기).</div>}
           {config && (
@@ -307,17 +332,21 @@ export function ServiceScreen(props: Props) {
               <div className="two deadline-row">
                 <div className="field">
                   <span>
-                    <b>입력 마감</b> <span className="muted">{agentMode ? "(필수)" : "(선택)"}</span>
+                    <b>입력 마감</b> <span className="muted">{deadlineRequired ? "(필수)" : "(선택)"}</span>
                   </span>
                   <DeadlineInput
                     value={config.deadline}
                     onChange={(deadline) => void saveMeta({ deadline })}
-                    required={agentMode}
-                    minDate={agentMode && conn ? agentToday(conn) : undefined}
-                    clock={agentMode ? <AgentClock conn={conn} /> : <HostClock />}
+                    required={deadlineRequired}
+                    minDate={
+                      agentMode && conn ? agentToday(conn) : status ? remoteToday(status, Date.now()) : undefined
+                    }
+                    clock={
+                      agentMode ? <AgentClock conn={conn} /> : status ? <RemoteClock status={status} /> : <HostClock />
+                    }
                   />
                 </div>
-                {agentMode ? (
+                {deadlineRequired ? (
                   <div className="agent-deadline-note small">
                     <b>마감 시각이 되면</b>
                     <span>
@@ -348,7 +377,7 @@ export function ServiceScreen(props: Props) {
               </div>
             </>
           )}
-          {!agentMode && (
+          {!agentMode && !remote && (
             <>
               <div className="divider" />
               <button className="net-toggle" aria-expanded={net} onClick={() => setNet((v) => !v)}>
@@ -410,13 +439,19 @@ export function ServiceScreen(props: Props) {
                 <span className="dot-ok" />
                 같은 {lanName ? `${lanName.split(" ")[0]}` : "사내망"}({subnet}.x)에 있는 사람은 바로 접속할 수 있어요.
               </div>
+            </>
+          )}
+          {!agentMode && (
+            <>
               {recalc && recalc.state !== "none" && (
                 <div className="small" aria-label="수식 계산">
                   <span className="muted">수식 계산</span>{" "}
                   {recalc.state === "opening" ? (
                     <span className="muted">Excel 계산 사본을 여는 중…</span>
                   ) : recalc.state === "ready" ? (
-                    <span className="ok">● Excel이 바로 계산 (수식 {recalc.formulas.toLocaleString()}칸)</span>
+                    <span className="ok">
+                      ● {remote ? "에이전트의 " : ""}Excel이 바로 계산 (수식 {recalc.formulas.toLocaleString()}칸)
+                    </span>
                   ) : (
                     <span className="warn" title={recalc.message}>
                       ○ 저장할 때 계산
@@ -442,7 +477,36 @@ export function ServiceScreen(props: Props) {
           />
         ) : (
           <section className="card share" aria-label="공유">
-            {service && url ? (
+            {remote ? (
+              running && url ? (
+                <>
+                  <div className="card-head">
+                    <span className="card-title">참여자에게 보낼 주소</span>
+                    <span className="spacer" />
+                    <span className="pill ok-pill">에이전트가 공유 중</span>
+                  </div>
+                  <div className="url-row">
+                    <code className="url">{url}</code>
+                    <button onClick={() => void copy(url, "주소를 복사했어요")}>복사</button>
+                  </div>
+                  {listUrl && (
+                    <div className="url-row list-url">
+                      <span className="muted small">업무 목록</span>
+                      <code className="url">{listUrl}</code>
+                      <button className="ghost" onClick={() => void copy(listUrl, "업무 목록 주소를 복사했어요")}>
+                        복사
+                      </button>
+                    </div>
+                  )}
+                  <button className="ghost" onClick={() => void copy(notice(), "안내 문구를 복사했어요")}>
+                    안내 문구 복사
+                  </button>
+                  <div className="small muted">공유는 에이전트 PC가 합니다. 끝내려면 ‘에이전트’ 단계에서 끝내세요.</div>
+                </>
+              ) : (
+                <div className="muted">지금은 공유하지 않아요.</div>
+              )
+            ) : service && url ? (
               <>
                 <div className="card-head">
                   <span className="card-title">참여자에게 보낼 주소</span>
@@ -496,7 +560,9 @@ export function ServiceScreen(props: Props) {
               </div>
             )}
             <div className="small muted">
-              참여 방식: IP 명단의 PC는 그 이름으로 바로 · 그 밖은 이름 입력 후 호스트 승인
+              {remote
+                ? "참여 방식: IP 명단의 PC는 그 이름으로 바로 · 그 밖은 입력한 이름 그대로 바로(자동 승인 — 같은 이름이 접속 중이거나 끊은 이름은 승인 대기)"
+                : "참여 방식: IP 명단의 PC는 그 이름으로 바로 · 그 밖은 이름 입력 후 호스트 승인"}
             </div>
             {error && <div className="error small">{error}</div>}
           </section>
@@ -506,7 +572,7 @@ export function ServiceScreen(props: Props) {
 
       {!agentMode && (
         <ParticipantsPanel
-          running={service !== null}
+          running={running}
           snapshot={snapshot}
           roster={roster}
           sheets={sheets}
@@ -517,8 +583,52 @@ export function ServiceScreen(props: Props) {
         />
       )}
 
-      <IpNamesPanel snapshot={snapshot} rev={ipRev} onError={setError} onChange={onIpNames} />
+      <IpNamesPanel
+        snapshot={snapshot}
+        rev={ipRev}
+        onError={setError}
+        onChange={onIpNames}
+        agentName={remote?.agentName}
+      />
     </div>
+  );
+}
+
+function pad(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+/**
+ * 에이전트 PC의 지금 현지 시각(UTC 필드로 읽는다). 시간대는 받은 마감 글자와 그 시각(ms)의 차이로 안다(같지 않으면
+ * 이 PC 시간대).
+ */
+function remoteWall(status: ServiceStatus, agentNow: number): Date {
+  const d = parseDeadline(status.deadline);
+  const offset = d
+    ? Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()) - status.deadlineAtMs
+    : -new Date().getTimezoneOffset() * 60_000;
+  return new Date(agentNow + offset);
+}
+
+/** 에이전트 PC의 오늘(`YYYY-MM-DD`) — 마감 날짜 칸의 가장 이른 날. */
+function remoteToday(status: ServiceStatus, now: number): string {
+  const n = remoteWall(status, now + (status.nowMs - Date.now()));
+  return `${n.getUTCFullYear()}-${pad(n.getUTCMonth() + 1)}-${pad(n.getUTCDate())}`;
+}
+
+/** '에이전트 PC 시각 기준 (지금 14:20)'(넘긴 업무 — 마감은 그 PC 시계로 잰다). */
+function RemoteClock({ status }: { status: ServiceStatus }) {
+  const agentNow = useAgentNow(status.nowMs, undefined);
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+  const n = remoteWall(status, agentNow);
+  return (
+    <span className="muted small">
+      에이전트 PC 시각 기준 (지금 {pad(n.getUTCHours())}:{pad(n.getUTCMinutes())})
+    </span>
   );
 }
 

@@ -4,13 +4,17 @@
 //! ([`Package`]: 넘길 내용 + 기록 파일 + 원본 통합문서), 에이전트가 그 PC에서 참여자 서버를 열어 마감 일시까지 서비스한다.
 //! 마감이 되면 에이전트가 엑셀을 저장하고 그 서비스를 끝낸다.
 //!
-//! - 모든 요청에는 헤더 [`HEADER_AGENT`]`: `[`PROTOCOL`]이 있어야 한다(다르면 426). 브라우저 요청(`Origin` 헤더)은 받지 않는다.
-//! - 서비스마다 호스트가 만든 관리 키(`token`)가 있어야 그 서비스를 승인·끝낼 수 있다(헤더 [`HEADER_TOKEN`]). 다른
-//!   관리자가 실수로 끝내지 않게 하는 것이고 보안 경계는 아니다(같은 사내망 누구나 넘길 수 있다).
+//! - 모든 요청에는 헤더 [`HEADER_AGENT`]`: `[`MIN_PROTOCOL`]~[`PROTOCOL`]이 있어야 한다(밖이면 426). 브라우저
+//!   요청(`Origin` 헤더)은 받지 않는다.
+//! - 서비스마다 호스트가 만든 관리 키(`token`)가 있어야 그 서비스를 다룰 수 있다(헤더 [`HEADER_TOKEN`]). 넘긴 호스트 앱이
+//!   관리자 연결([`link`])로 그 업무를 이 PC 업무처럼 다루는 자격이기도 하다(평문 HTTP — 같은 사내망에서만 쓴다).
 //! - 오류는 상태 코드 + [`ApiError`](한국어 문구).
 
 #[cfg(feature = "client")]
 pub mod client;
+pub mod link;
+#[cfg(feature = "client")]
+pub mod link_client;
 
 use std::collections::BTreeMap;
 
@@ -20,8 +24,12 @@ use collect_server::RecalcStatus;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// 관리 API 판. 호스트 앱과 에이전트가 같아야 한다(다르면 에이전트를 바꾸라고 알린다).
-pub const PROTOCOL: u32 = 1;
+/// 관리 API 판. 호스트 앱은 이 판으로 보내고, 에이전트는 [`MIN_PROTOCOL`]부터 받는다(옛 호스트 앱의 HTTP 요청). 관리자
+/// 연결은 [`link::LINK_PROTOCOL`]부터. 새 호스트 앱이 옛 에이전트에 보내면 426(에이전트를 바꾸라고 알린다 — 옛 에이전트는
+/// 지운 행·숨김 해제를 모르고 엉뚱한 행에 저장한다).
+pub const PROTOCOL: u32 = 2;
+/// 에이전트가 받는 가장 옛 판.
+pub const MIN_PROTOCOL: u32 = 1;
 /// 에이전트의 기본 포트(참여자 접속과 관리 API를 같이 받는다).
 pub const DEFAULT_PORT: u16 = 8090;
 pub const HEADER_AGENT: &str = "x-mm-agent";
@@ -205,7 +213,7 @@ pub struct ServiceStatus {
     pub attempts: u32,
     #[ts(optional)]
     pub last_error: Option<String>,
-    /// 마지막 채팅 시각(채팅은 호스트 앱에서 볼 수 없다 — 있었다는 것만 알린다).
+    /// 마지막 채팅 시각.
     #[ts(optional, type = "number")]
     pub last_chat_ms: Option<i64>,
     #[ts(type = "number")]

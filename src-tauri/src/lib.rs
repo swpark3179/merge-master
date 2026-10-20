@@ -25,6 +25,7 @@ mod monitor;
 mod people;
 mod recalc;
 mod recovery;
+mod remote;
 mod save;
 mod service;
 
@@ -48,6 +49,8 @@ pub(crate) struct AppState {
     last_jobs: std::sync::Mutex<Vec<jobs::JobSummary>>,
     /// 에이전트 PC로 넘긴 서비스(`agents.json`).
     agents: agent::Agents,
+    /// 서비스 중인 에이전트 업무의 관리자 연결(서비스 id별).
+    remotes: remote::Remotes,
 }
 
 /// 1a에서 읽었지만 아직 확정하지 않은 시트들(미리보기, 시트 이름별)과 그 통합문서. 다른 통합문서를 읽으면 비운다.
@@ -270,6 +273,7 @@ pub fn run() {
             restored: tokio::sync::OnceCell::new(),
             last_jobs: Default::default(),
             agents: Default::default(),
+            remotes: Default::default(),
         })
         .invoke_handler(tauri::generate_handler![
             excel_list_workbooks,
@@ -333,8 +337,6 @@ pub fn run() {
             agent::agent_folders,
             agent::agent_services,
             agent::agent_refresh,
-            agent::agent_approve,
-            agent::agent_reject,
             agent::agent_finish,
             agent::agent_retry,
             agent::agent_forget,

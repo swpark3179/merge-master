@@ -17,6 +17,8 @@ pub struct Service {
     pub(crate) recalc: Arc<Mutex<RecalcStatus>>,
     /// 저장은 한 번에 하나.
     pub(crate) saving: tokio::sync::Mutex<()>,
+    /// 관리자 연결의 쓰기(읽기 잠금)와 저장할 내용 뜨기(쓰기 잠금)가 겹치지 않게.
+    pub(crate) edits: tokio::sync::RwLock<()>,
 }
 
 /// 상태를 만들 때 에이전트가 주는 것.
@@ -35,6 +37,7 @@ impl Service {
             session: Mutex::new(session),
             recalc: Arc::new(Mutex::new(RecalcStatus::None)),
             saving: tokio::sync::Mutex::new(()),
+            edits: tokio::sync::RwLock::new(()),
         })
     }
 
@@ -64,8 +67,16 @@ impl Service {
         self.session.lock().unwrap().take();
     }
 
+    /// 관리 키가 맞는가(걸린 시간으로 앞 글자가 맞는지 알 수 없게 끝까지 비교한다).
     pub(crate) fn token_ok(&self, token: &str) -> bool {
-        self.record.lock().unwrap().manifest.token == token
+        let r = self.record.lock().unwrap();
+        let (a, b) = (r.manifest.token.as_bytes(), token.as_bytes());
+        a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    }
+
+    /// 수식 계산 상태(서비스 중일 때만).
+    pub fn recalc_status(&self) -> RecalcStatus {
+        if self.state() == ServiceState::Running { self.recalc.lock().unwrap().clone() } else { RecalcStatus::None }
     }
 
     pub fn source_path(&self) -> PathBuf {
@@ -131,7 +142,7 @@ impl Service {
             required: snap.as_ref().map_or(last.required, |s| s.required),
             filled: snap.as_ref().map_or(last.filled, |s| s.filled),
             read_only: snap.as_ref().is_none_or(|s| s.read_only),
-            recalc: if running { self.recalc.lock().unwrap().clone() } else { RecalcStatus::None },
+            recalc: self.recalc_status(),
             output_path: r.output_path.display().to_string(),
             saved_path: r.saved_path.clone(),
             saved_at_ms: r.saved_at_ms,

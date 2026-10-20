@@ -60,7 +60,7 @@ fn last_participant_chat(comms: &CommsSnapshot) -> u32 {
 }
 
 /// 참여자 채팅이 왔는데 창이 뒤에 있으면 작업 표시줄 단추를 깜빡인다(Windows: 창이 앞으로 올 때까지).
-fn request_attention(app: &AppHandle) {
+pub(crate) fn request_attention(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main")
         && !window.is_focused().unwrap_or(false)
     {
