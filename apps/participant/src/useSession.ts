@@ -29,7 +29,7 @@ import { loadOutbox, outboxKey, saveOutbox, splitBySheet } from "./outbox";
 import { storageSlug } from "./slug";
 
 /** 서버 `protocol::PROTOCOL_VERSION`과 같아야 한다. */
-const PROTOCOL = 8;
+const PROTOCOL = 9;
 const RETRY_MS = [500, 1000, 2000, 4000, 8000];
 const PING_MS = 20_000;
 const CURSOR_MS = 100;

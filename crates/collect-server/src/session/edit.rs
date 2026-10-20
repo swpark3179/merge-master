@@ -1,15 +1,16 @@
 //! 편집: 셀 잠금, 셀 수정 묶음(권한 → 형식 → 마감 → 적용 → 이력 → 알림), 진행률 증분, 서식, 수식 결과.
 
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use collect_core::access::{Viewer, flag};
 use collect_core::config::FormatPolicy;
 use collect_core::format::{Axis, FormatEdit, StylePatch, apply_format, resize};
 use collect_core::validate::normalize;
-use collect_core::{CellRange, CellRef, CellValue};
+use collect_core::{CellRange, CellRef, CellValue, RowCut};
 use tokio::time::Instant;
 
-use super::{ConnId, Lock, RecalcRequest, State};
+use super::{CalcLayout, CalcSheetLayout, ConnId, Lock, RecalcRequest, State};
 use collect_core::history::{BatchOrigin, ChangeKind};
 
 use super::HostEvent;
@@ -351,10 +352,60 @@ impl State {
             if writes.is_empty() {
                 return;
             }
-            if tx.send(RecalcRequest { writes }).is_err() {
+            if tx.send(RecalcRequest { cuts: Vec::new(), writes, epoch: self.recalc_epoch }).is_err() {
                 self.recalc = None;
             }
         }
+    }
+
+    /// 엑셀에서 불러온 행을 지웠다(기준 시트에서도): 계산 사본 판을 올리고, 사본에 있는 행이면 사본에서도 지우게 한다.
+    /// 사본에 없는 행(앱에서 붙인 행)이면 판만 알린다(그 판으로 다시 계산한다).
+    pub(super) fn cut_recalc(&mut self, sheet: usize, from: u32, count: u32) {
+        self.recalc_epoch += 1;
+        let rt = &mut self.rt[sheet];
+        let overlap = from.saturating_add(count).min(rt.recalc_rows).saturating_sub(from);
+        rt.recalc_rows -= overlap;
+        if let Some(tx) = &self.recalc {
+            let cuts = if overlap > 0 { vec![(sheet as u32, RowCut { from, count: overlap })] } else { Vec::new() };
+            if tx.send(RecalcRequest { cuts, writes: Vec::new(), epoch: self.recalc_epoch }).is_err() {
+                self.recalc = None;
+            }
+        }
+    }
+
+    /// 계산 사본을 열 때 맞출 것([`SessionHandle::calc_layout`](super::SessionHandle::calc_layout)).
+    pub(super) fn calc_layout(&self) -> CalcLayout {
+        let sheets = self
+            .sheets
+            .iter()
+            .map(|slot| {
+                let (base, model) = (&slot.baseline, &slot.model);
+                let cols = model.cols.max(1);
+                let formulas = model
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (CellRef::new(i as u32 / cols, i as u32 % cols), c))
+                    .filter(|(at, c)| c.f.is_some() && at.row < base.rows && at.col < base.cols)
+                    .map(|(at, _)| at)
+                    .collect();
+                CalcSheetLayout {
+                    formulas,
+                    cuts: base.deleted_rows.clone(),
+                    unhide_rows: base.unhidden_rows.clone(),
+                    unhide_cols: base.unhidden_cols.clone(),
+                }
+            })
+            .collect();
+        let mut last: HashMap<(u32, CellRef), CellValue> = HashMap::new();
+        for e in self.log.iter().filter(|e| !e.gone) {
+            let Some(base) = self.sheets.get(e.sheet as usize).map(|s| &s.baseline) else { continue };
+            if e.row < base.rows && e.col < base.cols {
+                last.insert((e.sheet, e.at()), e.new.clone());
+            }
+        }
+        let replay = last.into_iter().map(|((sheet, at), v)| (sheet, at, v)).collect();
+        CalcLayout { epoch: self.recalc_epoch, sheets, replay }
     }
 
     /// 호스트가 바꾼 칸([`Shared::host_set`](super::Shared::host_set)): 권한·형식 검사 없이 반영하고 모두에게 알린다.
@@ -596,7 +647,11 @@ impl State {
 
     /// 호스트(Excel)가 다시 계산한 수식 칸. 바뀐 칸만 시트마다 보낸다(이력에는 남기지 않는다). 값으로 바꾼 칸(수식이 없음)은
     /// 건너뛴다.
-    pub(super) fn formulas(&mut self, values: Vec<(u32, CellRef, CellValue)>) {
+    pub(super) fn formulas(&mut self, values: Vec<(u32, CellRef, CellValue)>, epoch: Option<u64>) {
+        // 행을 지우기 전의 계산 사본에서 계산한 결과는 좌표가 밀려 있다(지운 뒤 다시 계산한 결과가 곧 온다).
+        if epoch.is_some_and(|e| e != self.recalc_epoch) {
+            return;
+        }
         let mut changed: Vec<Vec<CellUpdate>> = vec![Vec::new(); self.sheets.len()];
         for (sheet, at, v) in values {
             let Some(si) = self.sheet_index(sheet) else { continue };

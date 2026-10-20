@@ -403,8 +403,6 @@ async fn restore_all(app: &AppHandle, state: &AppState) -> RestoreReport {
             Some(save::Source { workbook_id: rec.workbook_id.clone(), sheets: rec.sheets.clone() });
         state.jobs.lock().unwrap().insert(job.id.clone(), job.clone());
         attach(app, state, &job, &session).await; // 옛 파일에도 업무 id를 적어 둔다
-        let models: Vec<SheetModel> =
-            session.with(|s| s.sheets.iter().map(|x| x.model.clone()).collect()).await.unwrap_or_default();
         report.jobs.push(RestoredJob {
             id: job.id.clone(),
             title: session.info().title,
@@ -414,22 +412,22 @@ async fn restore_all(app: &AppHandle, state: &AppState) -> RestoreReport {
         if let Some(meta) = remembered.filter(|s| s.running) {
             publish.push((job.clone(), meta.port));
         }
-        started.push((job, session, models, rec.workbook_id, rec.sheets));
+        started.push((job, session, rec.workbook_id, rec.sheets));
     }
 
     // 앞 앱이 남긴 숨은 Excel(계산 사본·원본)을 한 번에 정리한다. Excel이 없어도 취합은 이어서 한다.
     if !started.is_empty() {
-        let sources: Vec<String> = started.iter().map(|(_, _, _, wb, _)| wb.clone()).collect();
+        let sources: Vec<String> = started.iter().map(|(_, _, wb, _)| wb.clone()).collect();
         match run_excel(&state.excel, move |s| s.adopt_orphans_many(&sources)).await {
             Ok(r) if r.closed_calc > 0 || r.adopted => tracing::info!("앞 앱이 남긴 Excel 정리: {r:?}"),
             Ok(_) => {}
             Err(e) => tracing::warn!("Excel 정리 실패: {e}"),
         }
     }
-    for (job, session, models, workbook_id, sheets) in &started {
+    for (job, session, workbook_id, sheets) in &started {
         let source = collect_excel::CalcSource::Workbook(workbook_id.clone());
         let notify = recalc::notify(app, &job.id);
-        job.recalc.start(state.excel.clone(), &job.id, session.clone(), models, source, sheets, notify);
+        job.recalc.start(state.excel.clone(), &job.id, session.clone(), source, sheets, notify);
     }
 
     // 공개 중이던 업무를 다시 공개한다. 포트는 모든 업무가 같이 쓰므로 가장 최근 업무의 포트로.

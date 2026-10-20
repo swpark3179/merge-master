@@ -113,7 +113,7 @@ fn variants_title_rows_hidden_and_inactive_freeze() {
     let book = status.workbooks.iter().find(|b| b.id == info.id).unwrap();
     assert_eq!(book.active_sheet, "다른시트");
 
-    // 숨김 제외(기본): 12행(범위 기준 8) · F열(5)이 숨김 목록에 있고 크기는 0
+    // 숨긴 줄은 늘 펼쳐 읽는다: 12행(범위 기준 8) · F열(5)은 기본 크기로 보이고 '펼친 줄' 목록에 든다.
     let read = |items: ImportItems| {
         let id = info.id.clone();
         let opts = ReadOptions { range: Some("A4:G25".into()), items, ..Default::default() };
@@ -122,15 +122,14 @@ fn variants_title_rows_hidden_and_inactive_freeze() {
     let m = read(ImportItems::default());
     assert_eq!((m.rows, m.cols, m.header_rows), (22, 7, 2));
     assert_eq!((m.frozen_rows, m.frozen_cols), (2, 2));
-    assert_eq!((m.hidden_rows.as_slice(), m.hidden_cols.as_slice()), (&[8u32][..], &[5u32][..]));
-    assert_eq!((m.row_heights[8], m.col_widths[5]), (0.0, 0.0));
+    assert!(m.hidden_rows.is_empty() && m.hidden_cols.is_empty());
+    assert_eq!((m.unhidden_rows.as_slice(), m.unhidden_cols.as_slice()), (&[8u32][..], &[5u32][..]));
+    assert!(m.row_heights[8] > 0.0 && m.col_widths[5] > 0.0);
     assert!(m.merges.contains(&CellRange::parse("A1:A2").unwrap()));
     assert!(m.styles[m.cell(CellRef::new(0, 0)).unwrap().s as usize].bold);
 
-    // 숨김 포함 + 글꼴·테두리 끄기
-    let m = read(ImportItems { include_hidden: true, fonts: false, borders: false, ..Default::default() });
-    assert!(m.hidden_rows.is_empty() && m.hidden_cols.is_empty());
-    assert!(m.row_heights[8] > 0.0 && m.col_widths[5] > 0.0);
+    // 글꼴·테두리 끄기
+    let m = read(ImportItems { fonts: false, borders: false, ..Default::default() });
     assert!(m.styles.iter().all(|s| !s.bold && s.borders.top.is_none() && s.borders.bottom.is_none()));
 
     // 같은 파일을 다시 열면 이미 열린 문서를 쓴다.
@@ -200,6 +199,7 @@ fn calc_copies_per_job_are_independent() {
         sheet: "예산신청서".into(),
         origin: CellRef::new(0, 0),
         formulas: (2..1002).map(|r| CellRef::new(r, 6)).collect(),
+        ..Default::default()
     };
     let result = excel
         .run(move |s| -> excel_com::Result<_> {

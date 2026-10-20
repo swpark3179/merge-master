@@ -22,7 +22,9 @@ use ts_rs::TS;
 /// 6: 열 너비·행 높이(`resize` → 모두에게 `resized`).
 /// 7: 행 삭제·취소 행(`deleteRows`·`cancelRows`, 편집의 `layout`), 호스트 시각(`serverNow`·`deadlineAt`), 마감 동작.
 /// 8: 채팅 리액션(`chatReact` → 보이는 사람에게 `chatReactions`, `ChatMessage.reactions`).
-pub const PROTOCOL_VERSION: u32 = 8;
+/// 9: 수식 칸을 값으로 바꾸기(수식이 사라지면 새 시트 `welcome`), 엑셀에서 불러온 행 지우기(내가 추가했거나 내게 배정된
+/// 행), 에이전트 PC의 자동 승인(`session.autoApprove`, 승인 대기의 까닭 `pending.reason`).
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// 채팅 받는 쪽. 참여자는 전체나 호스트에게, 호스트는 전체나 한 사람에게 보낸다.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, TS)]
@@ -218,8 +220,8 @@ pub enum ClientMsg {
         sheet: u32,
         count: u32,
     },
-    /// 내가 추가한 행 `from`부터 `count`개를 지운다(그 시트의 참여자 권한 '행 삭제'일 때만). 결과는 모두에게 새 시트
-    /// (`welcome`, 구조 판이 오른다) + `rowsDeleted`.
+    /// 내가 추가했거나 내게 배정된 행 `from`부터 `count`개를 지운다(그 시트의 참여자 권한 '행 삭제'일 때만 — 엑셀에서
+    /// 불러온 행이면 저장할 때 Excel에서도 지운다). 결과는 모두에게 새 시트(`welcome`, 구조 판이 오른다) + `rowsDeleted`.
     DeleteRows {
         #[serde(default)]
         sheet: u32,
@@ -511,7 +513,7 @@ pub enum ServerMsg {
         sheet: u32,
         range: CellRange,
     },
-    /// 누군가(호스트 포함) 앱에서 붙인 행을 지웠다(새 시트는 `welcome`으로 먼저 온다). 지운 뒤의 행은 위로 당겨졌다.
+    /// 누군가(호스트 포함) 행을 지웠다(새 시트는 `welcome`으로 먼저 온다). 지운 뒤의 행은 위로 당겨졌다.
     RowsDeleted {
         by: String,
         sheet: u32,

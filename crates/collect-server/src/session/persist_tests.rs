@@ -140,6 +140,26 @@ async fn overwritten_formulas_stay_values_after_recover() {
     assert!(m.cell(CellRef::new(r + 2, 6)).unwrap().f.is_some(), "고치지 않은 수식 칸은 그대로");
 }
 
+#[tokio::test]
+async fn deleted_imported_rows_come_back_with_the_baseline() {
+    let path = temp("cut.sqlite");
+    let mut init = fixture();
+    init.sheets[0].1.assignment.key_col = None;
+    init.store = Some(Store::open(&path).unwrap());
+    let mut st = State::new(init);
+    let (rows, base_rows) = (st.sheets[0].model.rows, st.sheets[0].baseline.rows);
+    let r = rows - 2;
+    host(&mut st, move |s| {
+        s.structure(0, collect_core::structure::StructureEdit::DeleteRows { from: r, count: 1 }).unwrap()
+    });
+    st.store.as_ref().unwrap().flush().unwrap();
+    drop(st);
+    let rec = recover(&path).unwrap();
+    let st = State::new(rec.init);
+    assert_eq!((st.sheets[0].model.rows, st.sheets[0].baseline.rows), (rows - 1, base_rows - 1));
+    assert_eq!(st.sheets[0].baseline.deleted_rows, [collect_core::RowCut { from: r, count: 1 }]);
+}
+
 #[test]
 fn files_without_a_sheet_cannot_be_recovered() {
     let path = temp("empty.sqlite");

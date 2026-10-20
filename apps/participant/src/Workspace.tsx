@@ -12,6 +12,7 @@ import type {
 import {
   CellEditor,
   ContextMenu,
+  cutMerge,
   fitRowHeights,
   MenuItem,
   MenuNote,
@@ -118,14 +119,14 @@ function ToolIcon({ d, size = 16 }: { d: string; size?: number }) {
 }
 
 /**
- * 오른쪽 클릭 메뉴: 행·열 머리글, 또는 메모가 있는 강조 칸(메모 숨기기·셀 이력). `confirm`: 값이 있는 행을 지우기 전
- * 확인 중(지울 칸 수).
+ * 오른쪽 클릭 메뉴: 행·열 머리글, 또는 메모가 있는 강조 칸(메모 숨기기·셀 이력). `confirm`: 값이 있는 행·엑셀에서
+ * 불러온 행을 지우기 전 확인 중(값이 있는 내 칸 수, 불러온 행 수).
  */
 interface HeaderMenu {
   x: number;
   y: number;
   hit: GridHit;
-  confirm?: number;
+  confirm?: { filled: number; imported: number };
 }
 
 interface ActiveEdit {
@@ -854,7 +855,15 @@ export function Workspace({ s }: { s: SessionState }) {
     const data = rows.every((x) => x >= model.headerRows);
     const label = (x: number) => model.origin.row + x + 1;
     const p = sv.permissions;
-    const deletable = data && rows.every(mine);
+    // 내가 추가한 행이나 내게 배정된(행 배정) 행. 병합의 첫 행만 지울 수는 없다(서버도 같은 규칙으로 검사한다).
+    const cut = cutMerge(model, from, count);
+    const deletable = data && !cut && rows.every((x) => mine(x) || sv.rowOwner[x] === w.color);
+    const deleteWhy = !data
+      ? "머리글 행은 지울 수 없습니다"
+      : cut
+        ? `병합된 칸(${addr({ row: cut.row, col: cut.col })}:${addr({ row: cut.row + cut.rows - 1, col: cut.col + cut.cols - 1 })})의 첫 행만 지울 수는 없습니다. 병합된 행을 모두 함께 지우세요`
+        : "내가 추가한 행이나 내게 배정된 행만 지울 수 있습니다";
+    const imported = rows.filter((x) => !(model.addedRows ?? []).some((a) => a.row === x)).length;
     const doDelete = () => {
       const filled = rows.reduce(
         (n, x) =>
@@ -865,7 +874,8 @@ export function Workspace({ s }: { s: SessionState }) {
           }).length,
         0,
       );
-      if (filled > 0 && m.confirm === undefined) return setMenu({ ...m, confirm: filled });
+      if ((filled > 0 || imported > 0) && m.confirm === undefined)
+        return setMenu({ ...m, confirm: { filled, imported } });
       if (!s.deleteRows(from, count)) notify("연결이 끊겨 행을 지우지 못했습니다. 다시 연결되면 해 주세요", "warn");
       close();
     };
@@ -875,7 +885,12 @@ export function Workspace({ s }: { s: SessionState }) {
         <MenuNote title>{count > 1 ? `${label(from)}~${label(from + count - 1)}행` : `${label(row)}행`}</MenuNote>
         {m.confirm !== undefined ? (
           <>
-            <MenuNote>값이 있는 칸 {m.confirm}개도 함께 지워집니다. 지울까요?</MenuNote>
+            {m.confirm.imported > 0 && (
+              <MenuNote>엑셀에서 불러온 행입니다. 지우면 엑셀로 저장할 때 원본에서도 지워집니다.</MenuNote>
+            )}
+            <MenuNote>
+              {m.confirm.filled > 0 ? `값이 있는 칸 ${m.confirm.filled}개도 함께 지워집니다. ` : ""}지울까요?
+            </MenuNote>
             <div className="mmg-menu-actions">
               <button type="button" className="danger" data-menu-focus onClick={doDelete}>
                 행 삭제
@@ -923,7 +938,7 @@ export function Workspace({ s }: { s: SessionState }) {
               <MenuItem
                 danger
                 disabled={s.readOnly || !deletable}
-                title={deletable ? undefined : "내가 추가한 행만 지울 수 있습니다"}
+                title={deletable ? undefined : deleteWhy}
                 onClick={doDelete}
               >
                 행 삭제{count > 1 ? ` (${count}행)` : ""}

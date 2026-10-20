@@ -223,7 +223,7 @@ async fn import_commit(
         return Err(jobs::NO_JOB.into());
     }
     let source = collect_excel::CalcSource::Workbook(workbook_id.clone());
-    job.recalc.start(state.excel.clone(), &job.id, session, &models, source, &names, recalc::notify(&app, &job.id));
+    job.recalc.start(state.excel.clone(), &job.id, session, source, &names, recalc::notify(&app, &job.id));
     *job.source.lock().unwrap() = Some(save::Source { workbook_id, sheets: names });
     job.last_save.lock().unwrap().take();
     jobs::emit_jobs(&app);

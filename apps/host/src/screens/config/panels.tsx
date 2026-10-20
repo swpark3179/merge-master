@@ -482,7 +482,7 @@ export function PermissionsPanel({ s }: { s: ConfigState }) {
         <label className="check">
           <input type="checkbox" checked={p.addRows} onChange={(e) => set({ addRows: e.target.checked })} /> 행 추가
         </label>
-        <label className="check" title="참여자는 자기가 추가한 행만 지울 수 있습니다">
+        <label className="check" title="참여자는 자기가 추가한 행과 자기에게 배정된 행을 지울 수 있습니다">
           <input type="checkbox" checked={p.deleteRows} onChange={(e) => set({ deleteRows: e.target.checked })} /> 행
           삭제
         </label>

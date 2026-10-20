@@ -68,7 +68,7 @@ impl Engine for ExcelEngine {
         &self,
         key: &str,
         session: SessionHandle,
-        models: Vec<SheetModel>,
+        _models: Vec<SheetModel>,
         source: PathBuf,
         sheets: Vec<String>,
         notify: Notify,
@@ -78,7 +78,7 @@ impl Engine for ExcelEngine {
             return;
         }
         let recalc = Arc::new(Recalc::default());
-        recalc.start(self.excel.clone(), key, session, &models, CalcSource::File(source), &sheets, notify);
+        recalc.start(self.excel.clone(), key, session, CalcSource::File(source), &sheets, notify);
         self.recalcs.lock().unwrap().insert(key.to_string(), recalc);
     }
 

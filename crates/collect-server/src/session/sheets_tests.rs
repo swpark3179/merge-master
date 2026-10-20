@@ -149,7 +149,7 @@ async fn unknown_sheet_is_refused_without_panicking() {
     st.handle(Command::Client { conn: 1, msg: ClientMsg::Cursor { sheet: 9, at: Some(CellRef::new(2, F)) } });
     st.handle(Command::Client { conn: 1, msg: ClientMsg::AddRows { sheet: 9, count: 1 } });
     st.handle(Command::Client { conn: 1, msg: ClientMsg::RowHistory { sheet: 9, row: 2 } });
-    st.handle(Command::Formulas(vec![(9, CellRef::new(2, 6), num(1.0))]));
+    st.handle(Command::Formulas { values: vec![(9, CellRef::new(2, 6), num(1.0))], epoch: None });
     let msgs = lee.take();
     assert!(msgs.iter().any(|m| matches!(m, ServerMsg::Error { message } if message == NO_SHEET)));
     assert!(msgs.iter().any(|m| matches!(m, ServerMsg::LockResult { ok: false, .. })));
@@ -301,7 +301,7 @@ async fn recalc_runs_for_edits_on_sheets_without_formulas() {
     assert_eq!(req.writes, [(1, CellRef::new(r, E), num(2.0))]);
     // 결과는 시트마다 보낸다.
     lee.take();
-    st.handle(Command::Formulas(vec![(0, CellRef::new(2, 6), num(0.5))]));
+    st.handle(Command::Formulas { values: vec![(0, CellRef::new(2, 6), num(0.5))], epoch: None });
     assert!(lee.take().iter().any(|m| matches!(m, ServerMsg::Cells { sheet: 0, by, .. } if by.is_empty())));
 }
 

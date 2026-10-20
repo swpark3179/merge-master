@@ -569,12 +569,12 @@ test("행 추가: 표 아래에 붙인 행은 모두에게 보이고 추가한 �
     await cell(b, row, H).click();
     await b.keyboard.type("x");
     await expect(b.locator(".toast").last()).toContainText("이 칸은 입력할 수 없습니다");
-    // 행 번호 오른쪽 클릭: 내가 추가한 행은 지울 수 있고(값이 있으면 확인), 남의 행·불러온 행은 지울 수 없다.
+    // 행 번호 오른쪽 클릭: 내가 추가한 행은 지울 수 있고(값이 있으면 확인), 남의 행(추가한 행·불러온 행)은 지울 수 없다.
     const rowHead = (page: Page, r: number) => page.locator(`.mmg-rowhead[data-row-head="${r}"]`);
     await rowHead(b, row).click({ button: "right" });
     await expect(b.getByRole("menuitem", { name: "행 삭제" })).toBeDisabled();
     await b.keyboard.press("Escape");
-    await rowHead(a, row - 1).click({ button: "right" }); // 엑셀에서 불러온 마지막 행
+    await rowHead(a, row - 1).click({ button: "right" }); // 엑셀에서 불러온 마지막 행(남의 행)
     await expect(a.getByRole("menuitem", { name: "행 삭제" })).toBeDisabled();
     await a.keyboard.press("Escape");
     await rowHead(a, row).click({ button: "right" });

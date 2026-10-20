@@ -128,3 +128,15 @@ export function fitRowHeights(model: SheetModel, maxLines = FIT_MAX_LINES): Shee
   }
   return heights ? { ...model, rowHeights: heights } : model;
 }
+
+/**
+ * 행 `from`부터 `count`개를 지울 때 첫 행만 잘리는 병합(여러 행에 걸친 병합의 첫 행이 범위 안이고 아래로 범위를 넘는 것 —
+ * 지우면 병합의 값이 사라진다). Rust `collect_core::structure::cut_merge`와 같다.
+ */
+export function cutMerge(model: SheetModel, from: number, count: number): CellRange | null {
+  const end = from + count;
+  return (
+    model.merges.find((m) => (m.rows > 1 || m.cols > 1) && from <= m.row && m.row < end && m.row + m.rows - 1 >= end) ??
+    null
+  );
+}

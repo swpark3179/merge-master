@@ -41,7 +41,7 @@ use collect_core::history::{BatchOrigin, SheetLabels};
 use collect_core::project::project_with;
 use collect_core::structure::{Actor, StructureEdit, check_add, check_delete_cols, check_delete_rows};
 use collect_core::view::{ConfigView, config_view_with, encode_flags};
-use collect_core::{CellRange, CellRef, CellStyle, CellValue, SheetCell, SheetModel};
+use collect_core::{CellRange, CellRef, CellStyle, CellValue, RowCut, SheetCell, SheetModel};
 use collect_store::{SnapshotKind, SnapshotMeta, Store};
 use serde::Serialize;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
@@ -228,7 +228,34 @@ pub struct HostSnapshot {
 /// 돌려준다.
 #[derive(Debug, Clone)]
 pub struct RecalcRequest {
+    /// 먼저 계산 사본에서 지울 행(시트 순번, 그 순간의 행 좌표 — 엑셀에서 불러온 행을 지웠다).
+    pub cuts: Vec<(u32, RowCut)>,
     pub writes: Vec<(u32, CellRef, CellValue)>,
+    /// 이 요청을 보낼 때의 계산 사본 판([`SessionHandle::formula_results_at`]에 돌려준다 — 행을 지우기 전에 계산한
+    /// 결과는 버린다).
+    pub epoch: u64,
+}
+
+/// 계산 사본을 열 때 맞출 것([`SessionHandle::calc_layout`]).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CalcLayout {
+    /// 계산 사본 판(행을 지울 때마다 는다). 사본을 연 뒤 재계산을 붙였을 때 판이 달라졌으면 다시 연다.
+    pub epoch: u64,
+    /// 세션 안 시트 순번 순서.
+    pub sheets: Vec<CalcSheetLayout>,
+    /// 기록에서 칸마다 마지막 값(지운 기록·계산 사본 밖 칸은 뺀다). 사본을 연 뒤 한 번 쓴다.
+    pub replay: Vec<(u32, CellRef, CellValue)>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CalcSheetLayout {
+    /// 결과를 읽을 수식 칸(모델 좌표, 엑셀에서 불러온 범위 안).
+    pub formulas: Vec<CellRef>,
+    /// 원본에서 이 순서로 지우면 지금 기준 시트와 같아지는 행.
+    pub cuts: Vec<RowCut>,
+    /// 원본에서 숨겨져 있던 행·열(펼친 줄).
+    pub unhide_rows: Vec<u32>,
+    pub unhide_cols: Vec<u32>,
 }
 
 /// 수식 재계산 상태(Excel 계산 사본). 호스트 앱 1c와 에이전트 상태에 보인다.
@@ -343,6 +370,8 @@ pub struct Shared<'a> {
     history: &'a [ChangeEntry],
     snapshots: &'a [(SnapshotMeta, Vec<u8>)],
     closed: bool,
+    /// 호스트가 Excel로 저장하는 중([`SessionHandle::set_saving`] — 행·열을 지우지 않는다).
+    saving: bool,
     host_name: String,
     changed: bool,
     replacement: Option<Vec<(SheetModel, CollectConfig)>>,
@@ -370,7 +399,8 @@ impl Shared<'_> {
         Ok(size)
     }
 
-    /// 호스트가 표 구조를 바꾼다(1b·1d 오른쪽 클릭 메뉴): 행·열 붙이기, 앱에서 붙인 행·열 지우기, 행 취소 표시.
+    /// 호스트가 표 구조를 바꾼다(1b·1d 오른쪽 클릭 메뉴): 행·열 붙이기, 행 지우기(엑셀에서 불러온 행도), 앱에서 붙인 열
+    /// 지우기, 행 취소 표시.
     /// 여기서 검사하고(지울 수 없는 행·열이면 이유), 작업이 끝난 뒤 시트·설정·편집 상태·기록을 함께 바꾸고 모두에게
     /// 새 시트를 보낸다. 같은 작업 안에서 여러 번 부르면 앞의 것이 반영되기 전 시트로 검사하므로 한 번씩 부른다.
     pub fn structure(&mut self, sheet: usize, edit: StructureEdit) -> Result<(), String> {
@@ -380,8 +410,11 @@ impl Shared<'_> {
             StructureEdit::AddRows { .. } | StructureEdit::AddCols { .. } => {
                 check_add(&slot.model, &slot.baseline, edit)?;
             }
+            StructureEdit::DeleteRows { .. } | StructureEdit::DeleteCols { .. } if self.saving => {
+                return Err(structure::SAVING.into());
+            }
             StructureEdit::DeleteRows { from, count } => {
-                check_delete_rows(&slot.model, slot.baseline.rows, &slot.config, &rt.access, from, count, Actor::Host)?;
+                check_delete_rows(&slot.model, &slot.config, &rt.access, from, count, Actor::Host)?;
             }
             StructureEdit::DeleteCols { from, count } => {
                 check_delete_cols(&slot.model, slot.baseline.cols, &slot.config, from, count)?;
@@ -479,6 +512,23 @@ impl Shared<'_> {
     /// 셀 변경 기록(오래된 것부터).
     pub fn history(&self) -> &[ChangeEntry] {
         self.history
+    }
+
+    /// 엑셀 저장 재료(시트마다 기준·지금·설정·열 이름 + 모든 기록).
+    pub fn save_parts(&self) -> SaveParts {
+        SaveParts {
+            sheets: self
+                .sheets
+                .iter()
+                .map(|x| SaveSheet {
+                    baseline: x.baseline.clone(),
+                    current: x.model.clone(),
+                    config: x.config.clone(),
+                    labels: SheetLabels::of(&x.model).labels,
+                })
+                .collect(),
+            history: self.history.to_vec(),
+        }
     }
 
     /// 호스트가 칸 값을 바꾼다(되돌리기·이 값으로·'Excel 값 유지'). 참여자 입력처럼 버전·이력·진행률에 반영하고 알린다.
@@ -633,7 +683,14 @@ pub(crate) enum Command {
     With(HostJob),
     SetIpNames(IpNames),
     SetRecalc(Option<mpsc::UnboundedSender<RecalcRequest>>),
-    Formulas(Vec<(u32, CellRef, CellValue)>),
+    /// 다시 계산한 수식 칸 값. `epoch`가 있으면 그 판의 계산 사본에서 계산한 것(지금 판이 아니면 버린다).
+    Formulas {
+        values: Vec<(u32, CellRef, CellValue)>,
+        epoch: Option<u64>,
+    },
+    CalcLayout(oneshot::Sender<CalcLayout>),
+    /// 호스트가 Excel로 저장하는 중(그동안 행·열을 지우지 않는다 — 기준 시트가 저장하는 파일과 어긋나지 않게).
+    SetSaving(bool),
     /// 참여자에게 보일 호스트 이름을 정해 둔다(`None`이면 이 PC의 IP·요청자로 정한다).
     SetHostName(Option<String>),
     /// 지금 상태를 모두 남긴 뒤 기록 파일의 사본을 만든다.
@@ -769,7 +826,22 @@ impl SessionHandle {
 
     /// 재계산된 수식 칸 값(시트 순번, 모델 좌표). 바뀐 칸만 참여자에게 보낸다.
     pub fn formula_results(&self, values: Vec<(u32, CellRef, CellValue)>) {
-        self.send(Command::Formulas(values));
+        self.send(Command::Formulas { values, epoch: None });
+    }
+
+    /// 계산 사본 판 `epoch`에서 계산한 수식 칸 값. 그사이 행을 지워 판이 바뀌었으면 버린다.
+    pub fn formula_results_at(&self, epoch: u64, values: Vec<(u32, CellRef, CellValue)>) {
+        self.send(Command::Formulas { values, epoch: Some(epoch) });
+    }
+
+    /// 계산 사본을 열 때 맞출 것: 수식 칸, 원본에서 지울 행·펼칠 줄, 기록을 되짚을 값, 지금 판.
+    pub async fn calc_layout(&self) -> Result<CalcLayout, String> {
+        self.ask(Command::CalcLayout).await
+    }
+
+    /// 호스트가 Excel로 저장하는 중이다(`true`) / 끝났다. 그동안 행·열 지우기는 거절한다.
+    pub fn set_saving(&self, on: bool) {
+        self.send(Command::SetSaving(on));
     }
 
     /// 참여자에게 보일 호스트 이름을 정해 둔다. 에이전트 PC에서 서비스하면 그 PC의 IP로 IP 명단을 찾으면 안 되므로,
@@ -780,20 +852,7 @@ impl SessionHandle {
 
     /// 엑셀 저장 재료를 한 번에 뜬다(시트마다 기준·지금·설정·열 이름 + 모든 기록).
     pub async fn save_parts(&self) -> Result<SaveParts, String> {
-        self.with(|s| SaveParts {
-            sheets: s
-                .sheets
-                .iter()
-                .map(|x| SaveSheet {
-                    baseline: x.baseline.clone(),
-                    current: x.model.clone(),
-                    config: x.config.clone(),
-                    labels: SheetLabels::of(&x.model).labels,
-                })
-                .collect(),
-            history: s.history().to_vec(),
-        })
-        .await
+        self.with(|s| s.save_parts()).await
     }
 
     /// 지금 상태(시트·설정·기준·소통·토큰·기록)를 모두 남긴 기록 파일의 사본을 `to`에 만든다(다른 PC로 넘길 때).
@@ -955,6 +1014,10 @@ struct State {
     log: Vec<ChangeEntry>,
     next_seq: u64,
     recalc: Option<mpsc::UnboundedSender<RecalcRequest>>,
+    /// 계산 사본 판: 엑셀에서 불러온 행을 지울 때마다 는다([`RecalcRequest::epoch`]).
+    recalc_epoch: u64,
+    /// 호스트가 Excel로 저장하는 중([`SessionHandle::set_saving`]).
+    saving: bool,
     /// 호스트가 관리하는 IP별 이름: 이 IP에서 오면 이름을 묻지 않고 그 이름으로 들어온다.
     ip_names: IpNames,
     /// 이 PC(호스트)의 IP. IP 명단에 있으면 그 이름이 호스트 이름이다.
@@ -1012,6 +1075,8 @@ impl State {
             log: Vec::new(),
             next_seq: 1,
             recalc: None,
+            recalc_epoch: 0,
+            saving: false,
             ip_names: IpNames::default(),
             host_ips: local_ips(),
             host_name: None,
@@ -1086,7 +1151,11 @@ impl State {
                     rt.recalc_cols = slot.baseline.cols;
                 }
             }
-            Command::Formulas(values) => self.formulas(values),
+            Command::Formulas { values, epoch } => self.formulas(values, epoch),
+            Command::CalcLayout(reply) => {
+                let _ = reply.send(self.calc_layout());
+            }
+            Command::SetSaving(on) => self.saving = on,
             Command::SetHostName(name) => self.host_name = name,
             Command::Backup { to, reply } => {
                 self.persist(true);
@@ -1447,6 +1516,7 @@ impl State {
                 history: &self.log,
                 snapshots: &self.snapshots.list,
                 closed: self.closed,
+                saving: self.saving,
                 host_name,
                 changed: false,
                 replacement: None,

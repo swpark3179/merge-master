@@ -52,7 +52,7 @@ pub struct SheetInspection {
     /// Excel 창의 틀 고정(A1부터 센 행·열 수).
     pub frozen_rows: u32,
     pub frozen_cols: u32,
-    /// 표 안 숨긴 행·열 수.
+    /// 표 안 숨긴 행·열 수(펼쳐서 불러온다).
     pub hidden_rows: u32,
     pub hidden_cols: u32,
     pub columns: Vec<ColumnInfo>,
@@ -96,6 +96,9 @@ impl Session {
             validations: Vec::new(),
             hidden_rows: Vec::new(),
             hidden_cols: Vec::new(),
+            unhidden_rows: Vec::new(),
+            unhidden_cols: Vec::new(),
+            deleted_rows: Vec::new(),
             added_rows: Vec::new(),
             cancelled_rows: Vec::new(),
             layout: 0,

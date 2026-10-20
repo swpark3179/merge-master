@@ -742,10 +742,10 @@ function AddRowsSwitch({ s }: { s: ConfigState }) {
         role="switch"
         aria-checked={perms.deleteRows}
         disabled={s.busy}
-        title="켜면 참여자가 행 번호를 오른쪽 클릭해 자기가 추가한 행을 지울 수 있습니다"
+        title="켜면 참여자가 행 번호를 오른쪽 클릭해 자기가 추가한 행과 자기에게 배정된 행을 지울 수 있습니다(엑셀에서 불러온 행이면 저장할 때 Excel에서도 지웁니다)"
         onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, deleteRows: !perms.deleteRows } })}
       >
-        추가한 행을 지울 수 있게 하기
+        참여자가 행을 지울 수 있게 하기
         <span className="track">
           <span className="knob" />
         </span>

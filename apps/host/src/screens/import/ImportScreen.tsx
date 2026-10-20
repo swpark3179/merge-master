@@ -30,7 +30,6 @@ const ITEMS: { key: keyof ImportItems; label: string }[] = [
   { key: "fills", label: "배경색" },
   { key: "dimensions", label: "열 너비 · 행 높이" },
   { key: "validations", label: "데이터 유효성 → 입력 형식" },
-  { key: "includeHidden", label: "숨긴 행·열 포함" },
 ];
 
 /** 틀 고정 열 선택지는 앞쪽 몇 열까지만 둔다(참여자 화면이 좁아지지 않게). */
@@ -338,7 +337,7 @@ function RangeCard({ s }: { s: ImportState }) {
 
 function ItemsCard({ s }: { s: ImportState }) {
   const items = s.form?.items;
-  const off = items ? ITEMS.filter(({ key }) => key !== "includeHidden" && !items[key]).length : 0;
+  const off = items ? ITEMS.filter(({ key }) => !items[key]).length : 0;
   return (
     <details className="more" aria-label="가져올 항목">
       <summary>
@@ -447,11 +446,13 @@ function PreviewCard({ s }: { s: ImportState }) {
               <dd>{facts.formulas.toLocaleString()}</dd>
               <dt>목록 유효성{columnsLabel(facts.listCols)}</dt>
               <dd>{facts.listCols.length}</dd>
-              {(m.hiddenRows.length > 0 || m.hiddenCols.length > 0) && (
+              {(facts.unhiddenRows > 0 || facts.unhiddenCols > 0) && (
                 <>
-                  <dt>숨긴 행·열 (제외)</dt>
+                  <dt title="Excel에서 숨겨져 있던 행·열은 펼쳐서 불러옵니다(참여자에게도 보입니다). 저장할 때 Excel에서도 숨김을 풉니다">
+                    숨긴 행·열 (펼쳐서 불러옴)
+                  </dt>
                   <dd>
-                    {m.hiddenRows.length}행 · {m.hiddenCols.length}열
+                    {facts.unhiddenRows}행 · {facts.unhiddenCols}열
                   </dd>
                 </>
               )}
@@ -478,11 +479,9 @@ function PreviewCard({ s }: { s: ImportState }) {
   );
 }
 
-/** 감지 결과 숫자(숨긴 행·열과 머리글은 데이터에서 뺀다). 열 번호는 시트 기준. */
+/** 감지 결과 숫자(머리글은 데이터에서 뺀다 — 숨겨져 있던 행·열은 펼쳐 불러오므로 센다). 열 번호는 시트 기준. */
 function summarize(m: SheetModel) {
-  const hiddenRows = new Set(m.hiddenRows);
-  let dataRows = 0;
-  for (let r = m.headerRows; r < m.rows; r++) if (!hiddenRows.has(r)) dataRows++;
+  const dataRows = Math.max(0, m.rows - m.headerRows);
   const formulaCols = new Set<number>();
   let formulas = 0;
   for (let r = m.headerRows; r < m.rows; r++) {
@@ -498,7 +497,9 @@ function summarize(m: SheetModel) {
   ];
   return {
     dataRows,
-    cols: m.cols - m.hiddenCols.length,
+    cols: m.cols,
+    unhiddenRows: m.unhiddenRows?.length ?? 0,
+    unhiddenCols: m.unhiddenCols?.length ?? 0,
     formulas,
     formulaCols: [...formulaCols].sort((a, b) => a - b),
     listCols,

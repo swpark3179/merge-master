@@ -463,13 +463,16 @@ async fn recalc_requests_and_formula_results() {
     c[1].take();
 
     let g = CellRef::new(r, G);
-    st.handle(Command::Formulas(vec![(0, g, num(0.065)), (0, CellRef::new(r, H), text("수식 아님"))]));
+    st.handle(Command::Formulas {
+        values: vec![(0, g, num(0.065)), (0, CellRef::new(r, H), text("수식 아님"))],
+        epoch: None,
+    });
     for client in &mut c {
         let seen = cells_from(&client.take());
         assert_eq!(seen, [(String::new(), vec![CellUpdate { row: r, col: G, value: num(0.065), ver: 1 }])]);
     }
     assert!(value(&st, r, H).is_empty(), "수식이 아닌 칸은 바꾸지 않는다");
-    st.handle(Command::Formulas(vec![(0, g, num(0.065))]));
+    st.handle(Command::Formulas { values: vec![(0, g, num(0.065))], epoch: None });
     assert!(cells_from(&c[0].take()).is_empty(), "같은 값이면 보내지 않는다");
     assert_eq!(st.log.len(), 1, "수식 결과는 이력에 남기지 않는다");
 }
@@ -512,7 +515,7 @@ async fn participants_overwrite_formula_cells_with_values() {
     // 계산 사본에도 값으로 들어가고, 그 뒤 재계산 결과는 이 칸을 덮지 않는다.
     let req = rx.try_recv().expect("재계산 요청");
     assert!(req.writes.contains(&(0, g, cached.clone())));
-    st.handle(Command::Formulas(vec![(0, g, num(0.5))]));
+    st.handle(Command::Formulas { values: vec![(0, g, num(0.5))], epoch: None });
     assert_eq!(value(&st, r, G), cached);
     // 이미 값이 된 칸에 같은 값을 다시 넣으면 아무 일도 없다.
     set(&mut st, &c[0], "b2", vec![cell(r, G, cached, 0)]);

@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use collect_core::{CellRange, CellRef, CellValue};
+use collect_core::{CellRange, CellRef, CellValue, RowCut};
 
 use crate::dispatch::Dispatch;
 use crate::error::{ExcelError, Result};
@@ -59,13 +59,55 @@ impl CalcCopy {
 }
 
 /// 계산 사본에 열 시트 하나(세션 안 시트 순번 순서로 넘긴다).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CalcTarget {
     pub sheet: String,
     /// 불러온 범위의 시트 위치.
     pub origin: CellRef,
-    /// 결과를 읽어 올 수식 칸(모델 좌표).
+    /// 결과를 읽어 올 수식 칸(모델 좌표 — `cuts`를 적용한 뒤의 좌표).
     pub formulas: Vec<CellRef>,
+    /// 사본을 연 뒤 이 순서로 지울 행(앱에서 지운 불러온 행 — 그 순간의 모델 행 좌표).
+    pub cuts: Vec<RowCut>,
+    /// 숨김을 풀 행·열(원본에서 숨겨져 있던 줄 — 저장할 파일과 같게 `SUBTOTAL` 등을 계산한다).
+    pub unhide_rows: Vec<u32>,
+    pub unhide_cols: Vec<u32>,
+}
+
+impl CalcSheet {
+    /// 사본에서 행 `cut`을 지우고(아래 행이 올라온다) 수식 칸 좌표를 맞춘다.
+    fn cut_rows(&mut self, cut: RowCut) -> Result<()> {
+        if cut.count == 0 {
+            return Ok(());
+        }
+        let first = self.address(CellRef::new(cut.from, 0));
+        let last = self.address(CellRef::new(cut.from + cut.count - 1, 0));
+        self.sheet
+            .obj_call("Range", vec![Var::str(&format!("{first}:{last}"))])?
+            .obj("EntireRow")?
+            .call("Delete", vec![])?;
+        let end = cut.from + cut.count;
+        self.formulas = self
+            .formulas
+            .iter()
+            .filter(|at| !(cut.from..end).contains(&at.row))
+            .map(|at| if at.row >= end { CellRef::new(at.row - cut.count, at.col) } else { *at })
+            .collect();
+        self.bounds = bounding(&self.formulas);
+        Ok(())
+    }
+
+    /// 사본에서 숨긴 줄을 편다.
+    fn unhide(&self, rows: &[u32], cols: &[u32]) -> Result<()> {
+        for &r in rows {
+            let at = self.address(CellRef::new(r, 0));
+            self.sheet.obj_call("Range", vec![Var::str(&at)])?.obj("EntireRow")?.put("Hidden", Var::bool(false))?;
+        }
+        for &c in cols {
+            let at = self.address(CellRef::new(0, c));
+            self.sheet.obj_call("Range", vec![Var::str(&at)])?.obj("EntireColumn")?.put("Hidden", Var::bool(false))?;
+        }
+        Ok(())
+    }
 }
 
 /// 셀에 쓸 값. 글자는 앞에 `'`를 붙여 Excel이 숫자·날짜·수식으로 바꾸지 않게 한다.
@@ -111,7 +153,8 @@ impl Session {
         origin: CellRef,
         formulas: Vec<CellRef>,
     ) -> Result<CalcInfo> {
-        self.open_calc_multi(workbook_id, vec![CalcTarget { sheet: sheet.to_string(), origin, formulas }])
+        let target = CalcTarget { sheet: sheet.to_string(), origin, formulas, ..Default::default() };
+        self.open_calc_multi(workbook_id, vec![target])
     }
 
     /// 통합문서의 현재 상태를 복사해 숨은 Excel에서 연다. 이미 열린 사본은 닫는다. [`Session::open_calc_for`] 참고.
@@ -182,8 +225,15 @@ impl Session {
                         let ws = worksheets
                             .obj_call("Item", vec![Var::str(&t.sheet)])
                             .map_err(|_| ExcelError::SheetNotFound(t.sheet.clone()))?;
-                        let bounds = bounding(&t.formulas);
-                        Ok(CalcSheet { sheet: ws, origin: t.origin, formulas: t.formulas, bounds })
+                        // 앱에서 지운 행을 지우고(수식 칸 좌표는 이미 지운 뒤의 것) 숨긴 줄을 편다.
+                        let mut sheet = CalcSheet { sheet: ws, origin: t.origin, formulas: Vec::new(), bounds: None };
+                        for cut in &t.cuts {
+                            sheet.cut_rows(*cut)?;
+                        }
+                        sheet.unhide(&t.unhide_rows, &t.unhide_cols)?;
+                        sheet.bounds = bounding(&t.formulas);
+                        sheet.formulas = t.formulas;
+                        Ok(sheet)
                     })
                     .collect()
             })();
@@ -222,18 +272,25 @@ impl Session {
         self.calc_apply_for(DEFAULT_KEY, writes)
     }
 
-    /// 업무(`key`)의 사본에 입력을 쓰고 다시 계산해 그 사본 모든 시트의 수식 칸 결과를 돌려준다.
-    pub fn calc_apply_for(
-        &mut self,
-        key: &str,
-        writes: &[(u32, CellRef, CellValue)],
-    ) -> Result<Vec<(u32, CellRef, CellValue)>> {
+    /// 업무(`key`)의 사본에 입력만 쓴다(다시 계산하지 않는다 — 행을 지우기 전에 그 전 좌표의 입력을 쓸 때).
+    pub fn calc_apply_writes_for(&mut self, key: &str, writes: &[(u32, CellRef, CellValue)]) -> Result<()> {
         let copy = self.calc.get(key).ok_or_else(|| ExcelError::Type("계산 사본이 열려 있지 않습니다".into()))?;
         for (sheet, at, v) in writes {
             let Some(s) = copy.sheets.get(*sheet as usize) else { continue };
             let cell = s.sheet.obj_call("Range", vec![Var::str(&s.address(*at))])?;
             cell.put("Value2", to_var(v))?;
         }
+        Ok(())
+    }
+
+    /// 업무(`key`)의 사본에 입력을 쓰고 다시 계산해 그 사본 모든 시트의 수식 칸 결과를 돌려준다.
+    pub fn calc_apply_for(
+        &mut self,
+        key: &str,
+        writes: &[(u32, CellRef, CellValue)],
+    ) -> Result<Vec<(u32, CellRef, CellValue)>> {
+        self.calc_apply_writes_for(key, writes)?;
+        let copy = self.calc.get(key).ok_or_else(|| ExcelError::Type("계산 사본이 열려 있지 않습니다".into()))?;
         copy.app.call("Calculate", vec![])?;
         let mut out = Vec::new();
         for (i, s) in copy.sheets.iter().enumerate() {
@@ -251,6 +308,18 @@ impl Session {
             );
         }
         Ok(out)
+    }
+
+    /// 업무(`key`)의 사본에서 행을 지운다(앱에서 엑셀에서 불러온 행을 지웠다 — 그 순간의 모델 행 좌표). 수식 칸 좌표도
+    /// 맞춘다. 다시 계산은 하지 않는다(다음 [`Session::calc_apply_for`]에서).
+    pub fn calc_cut_rows_for(&mut self, key: &str, cuts: &[(u32, RowCut)]) -> Result<()> {
+        let copy = self.calc.get_mut(key).ok_or_else(|| ExcelError::Type("계산 사본이 열려 있지 않습니다".into()))?;
+        for (sheet, cut) in cuts {
+            if let Some(s) = copy.sheets.get_mut(*sheet as usize) {
+                s.cut_rows(*cut)?;
+            }
+        }
+        Ok(())
     }
 
     /// 열려 있는 계산 사본 파일. 다시 확정해 사본이 바뀌었는지 확인할 때 쓴다.

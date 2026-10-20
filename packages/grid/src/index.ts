@@ -15,6 +15,7 @@ export type { ContextMenuProps, MenuItemProps, SizeControlProps } from "./Contex
 export { parseTsv, toTsv } from "./clipboard";
 export {
   cellText,
+  cutMerge,
   effectiveColumn,
   filterOptions,
   FIT_MAX_LINES,

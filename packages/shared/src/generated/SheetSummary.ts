@@ -3,4 +3,12 @@
 /**
  * 시트 하나의 저장 요약(여러 시트를 함께 취합할 때 시트마다).
  */
-export type SheetSummary = { name: string, required: number, filled: number, changedCells: number, addedRows: number, addedCols: number, cancelledRows: number, styleCells: number, };
+export type SheetSummary = { name: string, required: number, filled: number, changedCells: number, addedRows: number, addedCols: number, cancelledRows: number, styleCells: number, 
+/**
+ * 앱에서 지운 불러온 행(저장할 때 Excel에서도 지운다).
+ */
+deletedRows: number, 
+/**
+ * Excel에서 숨겨져 있던 행·열(저장할 때 숨김을 푼다).
+ */
+unhidden: number, };

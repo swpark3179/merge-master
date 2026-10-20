@@ -1,19 +1,20 @@
 import type { GridHit, GridSelection } from "@mm/grid";
-import { ContextMenu, MenuItem, MenuNote, MenuSep, SizeControl } from "@mm/grid";
+import { ContextMenu, cutMerge, MenuItem, MenuNote, MenuSep, SizeControl } from "@mm/grid";
 import type { Axis, CellRange, ConfigView, SheetModel, StructureEdit } from "@mm/shared";
 import { a1, colLetters } from "@mm/shared";
 
 /**
  * 1b 설정·1d 모니터링 그리드의 오른쪽 클릭 메뉴(호스트): 열 너비·행 높이(슬라이더 + 값), 표 아래에 행·오른쪽에 열 추가,
- * 앱에서 붙인 행·열 지우기, 행 취소 표시. 지울 수 없는 행·열이면 까닭을 보인다(세션도 같은 규칙으로 한 번 더 검사한다):
- * 엑셀에서 불러온 행·열, 담당자가 배정된 행·열(행 배정 기준 칸에 이름이 있거나 범위 배정이 걸침), 행 배정 기준 열.
+ * 행 지우기(엑셀에서 불러온 행도 — 저장할 때 Excel에서도 지운다), 앱에서 붙인 열 지우기, 행 취소 표시. 지울 수 없는
+ * 행·열이면 까닭을 보인다(세션도 같은 규칙으로 한 번 더 검사한다): 머리글 행, 병합의 첫 행만, 엑셀에서 불러온 열, 담당자가
+ * 배정된 행·열(행 배정 기준 칸에 이름이 있거나 범위 배정이 걸침), 행 배정 기준 열.
  */
 export interface GridMenuState {
   x: number;
   y: number;
   hit: GridHit;
-  /** 값이 있는 행·열을 지우기 전 확인 중. */
-  confirm?: { edit: StructureEdit; what: string; filled: number };
+  /** 값이 있는 행·열(또는 엑셀에서 불러온 행)을 지우기 전 확인 중. `imported`는 엑셀에서 불러온 행 수. */
+  confirm?: { edit: StructureEdit; what: string; filled: number; imported?: number };
 }
 
 function rectOf(sel: GridSelection): CellRange {
@@ -25,9 +26,15 @@ function rectOf(sel: GridSelection): CellRange {
   };
 }
 
-/** 행 `from`부터 `count`개를 지울 수 없는 까닭(지울 수 있으면 `null`). */
-export function rowBlock(view: ConfigView, from: number, count: number): string | null {
-  if (from < view.baselineRows) return "엑셀에서 불러온 행은 지울 수 없습니다(앱에서 추가한 행만 지울 수 있습니다)";
+/** 행 `from`부터 `count`개를 지울 수 없는 까닭(지울 수 있으면 `null`). Rust `check_delete_rows`(호스트)와 같다. */
+export function rowBlock(view: ConfigView, model: SheetModel, from: number, count: number): string | null {
+  if (from < model.headerRows) return "머리글 행은 지울 수 없습니다";
+  const m = cutMerge(model, from, count);
+  if (m) {
+    const o = model.origin;
+    const at = `${a1(o.row + m.row, o.col + m.col)}:${a1(o.row + m.row + m.rows - 1, o.col + m.col + m.cols - 1)}`;
+    return `병합된 칸(${at})의 첫 행만 지울 수는 없습니다. 병합된 행을 모두 함께 지우세요`;
+  }
   for (let r = from; r < from + count; r++) {
     const p = view.rowOwner[r] ?? -1;
     if (p >= 0) return `담당자(${view.roster[p]})가 배정된 행은 지울 수 없습니다. 행 배정 기준 칸을 비운 뒤 지우세요`;
@@ -103,10 +110,10 @@ export function GridMenu({
     onClose();
     onStructure(edit);
   };
-  /** 값이 있으면 먼저 묻는다. */
-  const remove = (edit: StructureEdit, what: string, range: CellRange) => {
+  /** 값이 있거나 엑셀에서 불러온 행이면 먼저 묻는다. */
+  const remove = (edit: StructureEdit, what: string, range: CellRange, imported = 0) => {
     const filled = filledIn(model, range);
-    if (filled > 0) onConfirm({ edit, what, filled });
+    if (filled > 0 || imported > 0) onConfirm({ edit, what, filled, imported });
     else run(edit);
   };
 
@@ -115,7 +122,15 @@ export function GridMenu({
     return (
       <ContextMenu x={menu.x} y={menu.y} onClose={onClose} label="지우기 확인">
         <MenuNote title>{c.what} 삭제</MenuNote>
-        <MenuNote>값이 있는 칸 {c.filled.toLocaleString()}개도 함께 지워집니다. 지울까요?</MenuNote>
+        {c.imported ? (
+          <MenuNote>
+            엑셀에서 불러온 행 {c.imported.toLocaleString()}개는 저장할 때 Excel에서도 지웁니다(그 행의 표 밖 칸도
+            함께).
+          </MenuNote>
+        ) : null}
+        <MenuNote>
+          {c.filled > 0 ? `값이 있는 칸 ${c.filled.toLocaleString()}개도 함께 지워집니다. ` : ""}지울까요?
+        </MenuNote>
         <div className="mmg-menu-actions">
           <button type="button" className="danger" data-menu-focus onClick={() => run(c.edit)}>
             삭제
@@ -131,7 +146,8 @@ export function GridMenu({
   const rowsData = r.row >= model.headerRows;
   const rowsEdit = (hit.kind === "row" || hit.kind === "cell") && rowsData;
   const colsEdit = hit.kind === "col" || hit.kind === "cell";
-  const rowWhy = rowsEdit ? rowBlock(view, r.row, r.rows) : null;
+  const rowWhy = rowsEdit ? rowBlock(view, model, r.row, r.rows) : null;
+  const importedRows = Math.max(0, Math.min(r.row + r.rows, view.baselineRows) - r.row);
   const colWhy = colsEdit ? colBlock(view, r.col, r.cols) : null;
   const cancelled = new Set(model.cancelledRows ?? []);
   const allCancelled = rowsEdit && Array.from({ length: r.rows }, (_, k) => r.row + k).every((x) => cancelled.has(x));
@@ -176,7 +192,9 @@ export function GridMenu({
             danger
             disabled={rowWhy !== null}
             title={rowWhy ?? undefined}
-            onClick={() => remove({ op: "deleteRows", from: r.row, count: r.rows }, rowLabel(r.row, r.rows), rowsRange)}
+            onClick={() =>
+              remove({ op: "deleteRows", from: r.row, count: r.rows }, rowLabel(r.row, r.rows), rowsRange, importedRows)
+            }
           >
             행 삭제{r.rows > 1 ? ` (${r.rows}행)` : ""}
           </MenuItem>
