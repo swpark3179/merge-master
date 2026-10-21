@@ -2217,68 +2217,8 @@ button.big-btn {
   gap: 22px;
 }
 
-.tiles {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1px;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: #e9ebef;
-}
-
-.tile {
-  padding: 14px 16px;
-  background: #fff;
-}
-
-.tile-v {
-  font-size: 20px;
-  font-weight: 700;
-}
-
-.tile-sub {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 400;
-  color: var(--muted);
-}
-
-.tile-v.warn {
-  color: var(--warn);
-}
-
-.tile-v.ok {
-  color: var(--ok-ink);
-}
-
-.tile-l {
-  margin-top: 2px;
-  color: var(--ink-2);
-}
-
-.stat-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 18px;
-  margin-top: -12px;
-}
-
-.stat-row b {
-  color: var(--ink);
-}
-
-/* 여러 시트: 시트별 요약 */
-.sheet-summary {
-  display: grid;
-  gap: 4px;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.sheet-summary .stat-row {
-  margin-top: 0;
+.save-status {
+  margin-bottom: -10px;
 }
 
 /* 저장 전 확인(원본과 겹치는 칸) */
@@ -2428,6 +2368,32 @@ button.big-btn {
   line-height: 1.5;
 }
 
+.choice-cards.three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 720px) {
+  .choice-cards.three {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.choice-tag {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.save-after {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .path-row {
   display: flex;
   align-items: center;
@@ -2462,38 +2428,6 @@ button.save-btn {
   height: 44px;
   padding: 0 28px;
   font-size: 14px;
-}
-
-.missing-table {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-
-.mrow {
-  display: grid;
-  grid-template-columns: 110px 190px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.mrow:last-child {
-  border-bottom: 0;
-}
-
-.mrow.mhead {
-  min-height: 32px;
-  border-bottom: 1px solid var(--line);
-  background: var(--head);
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.mrow .mono {
-  overflow-wrap: anywhere;
 }
 
 /* 저장 완료 */

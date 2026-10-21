@@ -680,16 +680,20 @@ try {
   };
   await step("6 저장").click();
   const save = page.locator(".save-screen");
-  await expect(save.getByLabel("필수 완료율")).toContainText("%");
-  await expect(save.locator(".stat-row")).toContainText("바뀐 칸 1");
-  await save.locator("summary", { hasText: "담당자별 미입력" }).click(); // 접힌 표 펼치기
-  await expect(save.getByRole("row", { name: "이서연" })).toContainText("56 / 170");
-  check(true, "요약: 필수 완료율 · 바뀐 칸 1 · 담당자별 미입력");
+  // 단순해진 저장 화면: 저장 경로가 앞에, 저장 옵션은 접힘(‘변경 이력’ 해제), 저장 뒤는 ‘이 업무 공유 중지’가 기본.
+  await expect(save.getByLabel("저장할 파일")).toBeVisible();
+  await expect(save.getByLabel(/변경 이력.* 시트 추가/)).toBeHidden();
+  await expect(save.getByLabel("이 업무 공유 중지")).toBeChecked();
+  check(true, "저장 화면: 저장 경로 · 저장 옵션 접힘 · 저장 뒤 기본 ‘이 업무 공유 중지’");
 
   const copyPath = join(shots, "smoke-budget-copy.xlsx");
   rmSync(copyPath, { force: true });
   await save.getByLabel("저장할 파일").fill(copyPath);
+  await save.locator("summary", { hasText: "저장 옵션" }).click(); // 접힌 옵션 펼치기
+  await expect(save.getByLabel(/변경 이력.* 시트 추가/)).not.toBeChecked();
+  await save.getByLabel(/변경 이력.* 시트 추가/).check();
   await save.getByLabel("바뀐 칸을 노란색으로 표시").check();
+  await save.getByLabel("서비스 계속").check(); // 뒤 단계가 이어지도록 공유는 그대로 둔다
   await save.getByRole("button", { name: "저장하기" }).click();
   const saved = save.locator(".save-result");
   await expect(saved).toContainText("저장했어요", { timeout: 60_000 });
@@ -713,9 +717,10 @@ try {
   }
   await saved.getByRole("button", { name: "저장 화면으로 돌아가기" }).click();
   await save.getByLabel("원본 파일에 반영").check();
+  await save.locator("summary", { hasText: "저장 옵션" }).click(); // 돌아오면 다시 접혀 있다
   await save.getByLabel(/변경 이력.* 시트 추가/).uncheck();
   await save.getByLabel("바뀐 칸을 노란색으로 표시").uncheck();
-  await save.getByLabel("읽기 전용으로 전환 (취합 마감)").check();
+  await save.getByLabel("읽기 전용으로 전환").check();
   await save.getByRole("button", { name: "저장하기" }).click();
   if (startedExcel) {
     const review = save.getByRole("region", { name: "저장 전 확인" });
@@ -738,8 +743,8 @@ try {
   await saved.getByRole("button", { name: "저장 화면으로 돌아가기" }).click();
   await save.getByRole("button", { name: "취합 다시 열기" }).click();
   await expect(p4.locator(".readonly-bar")).toHaveCount(0, { timeout: 10_000 });
-  await expect(save.locator(".stat-row")).toContainText("바뀐 칸 0", { timeout: 10_000 });
-  check(true, "원본에 반영한 값이 새 기준 → 바뀐 칸 0 · 취합 다시 열기");
+  await expect(save.locator(".save-status")).toContainText("입력 받는 중", { timeout: 10_000 });
+  check(true, "취합 다시 열기 → 입력 받는 중");
   await page.screenshot({ path: join(shots, "host-save.png") });
 
   // ------------------------------------------------------------ 7단계: 앱 강제 종료 → 다시 켜면 저절로 이어서
