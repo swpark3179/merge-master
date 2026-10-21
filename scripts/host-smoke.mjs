@@ -102,7 +102,7 @@ try {
   const first = await launch();
   app = first.proc;
   const { page } = first;
-  // 앞 실행이 끝내지 않고 남긴 업무는 다시 켜면 저절로 열린다: 모두 끝내고 빈 업무로 시작한다.
+  // 앞 실행이 끝내지 않고 남긴 업무는 다시 켜면 저절로 열린다: 모두 끝내고 빈 업무로 시작한다(모두 끝내면 목록이 빈다).
   await page.getByRole("group", { name: "취합 업무" }).waitFor({ timeout: 60_000 });
   await sleep(1000);
   const leftJobs = page.locator(".job-item[data-job]").filter({ hasNotText: "파일 없음" });
@@ -112,7 +112,9 @@ try {
     await expect(page.getByRole("alertdialog")).toHaveCount(0);
     await sleep(500);
   }
-  await page.locator(".job-item[data-job]").filter({ hasText: "파일 없음" }).first().locator(".job-pick").click();
+  const emptyJobs = page.locator(".job-item[data-job]").filter({ hasText: "파일 없음" });
+  if ((await emptyJobs.count()) > 0) await emptyJobs.first().locator(".job-pick").click();
+  else await page.getByRole("button", { name: "+ 새 취합" }).click();
   await page.getByRole("heading", { name: "불러오기" }).waitFor();
   if (release) check(page.url().includes("tauri.localhost"), `release 빌드: 내장 화면 (${page.url()})`);
 
@@ -1012,8 +1014,9 @@ try {
   check(true, "서비스 중지 → 참여자에게 안내");
   // 시험 업무도 끝내 둔다(다시 켜도 되살리지 않는다).
   await endJob("smoke-budget.xlsx");
-  await expect(page2.locator(".job-item[data-job]")).toHaveCount(1);
-  check(true, "업무 끝내기 → 목록에서 빠지고 빈 업무만 남음");
+  await expect(page2.locator(".job-item[data-job]")).toHaveCount(0);
+  await expect(page2.getByRole("heading", { name: "진행 중인 취합 업무가 없어요" })).toBeVisible();
+  check(true, "마지막 업무 끝내기 → 목록이 비고 빈 업무를 저절로 만들지 않음");
   await second.browser.close();
 } finally {
   await participant?.close();
