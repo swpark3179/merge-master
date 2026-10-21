@@ -179,17 +179,11 @@ impl AgentClient {
         stream.write_all(head.as_bytes()).await.map_err(io)?;
         stream.write_all(body).await.map_err(io)?;
         stream.flush().await.map_err(io)?;
+        // 읽는 버퍼를 future(스택)에 두지 않는다 — 호스트 앱은 command future를 메인 스레드에서 만들어 넘긴다(`small_futures`).
         let mut out = Vec::new();
-        let mut chunk = [0u8; 64 * 1024];
-        loop {
-            let n = stream.read(&mut chunk).await.map_err(io)?;
-            if n == 0 {
-                break;
-            }
-            out.extend_from_slice(&chunk[..n]);
-            if out.len() > MAX_RESPONSE {
-                return Err(ClientError::Unreachable("응답이 너무 큽니다".into()));
-            }
+        (&mut stream).take(MAX_RESPONSE as u64 + 1).read_to_end(&mut out).await.map_err(io)?;
+        if out.len() > MAX_RESPONSE {
+            return Err(ClientError::Unreachable("응답이 너무 큽니다".into()));
         }
         parse_response(&out).ok_or_else(|| ClientError::Unreachable("응답이 올바르지 않습니다".into()))
     }
@@ -280,5 +274,16 @@ mod tests {
         assert_eq!(parse_response(r), Some((400, b"abcde".to_vec())));
         assert_eq!(parse_response(b"garbage"), None);
         assert_eq!(encode_query("2026/새 폴더"), "2026%2F%EC%83%88%20%ED%8F%B4%EB%8D%94");
+    }
+
+    /// 호스트 앱(Tauri)은 command future를 메인 스레드(Windows 기본 스택 1MB)에서 만들어 값으로 넘긴다. future가 크면
+    /// 스택이 넘쳐 앱이 그대로 꺼진다('연결 확인'). 큰 버퍼는 future에 두지 않는다.
+    #[test]
+    fn small_futures() {
+        const LIMIT: usize = 16 * 1024;
+        let c = AgentClient::new("PC01").unwrap();
+        assert!(std::mem::size_of_val(&c.info()) < LIMIT);
+        assert!(std::mem::size_of_val(&c.status(&[])) < LIMIT);
+        assert!(std::mem::size_of_val(&c.folders(&[])) < LIMIT);
     }
 }
