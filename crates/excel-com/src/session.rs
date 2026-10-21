@@ -335,7 +335,7 @@ fn active_excel() -> Result<Option<Dispatch>> {
 }
 
 /// Excel 인스턴스의 프로세스 번호(주 창 핸들로 찾는다).
-fn excel_pid(app: &Dispatch) -> Option<u32> {
+pub(crate) fn excel_pid(app: &Dispatch) -> Option<u32> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
     let hwnd = app.get("Hwnd").ok()?.as_f64()? as isize;

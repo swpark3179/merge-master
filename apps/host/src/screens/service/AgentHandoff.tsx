@@ -157,14 +157,7 @@ export function AgentHandoff(props: Props) {
   const target = info ? [info.baseDir, ...dir, fileName].join(sep) : "";
   const preview = info ? `${(info.urls[0] ?? "http://에이전트/").replace(/\/$/, "")}/${slug.trim()}` : "";
   const ready =
-    !!conn &&
-    !!info?.excel &&
-    props.hasSheet &&
-    !!props.myName.trim() &&
-    !dProblem &&
-    !fileProblem &&
-    !sProblem &&
-    busy === null;
+    !!conn && props.hasSheet && !!props.myName.trim() && !dProblem && !fileProblem && !sProblem && busy === null;
   const exportOptions: ExportOptions = { mark: mark ? MARK : undefined, styles, history, cancelled };
 
   const start = async () => {
@@ -225,7 +218,12 @@ export function AgentHandoff(props: Props) {
           <div className="small agent-info" aria-label="에이전트 정보">
             <span className="ok">● {info.name}</span> <span className="muted">· v{info.version}</span>
             {info.version !== conn.appVersion && <span className="muted"> (이 앱 v{conn.appVersion})</span>}
-            {!info.excel && <div className="error small">이 에이전트 PC에는 Excel이 없어 넘길 수 없어요.</div>}
+            {!info.excel && (
+              <div className="warn small">
+                이 에이전트 PC에는 Excel이 없어요. 마감 때 취합 데이터를 남겨 두고, 이 앱이 접속하면 이 PC에서 엑셀로
+                저장해요.
+              </div>
+            )}
             {!info.baseOk && (
               <div className="warn small">
                 기본 저장 폴더({info.baseDir})를 쓸 수 없어요. 에이전트 PC의 트레이 메뉴에서 바꿔 주세요.

@@ -52,13 +52,17 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
+        Env::with_engine(name, FakeEngine::default())
+    }
+
+    fn with_engine(name: &str, engine: FakeEngine) -> Env {
         let data = temp(name);
         std::fs::write(
             data.join("agent.json"),
             serde_json::json!({ "baseDir": data.join("결과"), "port": 0, "maxDays": 60 }).to_string(),
         )
         .unwrap();
-        Env { data, engine: Arc::new(FakeEngine::default()), clock: TestClock::new("2026-10-20T10:00") }
+        Env { data, engine: Arc::new(engine), clock: TestClock::new("2026-10-20T10:00") }
     }
 
     async fn start(&self) -> Running {
@@ -74,6 +78,11 @@ impl Env {
 
     fn base(&self) -> PathBuf {
         self.data.join("결과")
+    }
+
+    /// 그 서비스가 남긴 취합 데이터 파일.
+    fn result_file(&self, id: &str) -> PathBuf {
+        self.data.join("services").join(id).join("result.mmsave")
     }
 }
 
@@ -314,6 +323,8 @@ async fn hand_off_serve_approve_and_save() {
     assert_eq!(saved, env.base().join("2026").join("예산").join("budget_취합.xlsx"));
     let summary: Vec<(String, usize)> = serde_json::from_slice(&std::fs::read(&saved).unwrap()).unwrap();
     assert_eq!(summary[0].1, 1, "고친 칸 하나를 쓴다");
+    assert!(!env.result_file("svc-1").exists(), "저장하면 취합 데이터는 지운다");
+    assert!(!done.result_ready && !done.saved_on_host);
     let closing = loop {
         match ws.next().await {
             Some(Ok(Message::Text(t))) => {
@@ -372,7 +383,7 @@ async fn deadline_saves_and_failures_are_retried() {
     assert_eq!((s.state, s.attempts), (ServiceState::Done, 3));
     assert!(env.base().join("2026/예산/인력.xlsx").exists());
 
-    // 세 번 모두 실패하면 '저장 실패' → 다시 저장.
+    // 세 번 모두 실패하면 '관리자 저장 대기'(취합 데이터를 남겼다) → 이 PC에서 다시 저장할 수도 있다.
     env.clock.set("2026-10-20T10:00");
     let p = package(&env.data, "svc-f", "hr", "실패.xlsx").await;
     assert_eq!(create(port, &p).await.status, 200);
@@ -384,11 +395,118 @@ async fn deadline_saves_and_failures_are_retried() {
         }
     }
     let s = status(port, "svc-f", "svc-f-token").await.status.unwrap();
-    assert_eq!(s.state, ServiceState::Failed);
+    assert_eq!((s.state, s.attempts), (ServiceState::AwaitingHost, 3));
+    assert!(s.result_ready && s.excel);
+    assert!(env.result_file("svc-f").exists());
     assert_eq!(request(port, "GET", "/api/session?s=hr", &[], b"").await.status, 404, "공유는 닫는다");
+    // 옛 호스트 앱(관리 API 2)에는 '저장 실패'로 보인다.
+    let body = serde_json::json!([{ "id": "svc-f", "token": "svc-f-token" }]).to_string();
+    let headers = [("x-mm-agent", "2".to_string()), ("Content-Type", "application/json".to_string())];
+    let old = request(port, "POST", "/agent/status", &headers, body.as_bytes()).await;
+    assert_eq!(old.json::<Vec<StatusItem>>()[0].status.as_ref().unwrap().state, ServiceState::Failed);
     let r = api(port, "POST", "/agent/services/svc-f/retry", b"", Some("svc-f-token")).await;
     assert_eq!(r.status, 200, "{}", r.message());
     until(port, "svc-f", "svc-f-token", ServiceState::Done).await;
+    assert!(!env.result_file("svc-f").exists());
+    assert!(env.base().join("2026/예산/실패.xlsx").exists());
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn without_excel_the_host_saves_the_collected_data() {
+    use agent_protocol::HostSaved;
+    use agent_protocol::client::{AgentClient, ClientError};
+    use agent_protocol::save_data::SaveData;
+    let env = Env::with_engine("no-excel", FakeEngine::without_excel());
+    let running = env.start().await;
+    let port = running.port();
+    let info: AgentInfo = api(port, "GET", "/agent/info", b"", None).await.json();
+    assert!(!info.excel);
+    // Excel이 없어도 받는다(마감 저장은 관리자 PC에서).
+    let p = package(&env.data, "svc-n", "q4", "결과.xlsx").await;
+    assert_eq!(create(port, &p).await.status, 200);
+    let client = AgentClient::new(&format!("127.0.0.1:{port}")).unwrap();
+    let token = p.manifest.token.clone();
+
+    // 서비스 중: 지금 상태를 받아도 서비스는 그대로다. 원본도 받을 수 있다.
+    let live = SaveData::decode(&client.save_data("svc-n", &token).await.unwrap()).unwrap();
+    assert!(live.live);
+    assert_eq!((live.file_name.as_str(), live.sheets.len(), live.plan()[0].1.cells.len()), ("결과.xlsx", 1, 1));
+    assert_eq!(client.source("svc-n", &token).await.unwrap(), b"PK fake xlsx");
+    assert_eq!(status(port, "svc-n", &token).await.status.unwrap().state, ServiceState::Running);
+    assert!(!env.result_file("svc-n").exists());
+    let saved = HostSaved { saved_path: r"C:\관리자\결과.xlsx".into(), saved_at_ms: 1 };
+    assert!(matches!(client.host_saved("svc-n", &token, &saved).await, Err(ClientError::Api { status: 409, .. })));
+    assert!(matches!(client.save_data("svc-n", "틀린 키").await, Err(ClientError::Api { status: 403, .. })));
+
+    // 마감: 취합 데이터만 남기고 관리자 저장 대기.
+    env.clock.set("2026-10-20T18:00");
+    for h in running.agent.tick() {
+        h.await.unwrap();
+    }
+    let s = status(port, "svc-n", &token).await.status.unwrap();
+    assert_eq!((s.state, s.attempts, s.result_ready, s.excel), (ServiceState::AwaitingHost, 0, true, false));
+    assert!(env.result_file("svc-n").exists());
+    assert_eq!(request(port, "GET", "/api/session?s=q4", &[], b"").await.status, 404, "공유는 닫는다");
+    let r = api(port, "POST", "/agent/services/svc-n/retry", b"", Some(&token)).await;
+    assert_eq!(r.status, 409);
+    assert!(r.message().contains("Excel"), "{}", r.message());
+
+    // 다시 켜도 그대로(세션 없이).
+    running.stop().await;
+    let running = env.start().await;
+    let port = running.port();
+    let client = AgentClient::new(&format!("127.0.0.1:{port}")).unwrap();
+    let s = status(port, "svc-n", &token).await.status.unwrap();
+    assert_eq!((s.state, s.result_ready), (ServiceState::AwaitingHost, true));
+    assert!(running.agent.tick().is_empty());
+
+    // 관리자 PC가 받아 저장하고 알린다 → 데이터를 지우고 끝낸다. 같은 알림을 다시 보내도 된다.
+    let data = SaveData::decode(&client.save_data("svc-n", &token).await.unwrap()).unwrap();
+    assert!(!data.live);
+    assert_eq!(data.plan()[0].1.cells.len(), 1);
+    let empty = HostSaved { saved_path: " ".into(), saved_at_ms: 1 };
+    assert!(matches!(client.host_saved("svc-n", &token, &empty).await, Err(ClientError::Api { status: 400, .. })));
+    let done = client.host_saved("svc-n", &token, &saved).await.unwrap();
+    assert_eq!((done.state, done.saved_on_host, done.result_ready), (ServiceState::Done, true, false));
+    assert_eq!(done.saved_path.as_deref(), Some(r"C:\관리자\결과.xlsx"));
+    assert!(!env.result_file("svc-n").exists());
+    assert_eq!(client.host_saved("svc-n", &token, &saved).await.unwrap().state, ServiceState::Done);
+    assert!(matches!(client.save_data("svc-n", &token).await, Err(ClientError::Api { status: 409, .. })));
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_save_cut_off_by_a_crash_counts_as_an_attempt() {
+    let env = Env::new("crash");
+    let running = env.start().await;
+    let port = running.port();
+    let p = package(&env.data, "svc-k", "k", "k.xlsx").await;
+    assert_eq!(create(port, &p).await.status, 200);
+    let data = api(port, "GET", "/agent/services/svc-k/save-data", b"", Some("svc-k-token")).await;
+    assert_eq!(data.status, 200);
+    running.stop().await;
+
+    // 마감 저장의 마지막 시도 도중 꺼진 것처럼: 취합 데이터를 남겼고 엑셀 저장을 시작했다.
+    std::fs::write(env.result_file("svc-k"), &data.body).unwrap();
+    let path = env.data.join("services/svc-k/record.json");
+    let mut record: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    record["state"] = "saving".into();
+    record["resultFile"] = true.into();
+    record["excelStartedMs"] = 1.into();
+    record["retriesLeft"] = 0.into();
+    std::fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    env.clock.set("2026-10-20T19:00");
+    let running = env.start().await;
+    let port = running.port();
+    let s = status(port, "svc-k", "svc-k-token").await.status.unwrap();
+    assert_eq!((s.state, s.attempts), (ServiceState::AwaitingHost, 1));
+    assert!(s.last_error.unwrap().contains("도중"));
+    // 이 PC에 Excel이 있으니 다시 저장할 수 있다.
+    let r = api(port, "POST", "/agent/services/svc-k/retry", b"", Some("svc-k-token")).await;
+    assert_eq!(r.status, 200, "{}", r.message());
+    until(port, "svc-k", "svc-k-token", ServiceState::Done).await;
+    assert!(env.base().join("2026/예산/k.xlsx").exists());
     running.stop().await;
 }
 

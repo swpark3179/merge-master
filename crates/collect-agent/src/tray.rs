@@ -140,7 +140,11 @@ fn tooltip(agent: &Agent) -> String {
     let all = agent.overview();
     let active = all.iter().filter(|o| !o.state.finished()).count();
     let failed = all.iter().filter(|o| o.state == ServiceState::Failed).count();
+    let waiting = all.iter().filter(|o| o.state == ServiceState::AwaitingHost).count();
     let mut t = format!("엑셀 취합 에이전트 · 서비스 {active}개");
+    if waiting > 0 {
+        t.push_str(&format!(" · 관리자 저장 대기 {waiting}개"));
+    }
     if failed > 0 {
         t.push_str(&format!(" · 저장 실패 {failed}개"));
     }
@@ -153,6 +157,7 @@ fn state_label(o: &Overview) -> &'static str {
         ServiceState::Saving => "저장 중",
         ServiceState::Done => "저장함",
         ServiceState::Failed => "저장 실패",
+        ServiceState::AwaitingHost => "관리자 저장 대기",
         ServiceState::Cancelled => "저장 없이 끝냄",
     }
 }
@@ -174,16 +179,19 @@ fn menu(agent: &Agent) -> Menu {
     let url = info.urls.first().cloned().unwrap_or_default();
     let _ = m.append(&MenuItem::with_id("copy-url", format!("주소 복사 ({url})"), !url.is_empty(), None));
     if !info.excel {
-        let _ = m.append(&disabled("⚠ Excel이 없어 서비스를 받지 않습니다".into()));
+        let _ = m.append(&disabled("Excel 없음 — 마감 저장은 관리자 PC에서 합니다".into()));
     }
 
     let active: Vec<&Overview> = all.iter().filter(|o| !o.state.finished()).collect();
     let failed = all.iter().filter(|o| o.state == ServiceState::Failed).count();
-    let summary = if failed > 0 {
-        format!("진행 중 {}개 · 저장 실패 {failed}개", active.len())
-    } else {
-        format!("진행 중 {}개", active.len())
-    };
+    let waiting = all.iter().filter(|o| o.state == ServiceState::AwaitingHost).count();
+    let mut summary = format!("진행 중 {}개", active.len());
+    if waiting > 0 {
+        summary.push_str(&format!(" · 관리자 저장 대기 {waiting}개"));
+    }
+    if failed > 0 {
+        summary.push_str(&format!(" · 저장 실패 {failed}개"));
+    }
     let _ = m.append(&disabled(summary));
     if !all.is_empty() {
         let list = Submenu::new("서비스", true);
@@ -216,15 +224,33 @@ fn menu(agent: &Agent) -> Menu {
                     let _ =
                         sub.append(&MenuItem::with_id(format!("svc-cancel:{}", o.id), "저장 없이 끝내기…", true, None));
                 }
-                ServiceState::Done => {
-                    if o.saved_path.is_some() {
+                ServiceState::AwaitingHost => {
+                    let _ = sub.append(&disabled("넘긴 호스트 앱이 접속하면 그 PC에서 저장합니다".into()));
+                    if info.excel {
                         let _ = sub.append(&MenuItem::with_id(
-                            format!("svc-open:{}", o.id),
-                            "저장한 파일 보기",
+                            format!("svc-retry:{}", o.id),
+                            "이 PC에서 다시 저장",
                             true,
                             None,
                         ));
                     }
+                    let _ = sub.append(&MenuItem::with_id(
+                        format!("svc-dir:{}", o.id),
+                        "취합 데이터 폴더 열기",
+                        true,
+                        None,
+                    ));
+                    let _ =
+                        sub.append(&MenuItem::with_id(format!("svc-cancel:{}", o.id), "저장 없이 끝내기…", true, None));
+                }
+                ServiceState::Done if o.saved_on_host => {
+                    if let Some(p) = &o.saved_path {
+                        let _ = sub.append(&disabled(format!("관리자 PC에 저장함: {p}")));
+                    }
+                }
+                ServiceState::Done if o.saved_path.is_some() => {
+                    let _ =
+                        sub.append(&MenuItem::with_id(format!("svc-open:{}", o.id), "저장한 파일 보기", true, None));
                 }
                 _ => {}
             }
@@ -301,10 +327,16 @@ fn on_menu(agent: &Arc<Agent>, rt: &tokio::runtime::Runtime, id: &str) {
                         report(rt.block_on(agent.finish(svc, None, true)));
                     }
                 }
+                "svc-dir" => win::reveal(&o.dir),
                 "svc-cancel" => {
-                    if win::confirm(&format!(
-                        "‘{title}’을(를) 저장하지 않고 끝낼까요?\n취합한 값은 엑셀로 저장되지 않습니다."
-                    )) {
+                    let ask = if o.state == ServiceState::AwaitingHost {
+                        format!(
+                            "‘{title}’을(를) 저장하지 않고 끝낼까요?\n관리자 PC의 저장을 기다리던 취합 데이터를 지웁니다(되돌릴 수 없습니다)."
+                        )
+                    } else {
+                        format!("‘{title}’을(를) 저장하지 않고 끝낼까요?\n취합한 값은 엑셀로 저장되지 않습니다.")
+                    };
+                    if win::confirm(&ask) {
                         report(rt.block_on(agent.finish(svc, None, false)));
                     }
                 }

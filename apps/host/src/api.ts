@@ -1,6 +1,7 @@
 import type {
   Activity,
   AgentConnection,
+  AgentSaved,
   AgentServiceView,
   CellRange,
   CellRef,
@@ -130,8 +131,17 @@ export const appApi = {
   /** 지금 저장하고 끝내기(`save`) / 저장 없이 끝내기. 저장은 에이전트가 뒤에서 한다(상태 '저장 중'). */
   agentFinish: (id: string, save: boolean) => invoke<AgentServiceView>("agent_finish", { id, save }),
 
-  /** 저장 실패를 다시 저장한다. */
+  /** 저장 실패·관리자 저장 대기를 에이전트 PC에서 다시 저장한다. */
   agentRetry: (id: string) => invoke<AgentServiceView>("agent_retry", { id }),
+
+  /** 이 PC에서 저장할 기본 경로(원본 폴더, 관리자 저장 대기면 에이전트가 저장하려던 이름). */
+  agentSaveDefault: (id: string) => invoke<string>("agent_save_default", { id }),
+
+  /** 서비스 중인 에이전트 업무의 지금 상태를 이 PC에 새 파일로 저장한다(서비스는 그대로). */
+  agentSaveNow: (id: string, path: string) => invoke<AgentSaved>("agent_save_now", { id, path }),
+
+  /** 관리자 저장 대기의 취합 데이터를 이 PC에 저장하고 에이전트에 알린다(그쪽 데이터를 지우고 끝낸다). */
+  agentSaveResult: (id: string, path: string) => invoke<AgentSaved>("agent_save_result", { id, path }),
 
   /** 목록에서 지운다(에이전트의 서비스는 그대로). */
   agentForget: (id: string) => invoke<AgentServiceView[]>("agent_forget", { id }),

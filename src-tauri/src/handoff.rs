@@ -117,10 +117,8 @@ pub async fn agent_handoff(
     let session = job.session()?;
     let src = crate::save::source(&job)?;
     let client = AgentClient::new(&options.addr)?;
+    // 에이전트 PC에 Excel이 없어도 넘긴다: 마감 때 취합 데이터를 남기고, 이 앱이 접속하면 받아 이 PC에서 저장한다.
     let info = client.info().await?;
-    if !info.excel {
-        return Err("에이전트 PC에 Excel이 없어 마감 때 저장할 수 없습니다".into());
-    }
     // 마감은 에이전트 PC 시각으로 잰다.
     let agent_now = chrono::DateTime::from_timestamp_millis(info.now_ms + i64::from(info.utc_offset_minutes) * 60_000)
         .map(|t| t.naive_utc())
@@ -198,6 +196,16 @@ pub async fn agent_handoff(
         ip_names,
     };
     let pkg = Package { manifest, store: read(&store_copy)?, workbook: read(&source_copy)? };
+    // 원본 사본은 이 PC에도 남긴다(이 PC에서 '지금 상태 저장'·관리자 저장 대기를 저장할 때 쓴다 — 기억을 지우면 함께 지운다).
+    let kept = crate::agent_save::source_path(&app, &id, &ext)
+        .and_then(|p| std::fs::rename(&source_copy, &p).map(|()| p).map_err(|e| e.to_string()));
+    let kept = match kept {
+        Ok(p) => Some(p),
+        Err(e) => {
+            tracing::warn!("원본 사본을 남길 수 없습니다(이 PC에서 저장할 때 에이전트에서 받습니다): {e}");
+            None
+        }
+    };
     drop(cleanup);
 
     let addr = client.base_url();
@@ -212,6 +220,10 @@ pub async fn agent_handoff(
         created_at_ms: chrono::Utc::now().timestamp_millis(),
         pending: true,
         local_ended: false,
+        source: kept,
+        original: Some(src.workbook_id.clone()),
+        result: None,
+        host_saved: None,
     });
     let received = match client.create(&pkg).await {
         Ok(_) => true,

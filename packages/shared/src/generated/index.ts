@@ -4,6 +4,7 @@ export type { AddedRow } from "./AddedRow";
 export type { AfterSave } from "./AfterSave";
 export type { AgentConnection } from "./AgentConnection";
 export type { AgentInfo } from "./AgentInfo";
+export type { AgentSaved } from "./AgentSaved";
 export type { AgentServiceView } from "./AgentServiceView";
 export type { AssigneeCandidate } from "./AssigneeCandidate";
 export type { Assignment } from "./Assignment";

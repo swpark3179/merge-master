@@ -43,7 +43,7 @@ use collect_core::structure::{Actor, StructureEdit, check_add, check_delete_cols
 use collect_core::view::{ConfigView, config_view_with, encode_flags};
 use collect_core::{CellRange, CellRef, CellStyle, CellValue, RowCut, SheetCell, SheetModel};
 use collect_store::{SnapshotKind, SnapshotMeta, Store};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::Instant;
 use ts_rs::TS;
@@ -284,13 +284,14 @@ pub enum RecalcStatus {
 }
 
 /// 엑셀 저장 재료: 시트마다 기준 시트·지금 시트·설정·열 이름, 그리고 모든 변경 기록([`SessionHandle::save_parts`]).
-#[derive(Debug, Clone)]
+/// 파일로 남겨 다른 PC에서 저장할 수 있다(에이전트의 '취합 완료 데이터').
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SaveParts {
     pub sheets: Vec<SaveSheet>,
     pub history: Vec<ChangeEntry>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SaveSheet {
     pub baseline: SheetModel,
     pub current: SheetModel,

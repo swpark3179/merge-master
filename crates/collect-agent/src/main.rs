@@ -2,6 +2,9 @@
 //!
 //! 옵션: `--data-dir <폴더>`(기본 `%LOCALAPPDATA%\merge-master-agent`), `--port <포트>`(설정 대신), `--headless`,
 //! `--fake-excel`(Excel 없이 시험 — 저장 대신 요약 JSON을 쓴다).
+//!
+//! `--save-worker <취합 데이터> <원본> <저장할 파일>`은 에이전트가 마감 저장에 띄우는 저장 프로세스다(Windows — 사람이 쓰지
+//! 않는다. 트레이·서버 없이 저장만 하고 끝난다).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
@@ -35,6 +38,10 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn main() {
+    #[cfg(windows)]
+    if let Some(code) = save_worker() {
+        std::process::exit(code);
+    }
     let args = match parse_args() {
         Ok(a) => a,
         Err(e) => fail(&e),
@@ -80,9 +87,23 @@ fn main() {
 #[cfg(windows)]
 use collect_agent::win as collect_agent_win;
 
+/// 저장 프로세스로 띄워졌으면 저장하고 종료 코드를 돌려준다.
 #[cfg(windows)]
-fn platform_engine(data_dir: &std::path::Path) -> Result<Arc<dyn Engine>, String> {
-    Ok(Arc::new(collect_agent::excel::ExcelEngine::new(data_dir.join("calc"))?))
+fn save_worker() -> Option<i32> {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if args.first().is_none_or(|a| a != collect_agent::excel::WORKER_ARG) {
+        return None;
+    }
+    let [_, data, source, out] = args.as_slice() else {
+        eprintln!("{} <취합 데이터> <원본> <저장할 파일>", collect_agent::excel::WORKER_ARG);
+        return Some(2);
+    };
+    Some(collect_agent::excel::run_worker(data.as_ref(), source.as_ref(), out.as_ref()))
+}
+
+#[cfg(windows)]
+fn platform_engine(_data_dir: &std::path::Path) -> Result<Arc<dyn Engine>, String> {
+    Ok(Arc::new(collect_agent::excel::ExcelEngine::new()?))
 }
 
 #[cfg(not(windows))]

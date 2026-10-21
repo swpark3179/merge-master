@@ -1,9 +1,12 @@
 //! 에이전트: 넘겨받은 서비스들을 한 포트(참여자 서버 + 관리 API)로 서비스하고, 마감이 되면 엑셀로 저장해 끝낸다.
 //!
 //! - 받기([`Agent::create`]): 묶음을 서비스 폴더(`services\<id>\`)에 풀고, 기록 파일로 세션을 되살려 주소 경로로 공개한다.
-//!   마감 동작은 '읽기 전용으로 전환'으로 바꿔 둔다(저장이 늦어도 마감 순간 입력은 바로 막힌다).
-//! - 1초마다([`Agent::tick`]): 마감이 된 서비스는 저장하고 끝낸다. 실패하면 1분 뒤 다시(모두 3번), 그래도 안 되면
-//!   '저장 실패'로 두고 공유를 닫는다(데이터는 남아 다시 저장할 수 있다).
+//!   마감 동작은 '읽기 전용으로 전환'으로 바꿔 둔다(저장이 늦어도 마감 순간 입력은 바로 막힌다). 서비스 중에는 Excel을
+//!   열지 않는다(수식 칸은 넘겨받은 값 그대로 — 저장할 때 Excel이 계산한다).
+//! - 1초마다([`Agent::tick`]): 마감이 된 서비스는 취합 완료 데이터(`result.mmsave`)부터 남기고, 이 PC에 Excel이 있으면
+//!   별도 저장 프로세스에서 엑셀로 저장하고 끝낸다. 실패하면 1분 뒤 다시(모두 3번), 그래도 안 되거나 Excel이 없으면
+//!   '관리자 저장 대기'로 두고 공유를 닫는다 — 넘긴 호스트 앱이 데이터를 받아 그 PC에서 저장하면 데이터를 지우고 끝낸다
+//!   ([`Agent::host_saved`]).
 //! - 다시 켜면([`Agent::restore`]): 서비스 중이던 것은 다시 공개하고, 꺼진 사이 마감이 지났으면 바로 저장한다.
 //! - 참여자: 명단 밖에서도 입력한 이름 그대로 들어온다(자동 승인 — 관리자가 승인하지 못할 수 있다).
 //! - IP 명단: 에이전트 PC의 명단(`ip-names.json`, 트레이 'IP 명단 관리')이 이긴다. 서비스마다 넘겨받은 명단은 에이전트
@@ -19,23 +22,26 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use agent_protocol::link::LinkState;
+use agent_protocol::save_data::SaveData;
 use agent_protocol::{
-    AgentInfo, Approve, Created, FolderList, MIN_LEAD_MINUTES, PROTOCOL, Package, ServiceState, ServiceStatus,
-    StatusItem, StatusQuery, check_deadline, check_name, extension,
+    AgentInfo, Approve, Created, FolderList, HostSaved, MIN_LEAD_MINUTES, PROTOCOL, Package, ServiceState,
+    ServiceStatus, StatusItem, StatusQuery, check_deadline, check_name, extension,
 };
 use chrono::{NaiveDateTime, TimeZone};
 use collect_core::config::DeadlineAction;
 use collect_core::edit::ConfigEdit;
 use collect_server::host::{self, HostRequest};
-use collect_server::{Gone, Hub, IpNames, META_ENDED, SessionHandle, lan_addresses, recover, validate_slug};
+use collect_server::{
+    Gone, Hub, IpNames, META_ENDED, RecalcStatus, SaveParts, SessionHandle, lan_addresses, recover, validate_slug,
+};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::engine::{Engine, Notify, SaveJob};
+use crate::engine::{Engine, SaveJob};
 use crate::paths;
 use crate::record::{Record, STORE_FILE};
 use crate::service::{Service, View};
-use crate::settings::Settings;
+use crate::settings::{Settings, write_synced};
 
 /// 지금 시각(에이전트 PC의 현지 시각). 시험은 바꿔 끼운다.
 pub type Clock = Arc<dyn Fn() -> NaiveDateTime + Send + Sync>;
@@ -103,6 +109,9 @@ pub struct Overview {
     pub url: Option<String>,
     pub output_path: String,
     pub saved_path: Option<String>,
+    pub saved_on_host: bool,
+    /// 서비스 폴더(취합 데이터·원본·기록).
+    pub dir: PathBuf,
 }
 
 pub struct Agent {
@@ -247,7 +256,12 @@ impl Agent {
     fn view<R>(&self, f: impl FnOnce(&View<'_>) -> R) -> R {
         let urls = |slug: &str| self.urls(slug);
         let deadline_ms = |text: &str| parse_deadline(text).map_or(0, local_ms);
-        f(&View { urls: &urls, now_ms: self.now_ms(), deadline_ms: &deadline_ms })
+        f(&View {
+            urls: &urls,
+            now_ms: self.now_ms(),
+            deadline_ms: &deadline_ms,
+            excel: self.opts.engine.excel_available(),
+        })
     }
 
     pub(crate) fn owned(&self, id: &str, token: Option<&str>) -> Result<Arc<Service>, AgentError> {
@@ -297,6 +311,8 @@ impl Agent {
                     url: (r.state == ServiceState::Running).then(|| self.urls(&r.slug).remove(0)),
                     output_path: r.output_path.display().to_string(),
                     saved_path: r.saved_path.clone(),
+                    saved_on_host: r.saved_on_host,
+                    dir: s.dir.clone(),
                 }
             })
             .collect()
@@ -339,9 +355,6 @@ impl Agent {
         if pkg.store.is_empty() || pkg.workbook.is_empty() {
             return Err(AgentError::bad("넘길 묶음에 기록 파일이나 원본이 없습니다"));
         }
-        if !self.opts.engine.excel_available() {
-            return Err(AgentError::bad("이 에이전트 PC에는 Excel이 없어 마감 때 저장할 수 없습니다"));
-        }
         let slug = self.allocate_slug(&m.slug)?;
 
         // 서비스 폴더: 다 쓴 뒤 이름을 바꿔 넣는다(도중에 꺼지면 `.part`는 다음에 켤 때 지운다).
@@ -365,6 +378,9 @@ impl Agent {
             saved_at_ms: None,
             finished_at_ms: None,
             last: None,
+            result_file: false,
+            excel_started_ms: None,
+            saved_on_host: false,
         };
         let write = || -> Result<(), String> {
             let _ = std::fs::remove_dir_all(&part);
@@ -419,7 +435,7 @@ impl Agent {
             .ok_or_else(|| AgentError::conflict("쓸 수 있는 주소 경로가 없습니다"))
     }
 
-    /// 서비스 폴더의 기록 파일로 세션을 되살려 서비스로 만든다(받을 때). 공개하고 계산 사본을 연다.
+    /// 서비스 폴더의 기록 파일로 세션을 되살려 서비스로 만든다(받을 때). 공개한다.
     async fn open(self: &Arc<Self>, dir: &Path, record: Record) -> Result<Arc<Service>, AgentError> {
         let store = dir.join(STORE_FILE);
         let rec = tokio::task::spawn_blocking(move || recover(&store))
@@ -429,9 +445,10 @@ impl Agent {
         if rec.init.sheets.len() != record.manifest.sheets.len() {
             return Err(AgentError::bad("기록 파일의 시트 수가 넘길 내용과 다릅니다"));
         }
-        let models = rec.init.sheets.iter().map(|(m, _)| m.clone()).collect();
+        let recalc = formula_status(rec.init.sheets.iter().map(|(m, _)| m));
         let session = SessionHandle::spawn(rec.init);
         let service = Service::new(dir.to_path_buf(), record, Some(session.clone()));
+        service.set_recalc(recalc);
         let source = service.source_path().display().to_string();
         let deadline = service.record().manifest.deadline.clone();
         session
@@ -456,7 +473,6 @@ impl Agent {
             .map_err(AgentError::internal)??;
         self.attach(&service, &session);
         self.hub.publish(&service.record().slug, session.clone()).map_err(AgentError::conflict)?;
-        self.start_recalc(&service, &session, models);
         Ok(service)
     }
 
@@ -466,16 +482,6 @@ impl Agent {
         session.set_host_name(m.host_name.clone());
         session.set_ip_names(self.effective_ip_names(service));
         session.set_auto_approve(true);
-    }
-
-    fn start_recalc(&self, service: &Arc<Service>, session: &SessionHandle, models: Vec<collect_core::SheetModel>) {
-        let (slot, changes) = (service.recalc.clone(), self.changes.clone());
-        let notify: Notify = Arc::new(move |status| {
-            *slot.lock().unwrap() = status.clone();
-            changes.send_modify(|n| *n += 1);
-        });
-        let sheets = service.record().manifest.sheets;
-        self.opts.engine.start_recalc(&service.id, session.clone(), models, service.source_path(), sheets, notify);
     }
 
     // ------------------------------------------------------------------ IP 명단
@@ -662,8 +668,8 @@ impl Agent {
 
     // ------------------------------------------------------------------ 끝내기·저장
 
-    /// 끝낸다. `save`면 엑셀로 저장하고 끝내고(저장은 뒤에서 — 상태는 '저장 중'), 아니면 저장 없이 끝낸다.
-    /// `token`이 `None`이면 에이전트 PC(트레이)에서 한 것.
+    /// 끝낸다. `save`면 엑셀로 저장하고 끝내고(저장은 뒤에서 — 상태는 '저장 중'), 아니면 저장 없이 끝낸다(남긴 취합 데이터도
+    /// 지운다). `token`이 `None`이면 에이전트 PC(트레이)에서 한 것.
     pub async fn finish(
         self: &Arc<Self>,
         id: &str,
@@ -675,8 +681,10 @@ impl Agent {
             return self.status_of(id, token);
         }
         if save {
-            if s.state() == ServiceState::Saving {
-                return self.status_of(id, token); // 이미 저장 중
+            match s.state() {
+                ServiceState::Saving => return self.status_of(id, token), // 이미 저장 중
+                ServiceState::Failed | ServiceState::AwaitingHost => return self.retry(id, token).await,
+                _ => {}
             }
             self.begin_save(&s, true);
             tokio::spawn(self.clone().run_save(s.clone()));
@@ -684,10 +692,12 @@ impl Agent {
             let _g = s.saving.lock().await;
             if !s.state().finished() {
                 self.close(&s, Gone::Ended).await;
+                remove_result(&s);
                 s.update(|r| {
                     r.state = ServiceState::Cancelled;
                     r.ended_by_host = true;
                     r.next_try_ms = None;
+                    r.result_file = false;
                     r.finished_at_ms = Some(local_ms((self.opts.clock)()));
                 });
                 tracing::info!(id = %s.id, "저장 없이 끝냈습니다");
@@ -697,17 +707,23 @@ impl Agent {
         self.status_of(id, token)
     }
 
-    /// '저장 실패'를 다시 저장한다.
+    /// '저장 실패'·'관리자 저장 대기'를 이 PC에서 다시 저장한다.
     pub async fn retry(self: &Arc<Self>, id: &str, token: Option<&str>) -> Result<ServiceStatus, AgentError> {
         let s = self.owned(id, token)?;
-        if s.state() != ServiceState::Failed {
-            return Err(AgentError::conflict("저장에 실패한 서비스만 다시 저장할 수 있습니다"));
+        let r = s.record();
+        match r.state {
+            ServiceState::Failed if s.session().is_none() && !r.result_file => {
+                return Err(AgentError::conflict("이 서비스의 기록을 되살릴 수 없어 다시 저장할 수 없습니다"));
+            }
+            ServiceState::AwaitingHost if !self.opts.engine.excel_available() => {
+                return Err(AgentError::conflict(
+                    "이 에이전트 PC에는 Excel이 없어 저장할 수 없습니다. 넘긴 호스트 앱(관리자 PC)에서 저장해 주세요",
+                ));
+            }
+            ServiceState::Failed | ServiceState::AwaitingHost => {}
+            _ => return Err(AgentError::conflict("저장에 실패한 서비스만 다시 저장할 수 있습니다")),
         }
-        if s.session().is_none() {
-            return Err(AgentError::conflict("이 서비스의 기록을 되살릴 수 없어 다시 저장할 수 없습니다"));
-        }
-        let by_host = s.record().ended_by_host;
-        self.begin_save(&s, by_host);
+        self.begin_save(&s, r.ended_by_host);
         tokio::spawn(self.clone().run_save(s.clone()));
         self.status_of(id, token)
     }
@@ -724,50 +740,53 @@ impl Agent {
         self.changed();
     }
 
-    /// 저장한다(이미 '저장 중'으로 바꿔 둔 서비스). 성공하면 공유를 닫고 끝내고, 실패하면 다시 해 볼 시각을 정하거나
-    /// '저장 실패'로 둔다.
+    /// 저장한다(이미 '저장 중'으로 바꿔 둔 서비스). 먼저 취합 완료 데이터를 서비스 폴더에 남기고(한 번만 — 다시 해 볼 때는
+    /// 남긴 것을 쓴다), 이 PC에 Excel이 있으면 별도 저장 프로세스에서 엑셀로 저장한다. 성공하면 데이터를 지우고 공유를
+    /// 닫고 끝낸다. 실패하면 다시 해 볼 시각을 정하고, 다 해 봤거나 Excel이 없으면 '관리자 저장 대기'로 둔다(데이터도
+    /// 남기지 못했으면 '저장 실패').
     async fn run_save(self: Arc<Self>, s: Arc<Service>) {
         let _g = s.saving.lock().await;
         if s.state() != ServiceState::Saving {
             return;
         }
-        let Some(session) = s.session() else {
-            s.update(|r| {
-                r.state = ServiceState::Failed;
-                r.last_error = Some("이 서비스의 기록을 되살릴 수 없습니다".into());
-            });
+        let why = if s.record().ended_by_host { Gone::Ended } else { Gone::Deadline };
+        if !s.record().result_file
+            && let Err(e) = self.freeze(&s).await
+        {
+            tracing::error!(id = %s.id, "취합 데이터를 남길 수 없습니다: {e}");
+            self.attempt_failed(&s, why, format!("취합 데이터를 남길 수 없습니다: {e}")).await;
             self.changed();
             return;
-        };
-        // 저장하는 동안 입력을 막는다(참여자는 보기만). 관리자 연결의 쓰기가 끝나기를 기다린 뒤 저장할 내용을 뜬다(그 뒤의
-        // 쓰기는 '서비스 중이 아님'으로 거절된다).
-        let parts = {
-            let _edits = s.edits.write().await;
-            let _ = session.with(|s| s.set_closed(true)).await;
-            session.save_parts().await
-        };
-        let r = s.record();
+        }
+        if !self.opts.engine.excel_available() {
+            tracing::info!(id = %s.id, "이 PC에 Excel이 없어 관리자 PC의 저장을 기다립니다");
+            self.await_host(&s, why).await;
+            self.changed();
+            return;
+        }
+        let r = s.update(|r| r.excel_started_ms = Some(local_ms((self.opts.clock)())));
+        self.changed();
         let result = async {
-            let parts = parts?;
-            let offset = chrono::Local::now().offset().local_minus_utc() / 60;
-            let plans = parts.plan(&r.manifest.sheets, r.manifest.export, offset, &[]);
             if let Some(dir) = r.output_path.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| format!("저장할 폴더를 만들 수 없습니다: {e}"))?;
             }
             let out = paths::unique_file(&r.output_path);
             paths::check_length(&out)?;
-            self.opts.engine.save(SaveJob { source: s.source_path(), plans, out }).await
+            self.opts.engine.save(SaveJob { data: s.result_path(), source: s.source_path(), out }).await
         }
         .await;
-        let why = if r.ended_by_host { Gone::Ended } else { Gone::Deadline };
         match result {
             Ok(path) => {
                 let progress = s.progress();
                 self.close(&s, why).await;
+                remove_result(&s);
                 s.update(|r| {
                     r.state = ServiceState::Done;
                     r.attempts += 1;
                     r.last_error = None;
+                    r.result_file = false;
+                    r.excel_started_ms = None;
+                    r.saved_on_host = false;
                     r.saved_path = Some(path.clone());
                     r.saved_at_ms = Some(local_ms((self.opts.clock)()));
                     r.finished_at_ms = r.saved_at_ms;
@@ -776,39 +795,174 @@ impl Agent {
                 tracing::info!(id = %s.id, "저장하고 끝냈습니다: {path}");
                 self.after_finish(&s);
             }
+            // 에이전트를 끝내 저장을 그만뒀다: 시도로 세지 않는다(다시 켜면 바로 다시 한다).
+            Err(e) if *self.stopping.borrow() => {
+                tracing::info!(id = %s.id, "에이전트를 끝내 저장을 멈춥니다: {e}");
+                s.update(|r| r.excel_started_ms = None);
+            }
             Err(e) => {
                 tracing::warn!(id = %s.id, "저장 실패: {e}");
-                let retry_at = local_ms((self.opts.clock)()) + self.opts.retry_delay.as_millis() as i64;
-                let r = s.update(|r| {
-                    r.attempts += 1;
-                    r.last_error = Some(e.clone());
-                    if r.retries_left > 0 {
-                        r.retries_left -= 1;
-                        r.next_try_ms = Some(retry_at);
-                    } else {
-                        r.state = ServiceState::Failed;
-                        r.next_try_ms = None;
-                    }
-                });
-                if r.state == ServiceState::Failed {
-                    // 공유는 닫는다(마감이 지났다). 세션은 남겨 다시 저장할 수 있다.
-                    let progress = s.progress();
-                    self.unpublish(&session, why);
-                    s.update(|r| r.last = Some(progress));
-                }
+                self.attempt_failed(&s, why, e).await;
             }
         }
         self.changed();
     }
 
-    /// 공유를 닫고 계산 사본을 닫는다. 기록 파일에 '끝냄'을 남긴다.
+    /// 저장할 내용을 떠(입력을 막고) 취합 완료 데이터 파일로 남긴다(디스크까지 쓴 뒤 기록에 남긴다).
+    async fn freeze(&self, s: &Service) -> Result<(), String> {
+        let session = s.session().ok_or("이 서비스의 기록을 되살릴 수 없습니다")?;
+        // 저장하는 동안 입력을 막는다(참여자는 보기만). 관리자 연결의 쓰기가 끝나기를 기다린 뒤 저장할 내용을 뜬다(그 뒤의
+        // 쓰기는 '서비스 중이 아님'으로 거절된다).
+        let parts = {
+            let _edits = s.edits.write().await;
+            let _ = session.with(|s| s.set_closed(true)).await;
+            session.save_parts().await
+        }?;
+        let data = self.save_data_of(s, parts, false);
+        let path = s.result_path();
+        tokio::task::spawn_blocking(move || write_synced(&path, &data.encode()))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        s.update(|r| r.result_file = true);
+        tracing::info!(id = %s.id, "취합 데이터를 남겼습니다");
+        Ok(())
+    }
+
+    fn save_data_of(&self, s: &Service, parts: SaveParts, live: bool) -> SaveData {
+        let r = s.record();
+        let file_name = r.output_path.file_name().map(|n| n.to_string_lossy().to_string());
+        SaveData {
+            id: s.id.clone(),
+            title: r.manifest.title.clone(),
+            workbook_name: r.manifest.workbook_name.clone(),
+            file_name: file_name.unwrap_or_else(|| r.manifest.output.file_name.clone()),
+            sheets: r.manifest.sheets.clone(),
+            export: r.manifest.export,
+            utc_offset_minutes: chrono::Local::now().offset().local_minus_utc() / 60,
+            frozen_at_ms: self.now_ms(),
+            live,
+            parts,
+        }
+    }
+
+    /// 저장 시도 하나가 실패했다: 남은 시도가 있으면 다시 해 볼 시각을 정하고, 없으면 취합 데이터를 남겼으면 '관리자 저장
+    /// 대기', 못 남겼으면 '저장 실패'로 두고 공유를 닫는다(세션은 남겨 다시 저장할 수 있다).
+    async fn attempt_failed(&self, s: &Service, why: Gone, error: String) {
+        let retry_at = local_ms((self.opts.clock)()) + self.opts.retry_delay.as_millis() as i64;
+        let mut wait_host = false;
+        let r = s.update(|r| {
+            r.attempts += 1;
+            r.last_error = Some(error);
+            r.excel_started_ms = None;
+            if r.retries_left > 0 {
+                r.retries_left -= 1;
+                r.next_try_ms = Some(retry_at);
+            } else {
+                r.next_try_ms = None;
+                if r.result_file {
+                    wait_host = true;
+                } else {
+                    r.state = ServiceState::Failed;
+                }
+            }
+        });
+        if wait_host {
+            self.await_host(s, why).await;
+        } else if r.state == ServiceState::Failed {
+            // 공유는 닫는다(마감이 지났다). 세션은 남겨 다시 저장할 수 있다.
+            let progress = s.progress();
+            if let Some(session) = s.session() {
+                self.unpublish(&session, why);
+            }
+            s.update(|r| r.last = Some(progress));
+        }
+    }
+
+    /// '관리자 저장 대기'로 둔다: 공유를 닫고 세션을 놓는다(취합 데이터 파일에 모두 들어 있다).
+    async fn await_host(&self, s: &Service, why: Gone) {
+        let progress = s.progress();
+        self.close(s, why).await;
+        s.update(|r| {
+            r.state = ServiceState::AwaitingHost;
+            r.next_try_ms = None;
+            r.excel_started_ms = None;
+            r.last = Some(progress);
+        });
+        s.drop_session();
+        self.refresh_ip_names();
+    }
+
+    /// 관리자 PC(넘긴 호스트 앱)에서 취합 데이터를 저장했다: 데이터를 지우고 끝낸다. 같은 알림을 다시 받으면(응답을 놓친
+    /// 호스트) 그대로 돌려준다.
+    pub async fn host_saved(
+        &self,
+        id: &str,
+        token: Option<&str>,
+        saved: HostSaved,
+    ) -> Result<ServiceStatus, AgentError> {
+        let s = self.owned(id, token)?;
+        let busy = || AgentError::conflict("에이전트 PC에서 저장하는 중입니다. 잠시 뒤 다시 해 주세요");
+        let _g = s.saving.try_lock().map_err(|_| busy())?;
+        let r = s.record();
+        match r.state {
+            ServiceState::Done if r.saved_on_host => return self.status_of(id, token),
+            ServiceState::AwaitingHost | ServiceState::Failed if r.result_file => {}
+            ServiceState::Saving => return Err(busy()),
+            _ => return Err(AgentError::conflict("관리자 PC의 저장을 기다리는 서비스가 아닙니다")),
+        }
+        if saved.saved_path.trim().is_empty() {
+            return Err(AgentError::bad("저장한 파일 경로가 없습니다"));
+        }
+        let why = if r.ended_by_host { Gone::Ended } else { Gone::Deadline };
+        let progress = s.progress();
+        self.close(&s, why).await;
+        remove_result(&s);
+        let path = saved.saved_path.clone();
+        s.update(|r| {
+            r.state = ServiceState::Done;
+            r.result_file = false;
+            r.saved_on_host = true;
+            r.last_error = None;
+            r.next_try_ms = None;
+            r.saved_path = Some(saved.saved_path);
+            r.saved_at_ms = Some(saved.saved_at_ms);
+            r.finished_at_ms = Some(local_ms((self.opts.clock)()));
+            r.last = Some(progress);
+        });
+        tracing::info!(id = %s.id, "관리자 PC에서 저장했습니다: {path}");
+        self.after_finish(&s);
+        self.status_of(id, token)
+    }
+
+    /// 취합 데이터([`SaveData`] 파일 그대로): 마감 때 남긴 것, 없고 서비스 중이면 지금 상태(서비스는 그대로 이어진다).
+    pub async fn save_data(&self, id: &str, token: Option<&str>) -> Result<Vec<u8>, AgentError> {
+        let s = self.owned(id, token)?;
+        if s.record().result_file {
+            return tokio::fs::read(s.result_path())
+                .await
+                .map_err(|e| AgentError::internal(format!("취합 데이터를 읽을 수 없습니다: {e}")));
+        }
+        let session = self.live_session(&s).map_err(|_| AgentError::conflict("받을 취합 데이터가 없습니다"))?;
+        let parts = session.save_parts().await.map_err(AgentError::internal)?;
+        let data = self.save_data_of(&s, parts, true);
+        tokio::task::spawn_blocking(move || data.encode()).await.map_err(|e| AgentError::internal(e.to_string()))
+    }
+
+    /// 넘겨받은 원본 통합문서.
+    pub async fn source(&self, id: &str, token: Option<&str>) -> Result<Vec<u8>, AgentError> {
+        let s = self.owned(id, token)?;
+        tokio::fs::read(s.source_path())
+            .await
+            .map_err(|e| AgentError::internal(format!("원본을 읽을 수 없습니다: {e}")))
+    }
+
+    /// 공유를 닫는다. 기록 파일에 '끝냄'을 남긴다.
     async fn close(&self, s: &Service, why: Gone) {
         if let Some(session) = s.session() {
             self.unpublish(&session, why);
-            session.set_recalc(None);
             let _ = session.with(|x| x.set_meta(META_ENDED, "1")).await;
         }
-        self.opts.engine.stop_recalc(&s.id);
     }
 
     fn unpublish(&self, session: &SessionHandle, why: Gone) {
@@ -865,9 +1019,11 @@ impl Agent {
     // ------------------------------------------------------------------ 다시 켜기
 
     /// 서비스 폴더에서 되살린다. 서비스 중이던 것은 다시 공개하고, 꺼진 사이 마감이 지났거나 저장하다 꺼졌으면 바로
-    /// 저장하게 둔다. 오래된(14일) 끝난 서비스 폴더는 지운다.
+    /// 저장하게 둔다. 취합 데이터를 남긴 서비스(관리자 저장 대기·저장 중)는 세션 없이 둔다. 오래된(14일) 끝난 서비스 폴더는
+    /// 지운다.
     pub async fn restore(self: &Arc<Self>) {
-        self.opts.engine.cleanup().await;
+        // 앞 판(서비스 중 수식 계산)이 남긴 계산 사본.
+        let _ = std::fs::remove_dir_all(self.opts.data_dir.join("calc"));
         let Ok(entries) = std::fs::read_dir(self.services_dir()) else { return };
         let now = self.now();
         let now_ms = local_ms(now);
@@ -897,6 +1053,20 @@ impl Agent {
                 }
                 continue;
             }
+            if record.result_file && matches!(record.state, ServiceState::Saving | ServiceState::AwaitingHost) {
+                let s = Service::new(dir, record, None);
+                if s.state() == ServiceState::Saving {
+                    if s.record().excel_started_ms.is_some() {
+                        tracing::warn!(id = %s.id, "엑셀로 저장하는 도중 에이전트가 꺼졌습니다");
+                        let why = if s.record().ended_by_host { Gone::Ended } else { Gone::Deadline };
+                        self.attempt_failed(&s, why, "엑셀로 저장하는 도중 에이전트가 꺼졌습니다".into()).await;
+                    } else {
+                        s.update(|r| r.next_try_ms = Some(now_ms));
+                    }
+                }
+                self.services.lock().unwrap().insert(s.id.clone(), s);
+                continue;
+            }
             let service = match self.reopen(&dir, record.clone()).await {
                 Ok(s) => s,
                 Err(err) => {
@@ -920,7 +1090,10 @@ impl Agent {
                     service.update(|r| r.next_try_ms = Some(now_ms));
                 }
                 ServiceState::Saving => {
-                    service.update(|r| r.next_try_ms = Some(now_ms));
+                    service.update(|r| {
+                        r.next_try_ms = Some(now_ms);
+                        r.excel_started_ms = None;
+                    });
                 }
                 _ => {}
             }
@@ -934,15 +1107,15 @@ impl Agent {
     async fn reopen(self: &Arc<Self>, dir: &Path, record: Record) -> Result<Arc<Service>, String> {
         let store = dir.join(STORE_FILE);
         let rec = tokio::task::spawn_blocking(move || recover(&store)).await.map_err(|e| e.to_string())??;
-        let models = rec.init.sheets.iter().map(|(m, _)| m.clone()).collect();
+        let recalc = formula_status(rec.init.sheets.iter().map(|(m, _)| m));
         let session = SessionHandle::spawn(rec.init);
         let passed = parse_deadline(&record.manifest.deadline).is_none_or(|d| self.now() >= d);
         let running = record.state == ServiceState::Running && !passed;
         let service = Service::new(dir.to_path_buf(), record, Some(session.clone()));
+        service.set_recalc(recalc);
         self.attach(&service, &session);
         if running {
             self.hub.publish(&service.record().slug, session.clone())?;
-            self.start_recalc(&service, &session, models);
             tracing::info!(id = %service.id, "서비스를 이어서 합니다");
         } else {
             let _ = session.with(|s| s.set_closed(true)).await;
@@ -950,18 +1123,34 @@ impl Agent {
         Ok(service)
     }
 
-    /// 에이전트를 끝낼 때: 공유를 닫고(참여자에게는 잠시 멈춘 것으로 — 다시 켜면 이어서 한다), 계산 사본을 닫는다.
+    /// 에이전트를 끝낼 때: 공유를 닫고(참여자에게는 잠시 멈춘 것으로 — 다시 켜면 이어서 한다), 하고 있는 저장을 그만둔다
+    /// (다시 켜면 다시 한다).
     pub async fn pause_all(&self) {
         self.stopping.send_replace(true);
         for (slug, _) in self.hub.sessions() {
             self.hub.unpublish_as(&slug, Gone::Paused);
         }
-        for s in self.all() {
-            if let Some(session) = s.session() {
-                session.set_recalc(None);
-            }
-        }
         self.opts.engine.shutdown().await;
+    }
+}
+
+/// 남긴 취합 데이터 파일을 지운다(없으면 그만).
+fn remove_result(s: &Service) {
+    if let Err(e) = std::fs::remove_file(s.result_path())
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(id = %s.id, "취합 데이터를 지울 수 없습니다: {e}");
+    }
+}
+
+/// 수식 칸이 있으면 '서비스 중에는 계산하지 않음'을 알린다(에이전트는 Excel을 열지 않는다 — 저장할 때 Excel이 계산한다).
+fn formula_status<'a>(mut models: impl Iterator<Item = &'a collect_core::SheetModel>) -> RecalcStatus {
+    if models.any(|m| m.cells.iter().any(|c| c.f.is_some())) {
+        RecalcStatus::Unavailable {
+            message: "에이전트 PC에서는 수식을 다시 계산하지 않습니다(저장할 때 Excel이 계산합니다)".into(),
+        }
+    } else {
+        RecalcStatus::None
     }
 }
 

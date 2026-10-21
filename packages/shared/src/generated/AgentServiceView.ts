@@ -36,4 +36,12 @@ live: boolean,
 /**
  * 참여자가 보낸 마지막 채팅 번호(안 읽은 채팅 표시, 없으면 0).
  */
-lastChat: number, createdAtMs: number, };
+lastChat: number, 
+/**
+ * 관리자 저장 대기의 취합 데이터를 이 PC에 받아 두었다.
+ */
+resultHere: boolean, 
+/**
+ * 이 PC에 저장했지만 에이전트에 아직 알리지 못한 파일.
+ */
+savedHere?: string, createdAtMs: number, };

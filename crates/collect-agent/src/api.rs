@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use agent_protocol::{
-    ApiError, Approve, Finish, HEADER_AGENT, HEADER_TOKEN, MAX_PACKAGE, MIN_PROTOCOL, PROTOCOL, Package, Reject,
-    StatusQuery,
+    ApiError, Approve, Finish, HEADER_AGENT, HEADER_TOKEN, HostSaved, MAX_PACKAGE, MIN_PROTOCOL, PROTOCOL, Package,
+    Reject, ServiceStatus, StatusQuery,
 };
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
@@ -40,6 +40,9 @@ pub fn router(agent: Arc<Agent>) -> Router {
         .route("/agent/services/{id}/reject", post(reject))
         .route("/agent/services/{id}/finish", post(finish))
         .route("/agent/services/{id}/retry", post(retry))
+        .route("/agent/services/{id}/save-data", get(save_data))
+        .route("/agent/services/{id}/source", get(source))
+        .route("/agent/services/{id}/host-saved", post(host_saved))
         .route("/agent/services/{id}/host", get(crate::host_link::upgrade))
         .layer(middleware::from_fn(guard))
         .with_state(agent)
@@ -63,6 +66,20 @@ async fn guard(req: Request, next: Next) -> Response {
         ),
         Some(_) => next.run(req).await,
     }
+}
+
+/// 요청한 호스트 앱의 관리 API 판([`guard`]를 거쳤으니 있다).
+pub(crate) fn protocol(headers: &HeaderMap) -> u32 {
+    headers.get(HEADER_AGENT).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse().ok()).unwrap_or(MIN_PROTOCOL)
+}
+
+/// 서비스 상태를 그 호스트 앱이 읽을 수 있게 보낸다.
+fn status_reply(headers: &HeaderMap, status: ServiceStatus) -> Response {
+    Json(status.for_protocol(protocol(headers))).into_response()
+}
+
+fn bytes_reply(bytes: Vec<u8>) -> Response {
+    ([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response()
 }
 
 pub(crate) fn token(headers: &HeaderMap) -> Result<String, AgentError> {
@@ -93,8 +110,13 @@ async fn create(State(agent): Shared, body: Bytes) -> Result<Response, AgentErro
     Ok(Json(agent.create(pkg).await?).into_response())
 }
 
-async fn status(State(agent): Shared, Json(queries): Json<Vec<StatusQuery>>) -> Response {
-    Json(agent.status(&queries)).into_response()
+async fn status(State(agent): Shared, headers: HeaderMap, Json(queries): Json<Vec<StatusQuery>>) -> Response {
+    let v = protocol(&headers);
+    let mut items = agent.status(&queries);
+    for item in &mut items {
+        item.status = item.status.take().map(|s| s.for_protocol(v));
+    }
+    Json(items).into_response()
 }
 
 async fn approve(
@@ -104,7 +126,7 @@ async fn approve(
     Json(body): Json<Approve>,
 ) -> Result<Response, AgentError> {
     let token = token(&headers)?;
-    Ok(Json(agent.approve(&id, Some(&token), body).await?).into_response())
+    Ok(status_reply(&headers, agent.approve(&id, Some(&token), body).await?))
 }
 
 async fn reject(
@@ -114,7 +136,7 @@ async fn reject(
     Json(body): Json<Reject>,
 ) -> Result<Response, AgentError> {
     let token = token(&headers)?;
-    Ok(Json(agent.reject(&id, Some(&token), &body.name).await?).into_response())
+    Ok(status_reply(&headers, agent.reject(&id, Some(&token), &body.name).await?))
 }
 
 async fn finish(
@@ -124,10 +146,30 @@ async fn finish(
     Json(body): Json<Finish>,
 ) -> Result<Response, AgentError> {
     let token = token(&headers)?;
-    Ok(Json(agent.finish(&id, Some(&token), body.save).await?).into_response())
+    Ok(status_reply(&headers, agent.finish(&id, Some(&token), body.save).await?))
 }
 
 async fn retry(State(agent): Shared, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, AgentError> {
     let token = token(&headers)?;
-    Ok(Json(agent.retry(&id, Some(&token)).await?).into_response())
+    Ok(status_reply(&headers, agent.retry(&id, Some(&token)).await?))
+}
+
+async fn save_data(State(agent): Shared, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, AgentError> {
+    let token = token(&headers)?;
+    Ok(bytes_reply(agent.save_data(&id, Some(&token)).await?))
+}
+
+async fn source(State(agent): Shared, Path(id): Path<String>, headers: HeaderMap) -> Result<Response, AgentError> {
+    let token = token(&headers)?;
+    Ok(bytes_reply(agent.source(&id, Some(&token)).await?))
+}
+
+async fn host_saved(
+    State(agent): Shared,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<HostSaved>,
+) -> Result<Response, AgentError> {
+    let token = token(&headers)?;
+    Ok(status_reply(&headers, agent.host_saved(&id, Some(&token), body).await?))
 }

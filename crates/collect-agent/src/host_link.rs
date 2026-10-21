@@ -48,7 +48,8 @@ pub async fn upgrade(
     let token = token(&headers)?;
     let service = agent.owned(&id, Some(&token))?;
     agent.live_session(&service)?;
-    Ok(ws.max_message_size(MAX_REQUEST).on_upgrade(move |socket| serve(socket, agent, service)))
+    let protocol = version.unwrap_or(LINK_PROTOCOL);
+    Ok(ws.max_message_size(MAX_REQUEST).on_upgrade(move |socket| serve(socket, agent, service, protocol)))
 }
 
 fn json<T: Serialize>(v: &T) -> Value {
@@ -70,11 +71,14 @@ fn same_status(a: &Option<ServiceStatus>, b: &Option<ServiceStatus>) -> bool {
     strip(a) == strip(b)
 }
 
-async fn answer(agent: &Arc<Agent>, service: &Arc<Service>, frame: LinkFrame) -> LinkMsg {
+async fn answer(agent: &Arc<Agent>, service: &Arc<Service>, frame: LinkFrame, protocol: u32) -> LinkMsg {
     let id = frame.id;
     let result = match frame.call {
         LinkCall::Host { req } => agent.host_request(service, req).await,
-        LinkCall::State => agent.link_state(service).await.map(|s| json(&s)),
+        LinkCall::State => agent.link_state(service).await.map(|mut s| {
+            s.status = s.status.for_protocol(protocol);
+            json(&s)
+        }),
         LinkCall::IpNames { names } => {
             agent.set_received(&service.id, names).map(|_| Value::Null).map_err(|e| e.message)
         }
@@ -85,13 +89,14 @@ async fn answer(agent: &Arc<Agent>, service: &Arc<Service>, frame: LinkFrame) ->
     }
 }
 
-async fn serve(socket: WebSocket, agent: Arc<Agent>, service: Arc<Service>) {
+async fn serve(socket: WebSocket, agent: Arc<Agent>, service: Arc<Service>, protocol: u32) {
     let Some(session) = service.session() else { return };
     tracing::info!(id = %service.id, "관리자 연결");
     let (mut sink, mut stream) = socket.split();
     let (mut snap, mut comms, mut events) = (session.subscribe(), session.subscribe_comms(), session.host_events());
     let (mut changes, mut stopping) = (agent.subscribe(), agent.stopping());
-    let mut status = agent.status_of(&service.id, None).ok();
+    let status_now = || agent.status_of(&service.id, None).ok().map(|s| s.for_protocol(protocol));
+    let mut status = status_now();
     let mut recalc = service.recalc_status();
     let first = [
         HostPush::Snapshot(json(&*snap.borrow_and_update())),
@@ -109,7 +114,7 @@ async fn serve(socket: WebSocket, agent: Arc<Agent>, service: Arc<Service>) {
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
                     let reply = match serde_json::from_str::<LinkFrame>(&text) {
-                        Ok(frame) => answer(&agent, &service, frame).await,
+                        Ok(frame) => answer(&agent, &service, frame, protocol).await,
                         Err(e) => {
                             let id = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["id"].as_u64()).unwrap_or(0);
                             LinkMsg::Err { id, message: format!("알 수 없는 요청입니다(호스트 앱과 에이전트의 버전을 맞춰 주세요): {e}") }
@@ -144,7 +149,7 @@ async fn serve(socket: WebSocket, agent: Arc<Agent>, service: Arc<Service>) {
                 let mut ended = false;
                 if changes.has_changed().unwrap_or(true) {
                     changes.mark_unchanged();
-                    let now = agent.status_of(&service.id, None).ok();
+                    let now = status_now();
                     if !same_status(&now, &status) {
                         status = now;
                         out.extend(status.clone().map(HostPush::Status));
