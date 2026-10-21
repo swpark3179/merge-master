@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use ts_rs::TS;
 
 mod agent;
+mod agent_save;
 mod handoff;
 mod host;
 mod jobs;
@@ -340,6 +341,9 @@ pub fn run() {
             agent::agent_finish,
             agent::agent_retry,
             agent::agent_forget,
+            agent_save::agent_save_default,
+            agent_save::agent_save_now,
+            agent_save::agent_save_result,
             handoff::agent_handoff_check,
             handoff::agent_handoff,
         ])

@@ -25,7 +25,7 @@ urls: Array<string>,
  */
 nowMs: number, utcOffsetMinutes: number, 
 /**
- * Excel이 설치되어 있다(마감 때 저장·수식 계산에 쓴다).
+ * Excel이 설치되어 있다(마감 때 이 PC에서 저장한다 — 없으면 관리자 앱이 접속했을 때 그 PC에서 저장한다).
  */
 excel: boolean, 
 /**

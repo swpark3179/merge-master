@@ -36,6 +36,8 @@ export function App() {
   /** 에이전트 PC로 넘긴 서비스들과 지금 보는 것(고르면 업무 대신 보인다). */
   const [agents, setAgents] = useState<AgentServiceView[]>([]);
   const [agentView, setAgentView] = useState<string | null>(null);
+  /** 관리자 저장 대기의 취합 데이터를 이 PC에 받아 둔 서비스(새로 받으면 알린다 — 켤 때 이미 받아 둔 것은 빼고). */
+  const resultsSeen = useRef<Set<string> | null>(null);
 
   const toast = useCallback((msg: string) => {
     setToastText(msg);
@@ -53,12 +55,21 @@ export function App() {
       .agentServices()
       .then(setAgents)
       .catch(() => {});
-    const offAgents = listen<AgentServiceView[]>("agent-services", (e) => setAgents(e.payload));
+    const offAgents = listen<AgentServiceView[]>("agent-services", (e) => {
+      setAgents(e.payload);
+      const here = e.payload.filter((a) => a.resultHere);
+      const seen = resultsSeen.current;
+      resultsSeen.current = new Set(here.map((a) => a.id));
+      const fresh = seen ? here.find((a) => !seen.has(a.id)) : undefined;
+      if (fresh) {
+        toast(`‘${fresh.title || "새 취합"}’ 취합 데이터를 받았어요. 에이전트 업무에서 ‘이 PC에 저장’을 눌러 주세요`);
+      }
+    });
     return () => {
       void off.then((f) => f());
       void offAgents.then((f) => f());
     };
-  }, []);
+  }, [toast]);
 
   // 앱을 켤 때 한 번: 끝내지 않은 업무를 되살린다(백엔드가 한 번만 하므로 다시 불러도 같은 결과). 업무가 없으면 빈 업무.
   const restored = useRef(false);
@@ -371,7 +382,7 @@ function JobList(props: {
               const name = a.title || "새 취합";
               const pct = s && s.required > 0 ? Math.round((s.filled / s.required) * 100) : null;
               const label = agentStateLabel(a);
-              const warn = !a.reachable || s?.state === "failed";
+              const warn = !a.reachable || s?.state === "failed" || s?.state === "awaitingHost";
               const unread = a.id !== props.currentAgent && a.lastChat > (chatSeen[a.id] ?? 0);
               return (
                 <li key={a.id} className={`job-item${a.id === props.currentAgent ? " active" : ""}`} data-agent={a.id}>

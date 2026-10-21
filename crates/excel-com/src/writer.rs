@@ -27,7 +27,7 @@ use crate::error::{ExcelError, Result};
 use crate::reader::{
     XL_EDGE_BOTTOM, XL_EDGE_LEFT, XL_EDGE_RIGHT, XL_EDGE_TOP, XL_INSIDE_HORIZONTAL, XL_NONE, XL_PATTERN_SOLID,
 };
-use crate::session::{Session, create_excel};
+use crate::session::{Session, create_excel, excel_pid};
 use crate::variant::Var;
 
 const XL_UNDERLINE_SINGLE: i32 = 2;
@@ -546,7 +546,7 @@ impl Session {
             ));
         }
         source.call("SaveCopyAs", vec![Var::str(&full_text)])?;
-        write_copy(&full, plans, started)
+        write_copy(&full, plans, started, &mut |_| {})
     }
 
     /// 원본의 지금 상태를 `path`로 복사만 한다(에이전트 PC로 넘길 사본 — 저장하지 않은 Excel 변경도 든다). 원본이
@@ -566,6 +566,18 @@ impl Session {
         plans: &[(String, ExportPlan)],
         path: &Path,
     ) -> Result<SaveReport> {
+        self.save_file_copy_multi_with(source, plans, path, &mut |_| {})
+    }
+
+    /// [`Session::save_file_copy_multi`]와 같되, 저장에 쓸 숨은 Excel을 띄우면 그 프로세스 번호를 `on_excel`로 알린다
+    /// (에이전트의 저장 프로세스가 멈추면 부모가 그 Excel까지 끝낼 수 있게).
+    pub fn save_file_copy_multi_with(
+        &mut self,
+        source: &Path,
+        plans: &[(String, ExportPlan)],
+        path: &Path,
+        on_excel: &mut dyn FnMut(u32),
+    ) -> Result<SaveReport> {
         let started = std::time::Instant::now();
         let want = extension(&source.to_string_lossy());
         let want = if want.is_empty() { "xlsx".to_string() } else { want };
@@ -578,15 +590,24 @@ impl Session {
             return Err(ExcelError::Type("원본과 다른 파일 이름을 골라 주세요".into()));
         }
         std::fs::copy(&src, &full).map_err(|e| ExcelError::Type(format!("원본을 복사할 수 없습니다: {e}")))?;
-        write_copy(&full, plans, started)
+        write_copy(&full, plans, started, on_excel)
     }
 }
 
-/// 복사해 둔 파일(`full`)을 별도의 숨은 Excel에서 열어 쓰고 저장한다. 실패하면 그 파일을 지운다.
-fn write_copy(full: &Path, plans: &[(String, ExportPlan)], started: std::time::Instant) -> Result<SaveReport> {
+/// 복사해 둔 파일(`full`)을 별도의 숨은 Excel에서 열어 쓰고 저장한다. 실패하면 그 파일을 지운다. 띄운 Excel의 프로세스
+/// 번호는 `on_excel`로 알린다.
+fn write_copy(
+    full: &Path,
+    plans: &[(String, ExportPlan)],
+    started: std::time::Instant,
+    on_excel: &mut dyn FnMut(u32),
+) -> Result<SaveReport> {
     let full_text = full.to_string_lossy().to_string();
     let result = (|| -> Result<SaveReport> {
         let app = create_excel()?;
+        if let Some(pid) = excel_pid(&app) {
+            on_excel(pid);
+        }
         let run = (|| -> Result<SaveReport> {
             app.put("Visible", Var::bool(false))?;
             app.put("DisplayAlerts", Var::bool(false))?;

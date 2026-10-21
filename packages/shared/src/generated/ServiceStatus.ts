@@ -14,7 +14,19 @@ nowMs: number, online: number, roster: number, pending: Array<PendingPerson>, re
 /**
  * 저장을 시도한 횟수(실패 포함).
  */
-attempts: number, lastError?: string, 
+attempts: number, 
+/**
+ * 받아 갈 취합 완료 데이터가 있다(`GET /agent/services/{id}/save-data`).
+ */
+resultReady: boolean, 
+/**
+ * 저장한 곳이 관리자 PC다(`saved_path`는 그 PC의 경로).
+ */
+savedOnHost: boolean, 
+/**
+ * 에이전트 PC에 Excel이 있다(마감 때 그 PC에서 저장한다).
+ */
+excel: boolean, lastError?: string, 
 /**
  * 마지막 채팅 시각.
  */

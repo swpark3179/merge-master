@@ -9,6 +9,8 @@ use crate::settings::write_atomic;
 
 pub const RECORD_FILE: &str = "record.json";
 pub const STORE_FILE: &str = "session.sqlite";
+/// 마감 때 남기는 취합 완료 데이터([`agent_protocol::save_data::SaveData`]). 엑셀로 저장하면(이 PC 또는 관리자 PC) 지운다.
+pub const RESULT_FILE: &str = "result.mmsave";
 
 /// 끝났을 때의 진행률(세션을 놓은 뒤에도 상태에 보인다).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -53,6 +55,15 @@ pub struct Record {
     pub finished_at_ms: Option<i64>,
     #[serde(default)]
     pub last: Option<Progress>,
+    /// 취합 완료 데이터([`RESULT_FILE`])를 남겼다(엑셀로 저장하면 지운다).
+    #[serde(default)]
+    pub result_file: bool,
+    /// 엑셀 저장을 시작한 시각(끝나면 지운다 — 다시 켰을 때 남아 있으면 저장하던 도중 꺼진 것).
+    #[serde(default)]
+    pub excel_started_ms: Option<i64>,
+    /// 관리자 PC(넘긴 호스트 앱)에서 저장했다(`saved_path`는 그 PC의 경로).
+    #[serde(default)]
+    pub saved_on_host: bool,
 }
 
 impl Record {

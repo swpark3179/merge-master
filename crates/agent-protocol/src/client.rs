@@ -7,15 +7,15 @@ use serde::de::DeserializeOwned;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{
-    AgentInfo, ApiError, Approve, Created, DEFAULT_PORT, Finish, FolderList, HEADER_AGENT, HEADER_TOKEN, PROTOCOL,
-    Package, Reject, ServiceStatus, StatusItem, StatusQuery,
+    AgentInfo, ApiError, Approve, Created, DEFAULT_PORT, Finish, FolderList, HEADER_AGENT, HEADER_TOKEN, HostSaved,
+    MAX_PACKAGE, PROTOCOL, Package, Reject, ServiceStatus, StatusItem, StatusQuery,
 };
 
 /// 연결·짧은 요청을 기다리는 시간.
 const SHORT: Duration = Duration::from_secs(5);
-/// 넘기기(큰 묶음)를 기다리는 시간.
+/// 넘기기(큰 묶음)·취합 데이터 받기를 기다리는 시간.
 const UPLOAD: Duration = Duration::from_secs(300);
-/// 응답의 최대 크기.
+/// 응답의 최대 크기(취합 데이터·원본 받기는 [`MAX_PACKAGE`]).
 const MAX_RESPONSE: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,6 +131,23 @@ impl AgentClient {
         self.call("POST", &format!("/agent/services/{id}/retry"), Some(token), Vec::new(), SHORT).await
     }
 
+    /// 취합 데이터([`crate::save_data::SaveData`]를 담은 파일 그대로): 마감 때 남긴 것, 서비스 중이면 지금 상태.
+    pub async fn save_data(&self, id: &str, token: &str) -> Result<Vec<u8>, ClientError> {
+        self.call_bytes("GET", &format!("/agent/services/{id}/save-data"), Some(token), Vec::new(), UPLOAD, MAX_PACKAGE)
+            .await
+    }
+
+    /// 넘길 때 보낸 원본 통합문서.
+    pub async fn source(&self, id: &str, token: &str) -> Result<Vec<u8>, ClientError> {
+        self.call_bytes("GET", &format!("/agent/services/{id}/source"), Some(token), Vec::new(), UPLOAD, MAX_PACKAGE)
+            .await
+    }
+
+    /// 관리자 PC에서 저장했다(에이전트는 취합 데이터를 지우고 끝낸다).
+    pub async fn host_saved(&self, id: &str, token: &str, body: &HostSaved) -> Result<ServiceStatus, ClientError> {
+        self.call("POST", &format!("/agent/services/{id}/host-saved"), Some(token), json(body), SHORT).await
+    }
+
     async fn call<T: DeserializeOwned>(
         &self,
         method: &str,
@@ -139,7 +156,21 @@ impl AgentClient {
         body: Vec<u8>,
         wait: Duration,
     ) -> Result<T, ClientError> {
-        let (status, bytes) = tokio::time::timeout(wait, self.send(method, path, token, &body))
+        let bytes = self.call_bytes(method, path, token, body, wait, MAX_RESPONSE).await?;
+        serde_json::from_slice(&bytes).map_err(|e| ClientError::Unreachable(format!("응답을 읽을 수 없습니다: {e}")))
+    }
+
+    /// 보내고 성공한 응답의 본문을 그대로 돌려준다(`max`보다 크면 실패).
+    async fn call_bytes(
+        &self,
+        method: &str,
+        path: &str,
+        token: Option<&str>,
+        body: Vec<u8>,
+        wait: Duration,
+        max: usize,
+    ) -> Result<Vec<u8>, ClientError> {
+        let (status, bytes) = tokio::time::timeout(wait, self.send(method, path, token, &body, max))
             .await
             .map_err(|_| ClientError::Unreachable("응답이 없습니다(시간 초과)".into()))??;
         if !(200..300).contains(&status) {
@@ -148,7 +179,7 @@ impl AgentClient {
                 .unwrap_or_else(|_| format!("에이전트 오류({status})"));
             return Err(ClientError::Api { status, message });
         }
-        serde_json::from_slice(&bytes).map_err(|e| ClientError::Unreachable(format!("응답을 읽을 수 없습니다: {e}")))
+        Ok(bytes)
     }
 
     async fn send(
@@ -157,6 +188,7 @@ impl AgentClient {
         path: &str,
         token: Option<&str>,
         body: &[u8],
+        max: usize,
     ) -> Result<(u16, Vec<u8>), ClientError> {
         let io = |e: std::io::Error| ClientError::Unreachable(e.to_string());
         let mut stream = tokio::time::timeout(SHORT, tokio::net::TcpStream::connect((self.host.as_str(), self.port)))
@@ -181,8 +213,8 @@ impl AgentClient {
         stream.flush().await.map_err(io)?;
         // 읽는 버퍼를 future(스택)에 두지 않는다 — 호스트 앱은 command future를 메인 스레드에서 만들어 넘긴다(`small_futures`).
         let mut out = Vec::new();
-        (&mut stream).take(MAX_RESPONSE as u64 + 1).read_to_end(&mut out).await.map_err(io)?;
-        if out.len() > MAX_RESPONSE {
+        (&mut stream).take(max as u64 + 1).read_to_end(&mut out).await.map_err(io)?;
+        if out.len() > max {
             return Err(ClientError::Unreachable("응답이 너무 큽니다".into()));
         }
         parse_response(&out).ok_or_else(|| ClientError::Unreachable("응답이 올바르지 않습니다".into()))
@@ -285,5 +317,7 @@ mod tests {
         assert!(std::mem::size_of_val(&c.info()) < LIMIT);
         assert!(std::mem::size_of_val(&c.status(&[])) < LIMIT);
         assert!(std::mem::size_of_val(&c.folders(&[])) < LIMIT);
+        assert!(std::mem::size_of_val(&c.save_data("s", "t")) < LIMIT);
+        assert!(std::mem::size_of_val(&c.source("s", "t")) < LIMIT);
     }
 }

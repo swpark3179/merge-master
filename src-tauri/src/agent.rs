@@ -4,6 +4,7 @@
 //! id·관리 키)는 앱 설정 폴더의 `agents.json`에 기억하고, 3초마다 상태를 물어 `agent-services` 이벤트로 보낸다.
 //! 넘기다 응답을 놓쳤으면(`pending`) 에이전트에 물어 받았으면 이 PC의 업무를 끝내고, 받지 않았으면 기억을 지운다.
 //! 서비스 중인 것은 관리자 연결을 열어 이 PC 업무처럼 다룬다([`crate::remote`] — 설정·모니터링·소통·참여자 승인).
+//! 이 PC의 Excel로 저장하는 일(지금 상태 저장·관리자 저장 대기)은 [`crate::agent_save`].
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -11,7 +12,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use agent_protocol::client::{AgentClient, ClientError};
-use agent_protocol::{AgentInfo, FolderList, ServiceState, ServiceStatus, StatusQuery};
+use agent_protocol::{AgentInfo, FolderList, HostSaved, ServiceState, ServiceStatus, StatusQuery};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
@@ -43,6 +44,25 @@ pub(crate) struct AgentRef {
     /// 이 PC의 업무를 끝냈다.
     #[serde(default)]
     pub local_ended: bool,
+    /// 넘길 때 보낸 원본 사본(이 PC — 이 PC에서 저장할 때 쓴다).
+    #[serde(default)]
+    pub source: Option<PathBuf>,
+    /// 원본 통합문서의 전체 경로(이 PC에서 저장할 때 기본 폴더).
+    #[serde(default)]
+    pub original: Option<String>,
+    /// 받아 둔 취합 데이터(관리자 저장 대기).
+    #[serde(default)]
+    pub result: Option<PathBuf>,
+    /// 이 PC에 저장했지만 아직 에이전트에 알리지 못했다(다음 폴링 때 다시 알린다).
+    #[serde(default)]
+    pub host_saved: Option<HostSaved>,
+}
+
+impl AgentRef {
+    /// 이 PC에 둔 파일(원본 사본·받아 둔 취합 데이터).
+    pub(crate) fn local_files(&self) -> Vec<PathBuf> {
+        self.source.iter().chain(&self.result).cloned().collect()
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -79,6 +99,11 @@ pub struct AgentServiceView {
     pub live: bool,
     /// 참여자가 보낸 마지막 채팅 번호(안 읽은 채팅 표시, 없으면 0).
     pub last_chat: u32,
+    /// 관리자 저장 대기의 취합 데이터를 이 PC에 받아 두었다.
+    pub result_here: bool,
+    /// 이 PC에 저장했지만 에이전트에 아직 알리지 못한 파일.
+    #[ts(optional)]
+    pub saved_here: Option<String>,
     #[ts(type = "number")]
     pub created_at_ms: i64,
 }
@@ -115,6 +140,8 @@ pub(crate) struct Agents {
     views: Mutex<Vec<AgentServiceView>>,
     /// 지금 넘기는 중인 서비스(넘기기가 끝날 때까지 정리하지 않는다).
     busy: Mutex<HashSet<String>>,
+    /// 취합 데이터를 받는 중인 서비스.
+    pub(crate) fetching: Mutex<HashSet<String>>,
 }
 
 impl Agents {
@@ -168,12 +195,18 @@ impl Agents {
         });
     }
 
+    /// 기억을 지운다(이 PC에 둔 원본 사본·받아 둔 취합 데이터도).
     pub(crate) fn remove(&self, id: &str) {
-        self.update(|d| d.services.retain(|r| r.id != id));
+        let mut gone = Vec::new();
+        self.update(|d| {
+            gone.extend(d.services.iter().filter(|r| r.id == id).flat_map(AgentRef::local_files));
+            d.services.retain(|r| r.id != id);
+        });
         self.last.lock().unwrap().remove(id);
+        remove_files(&gone);
     }
 
-    fn refs(&self) -> Vec<AgentRef> {
+    pub(crate) fn refs(&self) -> Vec<AgentRef> {
         self.data.lock().unwrap().services.clone()
     }
 
@@ -190,6 +223,11 @@ impl Agents {
     pub(crate) fn remember_addr(&self, addr: &str) {
         let addr = addr.to_string();
         self.update(|d| d.last_addr = Some(addr));
+    }
+
+    /// 마지막으로 받은 상태(에이전트가 그 서비스를 아는 때만).
+    pub(crate) fn last_status(&self, id: &str) -> Option<ServiceStatus> {
+        self.last.lock().unwrap().get(id).filter(|l| !l.gone).and_then(|l| l.status.clone())
     }
 
     pub(crate) fn record_status(&self, id: &str, status: ServiceStatus) {
@@ -238,6 +276,8 @@ impl Agents {
                     linked: remote.as_ref().is_some_and(|x| x.linked()),
                     live: running && remote.as_ref().is_some_and(|x| x.stopped().is_none()),
                     last_chat: remote.as_ref().map_or(0, |x| x.last_chat()),
+                    result_here: r.result.as_ref().is_some_and(|p| p.is_file()),
+                    saved_here: r.host_saved.as_ref().map(|h| h.saved_path.clone()),
                     created_at_ms: r.created_at_ms,
                 }
             })
@@ -252,6 +292,17 @@ impl Agents {
 
     pub(crate) fn view(&self, id: &str, remotes: &Remotes) -> Option<AgentServiceView> {
         self.build(remotes).into_iter().find(|v| v.id == id)
+    }
+}
+
+/// 이 PC에 둔 파일을 지운다(없으면 그만).
+pub(crate) fn remove_files(files: &[PathBuf]) {
+    for f in files {
+        if let Err(e) = std::fs::remove_file(f)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("{}을(를) 지울 수 없습니다: {e}", f.display());
+        }
     }
 }
 
@@ -339,6 +390,7 @@ pub(crate) async fn refresh(app: &AppHandle) {
             }
         }
     }
+    crate::agent_save::follow_up(app).await;
     crate::remote::sync(app);
     emit(app);
 }
@@ -440,7 +492,7 @@ pub async fn agent_finish(
     act(&app, &state, &id, |c, r| async move { c.finish(&r.id, &r.token, save).await }).await
 }
 
-/// 저장 실패를 다시 저장한다.
+/// 저장 실패·관리자 저장 대기를 에이전트 PC에서 다시 저장한다.
 #[tauri::command]
 pub async fn agent_retry(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<AgentServiceView> {
     act(&app, &state, &id, |c, r| async move { c.retry(&r.id, &r.token).await }).await

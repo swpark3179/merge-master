@@ -12,6 +12,7 @@ collect-server.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ts-rs.workspace = true
+zstd.workspace = true
 tokio = { workspace = true, optional = true, features = ["io-util"] }
 tokio-tungstenite = { version = "0.30", optional = true }
 futures-util = { version = "0.3", optional = true }

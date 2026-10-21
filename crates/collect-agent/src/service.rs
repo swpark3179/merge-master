@@ -1,4 +1,4 @@
-//! 넘겨받은 서비스 하나: 서비스 폴더(기록 파일·원본·기록), 세션, 수식 계산 상태.
+//! 넘겨받은 서비스 하나: 서비스 폴더(기록 파일·원본·기록·취합 데이터), 세션, 수식 계산 상태.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use agent_protocol::{Created, PendingPerson, ServiceState, ServiceStatus};
 use collect_server::{RecalcStatus, SessionHandle};
 
-use crate::record::{Progress, Record, STORE_FILE};
+use crate::record::{Progress, RESULT_FILE, Record, STORE_FILE};
 
 pub struct Service {
     pub id: String,
@@ -14,7 +14,7 @@ pub struct Service {
     record: Mutex<Record>,
     /// 서비스 중·저장 전이면 있다(끝나면 놓는다).
     session: Mutex<Option<SessionHandle>>,
-    pub(crate) recalc: Arc<Mutex<RecalcStatus>>,
+    recalc: Mutex<RecalcStatus>,
     /// 저장은 한 번에 하나.
     pub(crate) saving: tokio::sync::Mutex<()>,
     /// 관리자 연결의 쓰기(읽기 잠금)와 저장할 내용 뜨기(쓰기 잠금)가 겹치지 않게.
@@ -26,6 +26,8 @@ pub(crate) struct View<'a> {
     pub urls: &'a dyn Fn(&str) -> Vec<String>,
     pub now_ms: i64,
     pub deadline_ms: &'a dyn Fn(&str) -> i64,
+    /// 이 PC에 Excel이 있다.
+    pub excel: bool,
 }
 
 impl Service {
@@ -35,7 +37,7 @@ impl Service {
             dir,
             record: Mutex::new(record),
             session: Mutex::new(session),
-            recalc: Arc::new(Mutex::new(RecalcStatus::None)),
+            recalc: Mutex::new(RecalcStatus::None),
             saving: tokio::sync::Mutex::new(()),
             edits: tokio::sync::RwLock::new(()),
         })
@@ -74,6 +76,10 @@ impl Service {
         a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
     }
 
+    pub(crate) fn set_recalc(&self, status: RecalcStatus) {
+        *self.recalc.lock().unwrap() = status;
+    }
+
     /// 수식 계산 상태(서비스 중일 때만).
     pub fn recalc_status(&self) -> RecalcStatus {
         if self.state() == ServiceState::Running { self.recalc.lock().unwrap().clone() } else { RecalcStatus::None }
@@ -85,6 +91,11 @@ impl Service {
 
     pub fn store_path(&self) -> PathBuf {
         self.dir.join(STORE_FILE)
+    }
+
+    /// 마감 때 남기는 취합 완료 데이터.
+    pub fn result_path(&self) -> PathBuf {
+        self.dir.join(RESULT_FILE)
     }
 
     /// 지금 진행률(세션이 없으면 끝났을 때 남긴 것).
@@ -147,6 +158,9 @@ impl Service {
             saved_path: r.saved_path.clone(),
             saved_at_ms: r.saved_at_ms,
             attempts: r.attempts,
+            result_ready: r.result_file,
+            saved_on_host: r.saved_on_host,
+            excel: view.excel,
             last_error: r.last_error.clone(),
             last_chat_ms: session.as_ref().and_then(|s| s.comms().chat.last().map(|c| c.at_ms)),
             created_at_ms: r.created_at_ms,

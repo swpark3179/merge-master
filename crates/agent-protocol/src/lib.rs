@@ -2,7 +2,9 @@
 //!
 //! 에이전트는 다른 PC에서 창 없이(트레이) 도는 프로그램이다. 호스트 앱은 공유를 시작하기 전에 업무를 에이전트로 넘기고
 //! ([`Package`]: 넘길 내용 + 기록 파일 + 원본 통합문서), 에이전트가 그 PC에서 참여자 서버를 열어 마감 일시까지 서비스한다.
-//! 마감이 되면 에이전트가 엑셀을 저장하고 그 서비스를 끝낸다.
+//! 에이전트는 서비스 중에 Excel을 열지 않는다(넘겨받은 데이터로만 서비스한다). 마감이 되면 취합 완료 데이터
+//! ([`save_data::SaveData`])부터 남긴 뒤, 그 PC에 Excel이 있으면 별도 프로세스에서 엑셀로 저장하고 그 서비스를 끝낸다.
+//! Excel이 없거나 저장에 실패하면 '관리자 저장 대기'로 두고, 넘긴 호스트 앱이 데이터를 받아 그 PC에서 저장한다.
 //!
 //! - 모든 요청에는 헤더 [`HEADER_AGENT`]`: `[`MIN_PROTOCOL`]~[`PROTOCOL`]이 있어야 한다(밖이면 426). 브라우저
 //!   요청(`Origin` 헤더)은 받지 않는다.
@@ -15,6 +17,7 @@ pub mod client;
 pub mod link;
 #[cfg(feature = "client")]
 pub mod link_client;
+pub mod save_data;
 
 use std::collections::BTreeMap;
 
@@ -25,11 +28,13 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// 관리 API 판. 호스트 앱은 이 판으로 보내고, 에이전트는 [`MIN_PROTOCOL`]부터 받는다(옛 호스트 앱의 HTTP 요청). 관리자
-/// 연결은 [`link::LINK_PROTOCOL`]부터. 새 호스트 앱이 옛 에이전트에 보내면 426(에이전트를 바꾸라고 알린다 — 옛 에이전트는
-/// 지운 행·숨김 해제를 모르고 엉뚱한 행에 저장한다).
-pub const PROTOCOL: u32 = 2;
+/// 연결은 [`link::LINK_PROTOCOL`]부터, 관리자 저장 대기·취합 데이터 받기는 [`HOST_SAVE_PROTOCOL`]부터. 새 호스트 앱이 옛
+/// 에이전트에 보내면 426(에이전트를 바꾸라고 알린다 — 옛 에이전트는 지운 행·숨김 해제를 모르고 엉뚱한 행에 저장한다).
+pub const PROTOCOL: u32 = 3;
 /// 에이전트가 받는 가장 옛 판.
 pub const MIN_PROTOCOL: u32 = 1;
+/// 관리자 저장 대기([`ServiceState::AwaitingHost`])를 아는 판. 이보다 옛 호스트 앱에는 '저장 실패'로 보인다.
+pub const HOST_SAVE_PROTOCOL: u32 = 3;
 /// 에이전트의 기본 포트(참여자 접속과 관리 API를 같이 받는다).
 pub const DEFAULT_PORT: u16 = 8090;
 pub const HEADER_AGENT: &str = "x-mm-agent";
@@ -67,7 +72,7 @@ pub struct AgentInfo {
     #[ts(type = "number")]
     pub now_ms: i64,
     pub utc_offset_minutes: i32,
-    /// Excel이 설치되어 있다(마감 때 저장·수식 계산에 쓴다).
+    /// Excel이 설치되어 있다(마감 때 이 PC에서 저장한다 — 없으면 관리자 앱이 접속했을 때 그 PC에서 저장한다).
     pub excel: bool,
     /// 진행 중인 서비스 수.
     pub services: u32,
@@ -156,8 +161,11 @@ pub enum ServiceState {
     Saving,
     /// 저장하고 끝냈다.
     Done,
-    /// 저장하지 못했다(다시 저장할 수 있다, 공유는 닫혔다).
+    /// 저장하지 못했다(다시 저장할 수 있다, 공유는 닫혔다). 취합 데이터도 남기지 못한 경우.
     Failed,
+    /// 관리자 저장 대기: 이 PC에서 엑셀로 저장하지 못해(Excel이 없거나 실패) 취합 완료 데이터를 남겨 두었다. 넘긴 호스트
+    /// 앱이 받아 그 PC에서 저장하면 데이터를 지우고 끝낸다. 공유는 닫혔다.
+    AwaitingHost,
     /// 저장 없이 끝냈다.
     Cancelled,
 }
@@ -211,6 +219,15 @@ pub struct ServiceStatus {
     pub saved_at_ms: Option<i64>,
     /// 저장을 시도한 횟수(실패 포함).
     pub attempts: u32,
+    /// 받아 갈 취합 완료 데이터가 있다(`GET /agent/services/{id}/save-data`).
+    #[serde(default)]
+    pub result_ready: bool,
+    /// 저장한 곳이 관리자 PC다(`saved_path`는 그 PC의 경로).
+    #[serde(default)]
+    pub saved_on_host: bool,
+    /// 에이전트 PC에 Excel이 있다(마감 때 그 PC에서 저장한다).
+    #[serde(default)]
+    pub excel: bool,
     #[ts(optional)]
     pub last_error: Option<String>,
     /// 마지막 채팅 시각.
@@ -218,6 +235,17 @@ pub struct ServiceStatus {
     pub last_chat_ms: Option<i64>,
     #[ts(type = "number")]
     pub created_at_ms: i64,
+}
+
+impl ServiceStatus {
+    /// `protocol`판 호스트 앱이 읽을 수 있게 고친다: [`HOST_SAVE_PROTOCOL`]보다 옛 판에는 관리자 저장 대기를 '저장 실패'로
+    /// (옛 앱은 모르는 상태를 읽지 못한다 — 다시 저장은 그대로 된다).
+    pub fn for_protocol(mut self, protocol: u32) -> ServiceStatus {
+        if protocol < HOST_SAVE_PROTOCOL && self.state == ServiceState::AwaitingHost {
+            self.state = ServiceState::Failed;
+        }
+        self
+    }
 }
 
 /// `POST /agent/status` 본문의 한 줄.
@@ -260,6 +288,15 @@ pub struct Reject {
 pub struct Finish {
     /// 저장하고 끝낸다(아니면 저장 없이).
     pub save: bool,
+}
+
+/// `POST /agent/services/{id}/host-saved`: 관리자 PC에서 취합 데이터를 저장했다(에이전트는 데이터를 지우고 끝낸다).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostSaved {
+    /// 관리자 PC에 저장한 파일.
+    pub saved_path: String,
+    pub saved_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
