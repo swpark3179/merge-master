@@ -14,6 +14,10 @@
 # 필요한 시크릿
 #   RELEASE_TOKEN (선택) : 기본 브랜치에 보호 규칙이 있어 기본 토큰으로 푸시가 막힐 때만 등록
 #   추가로 필요한 시크릿 없음
+#
+# 쓰는 변수 (Settings → Secrets and variables → Actions → Variables)
+#   AGENT_URL (선택) : 호스트 앱 1c '에이전트 PC'의 에이전트 주소 입력란 기본값 (예: http://10.0.0.7:8090, PC01)
+#                      한 번도 연결하지 않은 PC에서만 채운다(연결한 적이 있으면 마지막 주소). 바꾸면 다음 Release부터 반영
 
 name: Release
 
@@ -154,6 +158,9 @@ jobs:
           echo "VERSION_FILES=Cargo.toml Cargo.lock" >> "$GITHUB_ENV"
 
       - name: "3-2. 빌드 (단독 실행 exe)"
+        env:
+          # 에이전트 주소 입력란 기본값(저장소 변수, 없으면 빈 값 = 기본값 없음). 실행 파일에 들어간다(src-tauri/src/agent.rs).
+          MM_AGENT_URL: ${{ vars.AGENT_URL }}
         run: |
           set -euo pipefail
           # 참여자 웹은 collect-server에 들어간다(rust-embed, allow_missing).
@@ -223,6 +230,7 @@ jobs:
       - name: "5. Release 페이지 생성 (PR 목록 + 빌드 결과물 첨부)"
         env:
           TARGET_SHA: ${{ steps.commit.outputs.sha }}
+          AGENT_URL: ${{ vars.AGENT_URL }}
         run: |
           set -euo pipefail
           # --generate-notes: 이전 릴리즈 태그부터 이번 커밋까지 머지된 PR 목록을 GitHub가 본문에 작성한다
@@ -233,3 +241,4 @@ jobs:
           gh release create "$TAG" release-assets/* "${ARGS[@]}"
           echo "### 🚀 ${TAG} 릴리즈 완료" >> "$GITHUB_STEP_SUMMARY"
           echo "https://github.com/${GH_REPO}/releases/tag/${TAG}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 에이전트 주소 기본값(AGENT_URL): ${AGENT_URL:-없음}" >> "$GITHUB_STEP_SUMMARY"

@@ -376,10 +376,12 @@ fn client(addr: &str) -> CmdResult<AgentClient> {
     AgentClient::new(addr)
 }
 
-/// 마지막으로 연결한 에이전트 주소.
+/// 에이전트 주소 입력란의 기본값: 마지막으로 연결한 주소, 없으면 빌드 때 넣은 주소(`MM_AGENT_URL` — Release 워크플로는
+/// 저장소 변수 `AGENT_URL`).
 #[tauri::command]
 pub fn agent_last_addr(state: State<'_, AppState>) -> Option<String> {
-    state.agents.data.lock().unwrap().last_addr.clone()
+    let last = state.agents.data.lock().unwrap().last_addr.clone();
+    last.or_else(|| option_env!("MM_AGENT_URL").map(str::trim).filter(|a| !a.is_empty()).map(str::to_string))
 }
 
 /// 에이전트에 연결해 본다(PC 이름·버전·기본 저장 폴더·Excel·시각).
