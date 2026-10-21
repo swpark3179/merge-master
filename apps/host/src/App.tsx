@@ -2,6 +2,7 @@ import type { AgentServiceView, JobSummary } from "@mm/shared";
 import { formatDeadline } from "@mm/shared";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
+import type { ReactNode } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AgentWorkspace, agentStateLabel } from "./AgentWorkspace";
@@ -12,11 +13,14 @@ import { JobWorkspace } from "./JobWorkspace";
 
 /**
  * 호스트 앱: 여러 취합 업무를 함께 진행한다. 사이드바 위쪽의 업무 목록에서 업무를 고르면 그 업무의 단계 화면
- * ([`JobWorkspace`], 업무마다 새로 그림)이 보인다. 앱을 켜면 끝내지 않은 업무를 모두 되살린다.
+ * ([`JobWorkspace`], 업무마다 새로 그림)이 보인다. 앱을 켜면 끝내지 않은 업무를 모두 되살린다. 업무를 모두 끝내면
+ * 목록이 비고, '+ 새 취합'으로 새로 시작한다.
  */
 export function App() {
   const [jobs, setJobs] = useState<JobSummary[]>([]);
   const [job, setJob] = useState<string | null>(null);
+  /** 앱을 켜며 지난 업무를 확인했다(그 전에는 업무가 없어도 '확인하는 중'). */
+  const [restoreDone, setRestoreDone] = useState(false);
   /** 앱을 켜며 되살리지 못한 업무·다시 공개하지 못한 까닭. */
   const [banner, setBanner] = useState<string | null>(null);
   /** 업무마다 마지막으로 본 단계·채팅 번호. */
@@ -66,6 +70,7 @@ export function App() {
         setJobs(list);
         const ok = r.jobs.filter((j) => !j.error);
         setJob((cur) => cur ?? ok[0]?.id ?? list[list.length - 1]?.id ?? null);
+        setRestoreDone(true);
         if (restored.current) return;
         restored.current = true;
         if (ok.length > 0) toast(`지난 업무 ${ok.length}개를 이어서 열었습니다`);
@@ -75,10 +80,17 @@ export function App() {
         ].filter(Boolean);
         if (problems.length > 0) setBanner(problems.join(" · "));
       })
-      .catch((e) => setBanner(errorText(e)));
+      .catch((e) => {
+        setBanner(errorText(e));
+        setRestoreDone(true);
+      });
   }, [toast]);
 
+  /** 새 업무를 만드는 중(빠르게 두 번 눌러도 하나만). */
+  const creating = useRef(false);
   const createJob = useCallback(async () => {
+    if (creating.current) return;
+    creating.current = true;
     try {
       const created = await appApi.jobCreate();
       setJobs(await appApi.jobsList());
@@ -87,16 +99,17 @@ export function App() {
       setJob(created.id);
     } catch (e) {
       setBanner(errorText(e));
+    } finally {
+      creating.current = false;
     }
   }, []);
 
-  // 보던 업무가 끝났으면(다른 창이 아니라 여기서만 끝내므로 대개 목록이 먼저 바뀜) 남은 업무로. 에이전트로 넘겨 업무가
-  // 하나도 남지 않았으면 에이전트 서비스를 보다가 다른 것을 고를 때 새 업무를 만든다.
+  // 보던 업무가 끝났으면(에이전트로 넘긴 뒤 등, 대개 목록이 먼저 바뀜) 남은 업무로. 하나도 남지 않았으면 빈 화면이고, 새 업무는
+  // 사람이 '+ 새 취합'을 눌러야 만든다(저절로 만들면 끝내기와 목록 이벤트가 겹쳐 빈 업무가 여러 개 생겼다).
   useEffect(() => {
     if (!job || jobs.some((j) => j.id === job)) return;
-    if (jobs.length > 0) setJob(jobs[jobs.length - 1]!.id);
-    else if (!agentView) void createJob();
-  }, [job, jobs, agentView, createJob]);
+    setJob(jobs[jobs.length - 1]?.id ?? null);
+  }, [job, jobs]);
 
   const onHandedOff = useCallback(
     (view: AgentServiceView) => {
@@ -114,13 +127,12 @@ export function App() {
         setJobs(left);
         steps.current.delete(id);
         toast("업무를 끝냈습니다");
-        if (left.length === 0) await createJob();
-        else if (id === job) setJob(left[left.length - 1]!.id);
+        if (id === job) setJob(left[left.length - 1]?.id ?? null);
       } catch (e) {
         setBanner(errorText(e));
       }
     },
-    [createJob, job, toast],
+    [job, toast],
   );
 
   const agent = agentView ? agents.find((a) => a.id === agentView) : undefined;
@@ -217,6 +229,8 @@ export function App() {
             version={version}
           />
         </JobProvider>
+      ) : restoreDone ? (
+        <NoJobWorkspace sidebar={sidebar} banner={bannerNode} version={version} onCreate={() => void createJob()} />
       ) : (
         <div className="shell starting">
           <div className="muted">지난 업무를 확인하는 중…</div>
@@ -240,6 +254,43 @@ export function App() {
         />
       )}
     </>
+  );
+}
+
+/** 진행 중인 업무가 없을 때(모두 끝냈다): 사이드바와 '새 취합 시작'만 보인다. */
+function NoJobWorkspace(props: { sidebar: ReactNode; banner: ReactNode; version: string; onCreate: () => void }) {
+  return (
+    <div className="shell">
+      <header className="titlebar">
+        <div className="brand">
+          <span className="logo" />
+          <b>Merge Master</b>
+        </div>
+        <span className="divider" />
+        <span className="file">열린 업무 없음</span>
+      </header>
+      <div className="body">
+        <nav className="steps" aria-label="업무">
+          {props.sidebar}
+          <span className="spacer" />
+          {props.version && <div className="app-version">v{props.version}</div>}
+        </nav>
+        <div className="main">
+          <div className="step-head">
+            <div>
+              <h1>진행 중인 취합 업무가 없어요</h1>
+              <p>새 취합을 시작하면 참여자와 함께 채울 엑셀 파일을 고르는 불러오기 단계로 갑니다.</p>
+            </div>
+          </div>
+          <main className="content">
+            {props.banner}
+            <div>
+              <button onClick={props.onCreate}>새 취합 시작</button>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
   );
 }
 

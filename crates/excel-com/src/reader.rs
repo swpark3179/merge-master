@@ -20,6 +20,15 @@ use crate::session::Session;
 use crate::variant::Var;
 
 pub(crate) const XL_NONE: i32 = -4142;
+pub(crate) const XL_PATTERN_SOLID: i32 = 1;
+const XL_PATTERN_AUTOMATIC: i32 = -4105;
+const XL_PATTERN_LINEAR_GRADIENT: i32 = 4000;
+const XL_PATTERN_RECTANGULAR_GRADIENT: i32 = 4001;
+/// `Interior.ColorIndex`·`PatternColorIndex`: '자동'(배경은 흰색, 무늬는 검은색으로 보인다)과 '색 없음'.
+const XL_COLOR_INDEX_AUTOMATIC: i32 = -4105;
+const XL_COLOR_INDEX_NONE: i32 = -4142;
+const WHITE: u32 = 0xFF_FFFF;
+const BLACK: u32 = 0;
 const XL_CELL_TYPE_ALL_VALIDATION: i32 = -4174;
 const XL_VALIDATE_LIST: i32 = 3;
 pub(crate) const XL_EDGE_LEFT: i32 = 7;
@@ -466,11 +475,8 @@ fn probe_style(rng: &Dispatch, block: CellRange, probe: &Probe) -> Result<Option
     }
 
     if probe.items.fills {
-        let interior = rng.obj("Interior")?;
-        let pattern = known!(interior.get("Pattern")?).as_i32().unwrap_or(XL_NONE);
-        if pattern != XL_NONE {
-            style.fill = Some(bgr_to_rgb(known!(interior.get("Color")?).as_f64()));
-        }
+        let Some(fill) = probe_fill(&rng.obj("Interior")?, block)? else { return Ok(None) };
+        style.fill = fill;
     }
 
     if probe.items.fonts {
@@ -502,6 +508,133 @@ fn probe_style(rng: &Dispatch, block: CellRange, probe: &Probe) -> Result<Option
         style.borders = borders;
     }
     Ok(Some(style))
+}
+
+/// 배경색. 바깥 `None` = 섞임(블록을 나눠 다시 묻는다), 안쪽 `None` = 채우기 없음.
+///
+/// `Pattern`이 단색이 아닐 때 `Color`를 그대로 쓰면 Excel에서는 멀쩡한 칸이 검은색이 됐다. 그래서
+/// - 단색: `Color`. 검은색(0)은 `ColorIndex`로 한 번 더 확인한다('자동' 색도 0으로 알려 줄 수 있다).
+/// - 무늬(12.5% 회색·빗금 …): 배경색(`Color`) 위에 무늬색(`PatternColor`)을 무늬가 덮는 만큼 섞은 색. '자동' 배경은
+///   흰색, '자동' 무늬는 검은색으로 보인다.
+/// - 그라데이션: 색 지점들의 평균(칸마다 다를 수 있어 한 칸씩 읽는다).
+/// - 색이 아닌 값(음수·범위 밖·숫자 아님)은 검은색으로 두지 않는다: 블록이면 나눠 다시 묻고, 한 칸이면 채우기 없음.
+fn probe_fill(interior: &Dispatch, block: CellRange) -> Result<Option<Option<u32>>> {
+    let unknown = if block.is_single() { Some(None) } else { None };
+    let pattern = interior.get("Pattern")?;
+    if pattern.is_null() {
+        return Ok(None);
+    }
+    let pattern = pattern.as_i32().unwrap_or(XL_NONE);
+    match pattern {
+        XL_NONE => Ok(Some(None)),
+        XL_PATTERN_LINEAR_GRADIENT | XL_PATTERN_RECTANGULAR_GRADIENT if block.is_single() => {
+            Ok(Some(gradient_color(interior)?))
+        }
+        XL_PATTERN_LINEAR_GRADIENT | XL_PATTERN_RECTANGULAR_GRADIENT => Ok(None),
+        XL_PATTERN_SOLID | XL_PATTERN_AUTOMATIC => {
+            let color = interior.get("Color")?;
+            if color.is_null() {
+                return Ok(None);
+            }
+            match excel_color(&color) {
+                Some(0) => {
+                    let index = interior.get("ColorIndex")?;
+                    if index.is_null() {
+                        return Ok(None);
+                    }
+                    Ok(Some(if is_auto_index(&index) { None } else { Some(0) }))
+                }
+                Some(rgb) => Ok(Some(Some(rgb))),
+                None => Ok(unknown),
+            }
+        }
+        _ => {
+            let (bg, bg_index) = (interior.get("Color")?, interior.get("ColorIndex")?);
+            let (fg, fg_index) = (interior.get("PatternColor")?, interior.get("PatternColorIndex")?);
+            if bg.is_null() || bg_index.is_null() || fg.is_null() || fg_index.is_null() {
+                return Ok(None);
+            }
+            let bg = if is_auto_index(&bg_index) { Some(WHITE) } else { excel_color(&bg) };
+            let fg = match fg_index.as_i32() {
+                Some(XL_COLOR_INDEX_AUTOMATIC) => Some(BLACK),
+                Some(XL_COLOR_INDEX_NONE) => bg,
+                _ => excel_color(&fg),
+            };
+            match (bg, fg) {
+                (Some(bg), Some(fg)) => Ok(Some(Some(mix(bg, fg, pattern_share(pattern))))),
+                _ => Ok(unknown),
+            }
+        }
+    }
+}
+
+/// 그라데이션 칸: 색 지점들의 평균. 읽을 수 없으면 채우기 없음(Excel이 끊기거나 바쁜 것은 그대로 알린다).
+fn gradient_color(interior: &Dispatch) -> Result<Option<u32>> {
+    let read = || -> Result<Option<u32>> {
+        let stops = interior.obj("Gradient")?.obj("ColorStops")?;
+        let count = stops.get("Count")?.as_i32().unwrap_or(0);
+        let mut colors = Vec::new();
+        for i in 1..=count {
+            if let Some(c) = excel_color(&stops.obj_call("Item", vec![Var::i32(i)])?.get("Color")?) {
+                colors.push(c);
+            }
+        }
+        Ok(average(&colors))
+    };
+    match read() {
+        Err(e @ (ExcelError::Disconnected | ExcelError::Busy)) => Err(e),
+        Err(_) => Ok(None),
+        ok => ok,
+    }
+}
+
+/// `ColorIndex`·`PatternColorIndex`가 '자동' 또는 '색 없음'.
+fn is_auto_index(index: &Var) -> bool {
+    matches!(index.as_i32(), Some(XL_COLOR_INDEX_AUTOMATIC | XL_COLOR_INDEX_NONE))
+}
+
+/// Excel 색상 값(`0x00BBGGRR`) → `0xRRGGBB`. 색이 아닌 값(음수·`0xFFFFFF`보다 큼·숫자 아님)이면 `None`.
+fn excel_color(v: &Var) -> Option<u32> {
+    let x = v.as_f64()?;
+    (x.is_finite() && (0.0..=f64::from(0xFF_FFFF)).contains(&x)).then(|| bgr_to_rgb(Some(x)))
+}
+
+/// 무늬가 칸을 덮는 비율(대략). 이름은 Excel '셀 서식 → 채우기 → 무늬 스타일'.
+fn pattern_share(pattern: i32) -> f64 {
+    match pattern {
+        -4126 => 0.75,                            // 75% 회색
+        -4125 => 0.5,                             // 50% 회색
+        -4124 => 0.25,                            // 25% 회색
+        17 => 0.125,                              // 12.5% 회색
+        18 => 0.0625,                             // 6.25% 회색
+        -4128 | -4166 | -4121 | -4162 | 9 => 0.5, // 굵은 가로·세로·대각선 줄무늬, 굵은 격자
+        10 => 0.75,                               // 굵은 대각선 교차 빗금
+        11..=14 => 0.25,                          // 가는 가로·세로·대각선 줄무늬
+        15 | 16 => 0.4375,                        // 가는 격자, 가는 대각선 교차 빗금
+        _ => 0.5,
+    }
+}
+
+/// `bg` 위에 `fg`를 `share`만큼 섞은 색(채널마다).
+fn mix(bg: u32, fg: u32, share: f64) -> u32 {
+    let channel = |shift: u32| {
+        let (b, f) = (f64::from((bg >> shift) & 0xFF), f64::from((fg >> shift) & 0xFF));
+        ((b + (f - b) * share).round() as u32) << shift
+    };
+    channel(16) | channel(8) | channel(0)
+}
+
+/// 색들의 평균(채널마다). 색이 없으면 `None`.
+fn average(colors: &[u32]) -> Option<u32> {
+    if colors.is_empty() {
+        return None;
+    }
+    let n = colors.len() as f64;
+    let channel = |shift: u32| {
+        let sum: f64 = colors.iter().map(|c| f64::from((c >> shift) & 0xFF)).sum();
+        ((sum / n).round() as u32) << shift
+    };
+    Some(channel(16) | channel(8) | channel(0))
 }
 
 /// 블록 안 모든 셀의 네 변이 같을 때만 값을 돌려준다: 안쪽 가로선 = 위 = 아래, 안쪽 세로선 = 왼쪽 = 오른쪽.
@@ -770,6 +903,31 @@ mod tests {
     fn bgr_conversion() {
         assert_eq!(bgr_to_rgb(Some(0xBFBFBF as f64)), 0xBFBFBF);
         assert_eq!(bgr_to_rgb(Some(0x0000FF as f64)), 0xFF0000); // Excel 빨강 = 255
+    }
+
+    #[test]
+    fn values_that_are_not_colors_are_not_black() {
+        assert_eq!(excel_color(&Var::f64(0x0000FF as f64)), Some(0xFF0000));
+        assert_eq!(excel_color(&Var::i32(0)), Some(0));
+        assert_eq!(excel_color(&Var::f64(16_777_215.0)), Some(WHITE));
+        // 음수(`as u32`면 0 = 검은색이 되던 값)·범위 밖·숫자 아님
+        assert_eq!(excel_color(&Var::i32(-4105)), None);
+        assert_eq!(excel_color(&Var::f64(16_777_216.0)), None);
+        assert_eq!(excel_color(&Var::empty()), None);
+        assert_eq!(excel_color(&Var::str("")), None);
+        assert!(is_auto_index(&Var::i32(XL_COLOR_INDEX_AUTOMATIC)) && is_auto_index(&Var::i32(XL_COLOR_INDEX_NONE)));
+        assert!(!is_auto_index(&Var::i32(1))); // 1번 = 검은색
+    }
+
+    #[test]
+    fn patterns_mix_pattern_color_into_background() {
+        // '자동' 색의 12.5% 회색 무늬(흰 바탕에 검은 점) = 옅은 회색
+        assert_eq!(mix(WHITE, BLACK, pattern_share(17)), 0xDFDFDF);
+        // 노란 바탕에 빨간 50% 무늬
+        assert_eq!(mix(0xFFFF00, 0xFF0000, pattern_share(-4125)), 0xFF8000);
+        assert_eq!(mix(0x123456, 0x123456, pattern_share(14)), 0x123456);
+        assert_eq!(average(&[0xFF0000, 0x0000FF]), Some(0x800080));
+        assert_eq!(average(&[]), None);
     }
 
     #[test]

@@ -24,7 +24,9 @@ use ts_rs::TS;
 use crate::calc::{MSO_AUTOMATION_SECURITY_FORCE_DISABLE, XL_CALCULATION_MANUAL};
 use crate::dispatch::Dispatch;
 use crate::error::{ExcelError, Result};
-use crate::reader::{XL_EDGE_BOTTOM, XL_EDGE_LEFT, XL_EDGE_RIGHT, XL_EDGE_TOP, XL_INSIDE_HORIZONTAL, XL_NONE};
+use crate::reader::{
+    XL_EDGE_BOTTOM, XL_EDGE_LEFT, XL_EDGE_RIGHT, XL_EDGE_TOP, XL_INSIDE_HORIZONTAL, XL_NONE, XL_PATTERN_SOLID,
+};
 use crate::session::{Session, create_excel};
 use crate::variant::Var;
 
@@ -253,7 +255,11 @@ fn apply_style(rng: &Dispatch, range: CellRange, s: &CellStyle) -> Result<()> {
     font.put("Color", Var::f64(rgb_to_bgr(s.color)))?;
     let interior = rng.obj("Interior")?;
     match s.fill {
-        Some(rgb) => interior.put("Color", Var::f64(rgb_to_bgr(rgb)))?,
+        Some(rgb) => {
+            // 무늬·그라데이션 칸은 앱에서 섞은 단색으로 보였다: 그 색 그대로 단색으로 쓴다(무늬 아래 배경색으로 쓰지 않게).
+            interior.put("Pattern", Var::i32(XL_PATTERN_SOLID))?;
+            interior.put("Color", Var::f64(rgb_to_bgr(rgb)))?;
+        }
         None => interior.put("Pattern", Var::i32(XL_NONE))?,
     }
     let h = match s.h_align {
