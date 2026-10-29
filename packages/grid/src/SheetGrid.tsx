@@ -89,6 +89,8 @@ export interface SheetGridProps {
   onSelectionChange?: (sel: GridSelection) => void;
   /** 행 번호 옆 색 점(행 담당자 표시). */
   rowMarker?: (row: number) => string | undefined;
+  /** 열 머리글(A, B, C…) 글자 오른쪽에 붙는 요소(열 태그 등). */
+  colHeadAdornment?: (col: number) => ReactNode;
   /** 셀 표시 글자를 바꾼다(예: 날짜 열은 일련번호 대신 날짜). `undefined`면 표시 형식대로. */
   cellText?: (row: number, col: number, cell: Cell | undefined, numberFormat: string) => string | undefined;
   /** 활성 칸 위에 겹쳐 그릴 요소(셀 편집기). */
@@ -199,6 +201,7 @@ export function SheetGrid({
   selection,
   onSelectionChange,
   rowMarker,
+  colHeadAdornment,
   cellText,
   overlay,
   marks,
@@ -333,6 +336,7 @@ export function SheetGrid({
           style={{ left: GUTTER_W + x, width: layout.colX[c + 1]! - x }}
         >
           {colLetters(model.origin.col + c)}
+          {colHeadAdornment?.(c)}
           {onResize && <span className="mmg-resize-col" data-resize-col={c} title="끌어서 열 너비 바꾸기" />}
         </div>,
       );

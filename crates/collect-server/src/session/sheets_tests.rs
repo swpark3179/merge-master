@@ -6,7 +6,7 @@ use collect_core::config::{ColumnRole, DeadlineAction, OthersRows, Permissions, 
 use collect_core::history::BatchOrigin;
 use collect_store::{pack, pack_json};
 
-use super::tests::{Client, connect, fixture, host, join};
+use super::tests::{Client, connect, fixture, host, join, restrict};
 use super::*;
 use crate::protocol::CellEdit;
 
@@ -18,6 +18,7 @@ fn staff() -> (SheetModel, CollectConfig) {
     let mut config = CollectConfig::suggest(&model);
     config.assignment.key_col = suggested_key_col(&model); // B 담당자
     config.columns[E as usize].required = true;
+    restrict(&mut config);
     (model, config)
 }
 

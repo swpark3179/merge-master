@@ -28,7 +28,7 @@ function defaultHint(f: InputFormat): string {
   }
 }
 
-/** 활성 칸이 있는 열의 필수(입력일 때만)·형식·안내. 역할(입력/잠금)·조회조건은 위쪽 역할 줄에서 바꾸고 여기서는 보이기만 한다. */
+/** 활성 칸이 있는 열의 필수 스위치(입력일 때만)·형식·안내. 역할(입력/잠금)·조회조건은 위쪽 역할 줄에서 바꾸고 여기서는 보이기만 한다. */
 export function ColumnPanel({ s }: { s: ConfigState }) {
   const col = s.selection?.anchor.col;
   if (col === undefined) {
@@ -61,18 +61,26 @@ function ColumnEditor({ s, col }: { s: ConfigState; col: number }) {
         <span className="spacer" />
         <span className={`tag role-tag ${rule.role}`}>{rule.role === "input" ? "입력" : "잠금"}</span>
         {rule.filter && <span className="tag tag-filter">조회</span>}
+        {rule.required && <span className="tag tag-required">필수</span>}
       </div>
       {rule.role === "input" ? (
-        <div className="row-checks">
-          <label className="check">
-            <input
-              type="checkbox"
-              aria-label="필수"
-              checked={rule.required}
-              onChange={(e) => set({ required: e.target.checked })}
-            />{" "}
-            필수
-          </label>
+        <div
+          className="kv"
+          title="켜면 이 열의 빈 칸을 필수 미입력으로 표시·집계하고, 그리드 열 머리글에 '필수' 태그가 붙습니다"
+        >
+          <span className="muted">필수</span>
+          <button
+            className="switch"
+            role="switch"
+            aria-label="필수"
+            aria-checked={rule.required}
+            disabled={s.busy}
+            onClick={() => set({ required: !rule.required })}
+          >
+            <span className="track">
+              <span className="knob" />
+            </span>
+          </button>
         </div>
       ) : (
         <div className="muted small">잠금 열은 필수를 정할 수 없어요. 위쪽 역할 줄에서 입력으로 바꾸세요.</div>

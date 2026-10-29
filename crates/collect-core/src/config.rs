@@ -131,7 +131,9 @@ pub enum DeadlineAction {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct Permissions {
+    /// 참여자 서식 변경(1b 참여자 권한 '서식 변경'). 새 업무는 허용.
     pub format: FormatPolicy,
+    /// 남의 행(1b 참여자 권한 '남의 행'). 새 업무는 편집 가능.
     pub others_rows: OthersRows,
     /// 참여자 조회조건(필터). 늘 켠다 — 1b에서 끄는 곳이 없고 참여자 화면도 보지 않는다. 이 필드가 꼭 있어야 하는 옛
     /// 에이전트·기록 파일과 맞추려고 남겨 둔다.
@@ -142,7 +144,8 @@ pub struct Permissions {
     /// 마감 시각이 되면 읽기 전용으로 바꿀지 공유를 닫을지. 예전 '마감 후 자동 읽기 전용' 설정은 읽지 않는다(읽기 전용).
     #[serde(default)]
     pub deadline_action: DeadlineAction,
-    /// 참여자가 열 너비·행 높이를 바꿀 수 있다(1b 참여자 권한 '크기 조절', 바꾸면 모두에게 보인다). 기본은 금지.
+    /// 참여자가 열 너비·행 높이를 바꿀 수 있다(1b 참여자 권한 '크기 조절', 바꾸면 모두에게 보인다). 새 업무는 허용(이
+    /// 설정이 없던 옛 기록 파일은 금지).
     #[serde(default)]
     pub resize: bool,
     /// 참여자가 입력할 수 있는 수식 칸에 값을 넣을 수 있다(1b 참여자 권한 '수식 칸'). 넣으면 그 칸은 수식 대신 그 값이 된다
@@ -159,12 +162,12 @@ fn yes() -> bool {
 impl Default for Permissions {
     fn default() -> Self {
         Self {
-            format: FormatPolicy::None,
-            others_rows: OthersRows::ReadOnly,
+            format: FormatPolicy::All,
+            others_rows: OthersRows::Editable,
             filter_sort: true,
             add_rows: true,
             deadline_action: DeadlineAction::ReadOnly,
-            resize: false,
+            resize: true,
             overwrite_formulas: true,
         }
     }
@@ -510,10 +513,12 @@ pub(crate) mod tests {
         cfg
     }
 
-    /// [`configured`] + 행 배정 기준을 추천 열(C 담당자)로 정한 것(배정이 필요한 시험용).
+    /// [`configured`] + 행 배정 기준을 추천 열(C 담당자)로 정한 것(배정이 필요한 시험용). 배정이 칸을 나누도록 남의 행은
+    /// 읽기 전용(새 업무 기본인 편집 가능이면 배정은 '내 행' 필터용 표시일 뿐이다).
     pub(crate) fn assigned(m: &SheetModel) -> CollectConfig {
         let mut cfg = configured(m);
         cfg.assignment.key_col = suggested_key_col(m);
+        cfg.permissions.others_rows = OthersRows::ReadOnly;
         cfg
     }
 
@@ -579,7 +584,7 @@ pub(crate) mod tests {
         let cfg = CollectConfig::suggest(&budget());
         let json = serde_json::to_value(&cfg).unwrap();
         assert_eq!(json["columns"][5]["format"], serde_json::json!({"kind": "number", "unit": "천원"}));
-        assert_eq!(json["permissions"]["othersRows"], "readOnly");
+        assert_eq!(json["permissions"]["othersRows"], "editable");
         assert!(json["assignment"]["keyCol"].is_null());
         let back: CollectConfig = serde_json::from_value(json).unwrap();
         assert_eq!(back, cfg);
@@ -617,6 +622,18 @@ pub(crate) mod tests {
         assert!(cfg.has_assignment());
         cfg.on_cols_removed(1, 1);
         assert!(!cfg.has_assignment(), "기준 열을 지우면 행 배정 없음");
+    }
+
+    #[test]
+    fn new_jobs_open_participant_permissions() {
+        let p = Permissions::default();
+        assert_eq!(p.format, FormatPolicy::All, "서식 변경 허용");
+        assert_eq!(p.others_rows, OthersRows::Editable, "남의 행 편집 가능");
+        assert!(p.resize, "크기 조절 허용");
+        assert!(p.overwrite_formulas, "수식 칸 값으로 바꾸기");
+        // 크기 조절 설정이 없던 옛 기록 파일은 금지로 읽는다.
+        let old = r#"{"format":"none","othersRows":"readOnly","filterSort":true,"addRows":false}"#;
+        assert!(!serde_json::from_str::<Permissions>(old).unwrap().resize);
     }
 
     #[test]

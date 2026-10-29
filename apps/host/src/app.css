@@ -1580,6 +1580,26 @@ button.role {
   flex: none;
 }
 
+/* 1b 열 머리글(A, B, C…)의 조회·필수 태그: 좁은 열이면 태그 쪽이 잘리고 열 글자는 남는다(머리글 높이 22px 안에). */
+.col-tags {
+  display: inline-flex;
+  gap: 2px;
+  min-width: 0;
+  margin-left: 4px;
+  overflow: hidden;
+}
+
+.col-tags .tag {
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+/* 고른 열 머리글(옅은 파랑)에서도 조회 태그가 묻히지 않게 */
+.mmg-head-sel .col-tags .tag-filter {
+  background: #fff;
+}
+
 .config-screen .formula-bar {
   display: flex;
   align-items: center;
@@ -1682,11 +1702,6 @@ button.role {
   color: var(--ink-2);
   font-size: 11px;
   font-weight: 700;
-}
-
-.row-checks {
-  display: flex;
-  gap: 14px;
 }
 
 /* 열 속성 머리: 지금 역할(바꾸기는 위쪽 역할 줄) */

@@ -4,7 +4,7 @@ use std::net::Ipv4Addr;
 
 use base64::Engine;
 use collect_core::access::flag;
-use collect_core::config::{ColumnRole, suggested_key_col};
+use collect_core::config::{ColumnRole, FormatPolicy, OthersRows, suggested_key_col};
 
 use super::*;
 
@@ -18,7 +18,15 @@ pub(super) fn fixture() -> SessionInit {
     config.assignment.key_col = suggested_key_col(&model); // C 담당자
     config.requester = "박지훈".into();
     config.columns[5].required = true; // F 신청 금액
+    restrict(&mut config);
     SessionInit::new(model, config)
+}
+
+/// 행 배정·권한 시험용: 남의 행은 읽기 전용, 서식 변경·크기 조절은 금지(새 업무 기본은 모두 허용 — 시험마다 필요한 권한을 켠다).
+pub(super) fn restrict(config: &mut CollectConfig) {
+    config.permissions.others_rows = OthersRows::ReadOnly;
+    config.permissions.format = FormatPolicy::None;
+    config.permissions.resize = false;
 }
 
 pub(super) struct Client {

@@ -3,7 +3,15 @@ import type { DeadlineAction } from "./DeadlineAction";
 import type { FormatPolicy } from "./FormatPolicy";
 import type { OthersRows } from "./OthersRows";
 
-export type Permissions = { format: FormatPolicy, othersRows: OthersRows, 
+export type Permissions = { 
+/**
+ * 참여자 서식 변경(1b 참여자 권한 '서식 변경'). 새 업무는 허용.
+ */
+format: FormatPolicy, 
+/**
+ * 남의 행(1b 참여자 권한 '남의 행'). 새 업무는 편집 가능.
+ */
+othersRows: OthersRows, 
 /**
  * 참여자 조회조건(필터). 늘 켠다 — 1b에서 끄는 곳이 없고 참여자 화면도 보지 않는다. 이 필드가 꼭 있어야 하는 옛
  * 에이전트·기록 파일과 맞추려고 남겨 둔다.
@@ -19,7 +27,8 @@ addRows: boolean,
  */
 deadlineAction: DeadlineAction, 
 /**
- * 참여자가 열 너비·행 높이를 바꿀 수 있다(1b 참여자 권한 '크기 조절', 바꾸면 모두에게 보인다). 기본은 금지.
+ * 참여자가 열 너비·행 높이를 바꿀 수 있다(1b 참여자 권한 '크기 조절', 바꾸면 모두에게 보인다). 새 업무는 허용(이
+ * 설정이 없던 옛 기록 파일은 금지).
  */
 resize: boolean, 
 /**
