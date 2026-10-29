@@ -3,6 +3,7 @@ import { FLAG } from "@mm/shared";
 import { describe, expect, it } from "vitest";
 
 import {
+  BLANK,
   effectiveColumn,
   filteredOut,
   filterOptions,
@@ -53,6 +54,8 @@ describe("filters", () => {
     const m = sheet();
     expect(effectiveColumn(m, 0)).toEqual(["본부", "경영지원", "경영지원", "영업", "영업"]);
     expect(filterOptions(m, 0)).toEqual(["경영지원", "영업"]);
+    // 빈 칸이 있는 열은 맨 끝에 '빈칸'.
+    expect(filterOptions(m, 1)).toEqual(["3", "5", BLANK]);
   });
 
   it("조회조건·내 담당만·필수 미입력만", () => {
@@ -77,6 +80,9 @@ describe("filters", () => {
     expect(isFiltering({ ...NO_FILTER, values: { 0: [] } })).toBe(false);
     expect([...filteredOut(m, flags, mine, { ...NO_FILTER, mineOnly: true })]).toEqual([3, 4]);
     expect([...filteredOut(m, flags, mine, { ...NO_FILTER, missingOnly: true })]).toEqual([2, 3, 4]);
+    // '빈칸'을 고르면 그 열이 빈 행만, 값과 함께 고르면 둘 중 하나.
+    expect([...filteredOut(m, flags, mine, { ...NO_FILTER, values: { 1: [BLANK] } })]).toEqual([2, 4]);
+    expect([...filteredOut(m, flags, mine, { ...NO_FILTER, values: { 1: [BLANK, "5"] } })]).toEqual([2]);
   });
 
   it("걸러진 행은 높이 0", () => {
@@ -108,5 +114,12 @@ describe("조회조건 검색", () => {
     expect(selectionLabel([])).toBe("전체");
     expect(selectionLabel(["재무팀"])).toBe("재무팀");
     expect(selectionLabel(["재무팀", "인사팀", "IT운영팀"])).toBe("재무팀 외 2");
+  });
+
+  it("'빈칸' 항목은 '(빈칸)'으로 보이고 그 글자로 찾는다", () => {
+    expect(matchOptions([...items, BLANK], "빈칸")).toEqual([BLANK]);
+    expect(matchOptions([...items, BLANK], "")).toEqual([...items, BLANK]);
+    expect(selectionLabel([BLANK])).toBe("(빈칸)");
+    expect(selectionLabel([BLANK, "재무팀"])).toBe("(빈칸) 외 1");
   });
 });

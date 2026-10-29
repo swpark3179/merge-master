@@ -291,9 +291,6 @@ struct DevConfig {
     /// 참여자 열 너비·행 높이 조절 허용.
     #[serde(default)]
     resize: Option<bool>,
-    /// 참여자가 추가한 행 지우기 허용.
-    #[serde(default)]
-    delete_rows: Option<bool>,
     /// 마감 시각이 되면(읽기 전용 / 공유 닫기, 모든 시트 공통).
     #[serde(default)]
     deadline_action: Option<collect_core::config::DeadlineAction>,
@@ -323,9 +320,6 @@ async fn dev_config(Picked(session): Picked, Json(req): Json<DevConfig>) -> Resp
             }
             if let Some(on) = req.resize {
                 config.permissions.resize = on;
-            }
-            if let Some(on) = req.delete_rows {
-                config.permissions.delete_rows = on;
             }
             s.changed();
             Ok("ok")

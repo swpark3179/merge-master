@@ -34,7 +34,6 @@ function welcome(over: Partial<SheetView> = {}): SheetView {
       othersRows: "readOnly",
       filterSort: true,
       addRows: false,
-      deleteRows: false,
       deadlineAction: "readOnly",
       resize: false,
       overwriteFormulas: true,

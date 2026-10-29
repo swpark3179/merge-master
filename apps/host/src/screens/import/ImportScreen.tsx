@@ -274,7 +274,7 @@ function RangeCard({ s }: { s: ImportState }) {
     <section className="card range-card" aria-label="범위 · 머리글">
       <div className="card-head">
         <b>범위 · 머리글</b>
-        <span className="muted small">자동으로 찾았어요. 필요하면 고치세요.</span>
+        <span className="muted small">범위는 자동으로 찾았어요. 머리글 행은 직접 정하세요.</span>
         {s.busy === "inspect" && <span className="muted small">감지 중…</span>}
       </div>
       {form ? (
@@ -301,13 +301,18 @@ function RangeCard({ s }: { s: ImportState }) {
                 value={start}
                 onChange={(e) => setHeaderStart(Number(e.target.value))}
               />
-              ~
+              ~{/* 머리글이 없으면(기본) 끝 행을 비워 '없음'으로 보인다. 비우면 다시 없음. */}
               <input
                 type="number"
-                min={start - 1}
+                min={start}
                 aria-label="머리글 끝 행"
-                value={start + form.headerRows - 1}
-                onChange={(e) => s.update({ headerRows: Math.max(0, Number(e.target.value) - start + 1) })}
+                placeholder="없음"
+                value={form.headerRows > 0 ? start + form.headerRows - 1 : ""}
+                onChange={(e) =>
+                  s.update({
+                    headerRows: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value) - start + 1),
+                  })
+                }
               />
             </span>
           </div>

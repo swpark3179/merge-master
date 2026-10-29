@@ -1,15 +1,15 @@
-import { cellText, effectiveColumn } from "@mm/grid";
+import { cellText, effectiveColumn, optionLabel } from "@mm/grid";
 import type { SheetModel } from "@mm/shared";
 import { FLAG } from "@mm/shared";
 
-export { effectiveColumn, filterOptions, withHiddenRows } from "@mm/grid";
+export { BLANK, effectiveColumn, filterOptions, optionLabel, withHiddenRows } from "@mm/grid";
 
 /**
  * 1f 조회조건·'내 담당만'·'필수 미입력만' 필터. 걸러진 데이터 행은 높이 0(숨김)으로 그린다.
  * 병합 영역은 그리드가 보이는 행만으로 다시 그리므로(높이 합) 따로 쪼개지 않아도 된다.
  */
 export interface RowFilter {
-  /** 열 → 고른 값들(표시 글자, 그중 하나면 보인다). 없거나 비면 전체. */
+  /** 열 → 고른 값들(표시 글자, 빈 글자는 빈칸 — 그중 하나면 보인다). 없거나 비면 전체. */
   values: Record<number, readonly string[]>;
   mineOnly: boolean;
   missingOnly: boolean;
@@ -69,10 +69,10 @@ export function filteredOut(model: SheetModel, flags: Uint8Array, myRows: Uint8A
   return out;
 }
 
-/** 조회조건 항목 검색: 대소문자·앞뒤 공백을 가리지 않는 부분 일치(나온 순서 그대로). 빈 검색어면 모두. */
+/** 조회조건 항목 검색: 보이는 글자('(빈칸)' 포함)에서 대소문자·앞뒤 공백을 가리지 않는 부분 일치(나온 순서 그대로). 빈 검색어면 모두. */
 export function matchOptions(options: readonly string[], query: string): string[] {
   const q = query.trim().toLocaleLowerCase();
-  return q ? options.filter((o) => o.toLocaleLowerCase().includes(q)) : [...options];
+  return q ? options.filter((o) => optionLabel(o).toLocaleLowerCase().includes(q)) : [...options];
 }
 
 /** 조회조건 값 하나를 고르거나 뺀다(고른 순서 그대로). */
@@ -86,8 +86,9 @@ export function toggleHits(value: readonly string[], hits: readonly string[]): s
   return [...value, ...hits.filter((h) => !value.includes(h))];
 }
 
-/** 조회조건 단추 글자: 없으면 '전체', 하나면 그 값, 여럿이면 '재무팀 외 2'. */
+/** 조회조건 단추 글자: 없으면 '전체', 하나면 그 값, 여럿이면 '재무팀 외 2'(빈칸은 '(빈칸)'). */
 export function selectionLabel(value: readonly string[]): string {
   if (value.length === 0) return "전체";
-  return value.length === 1 ? value[0]! : `${value[0]} 외 ${value.length - 1}`;
+  const first = optionLabel(value[0]!);
+  return value.length === 1 ? first : `${first} 외 ${value.length - 1}`;
 }

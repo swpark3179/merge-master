@@ -11,7 +11,6 @@ import { GridMenu } from "../../GridMenu";
 import { SheetTabs } from "../../SheetTabs";
 import { sizeEdits } from "../../sizes";
 import { useHostEditor } from "../../useHostEditor";
-import { rangeAccess } from "./access";
 import {
   AssignBar,
   ColumnPanel,
@@ -53,8 +52,9 @@ export function formatLabel(rule: ColumnRule | undefined): string {
   }
 }
 
-/** 1b 취합 설정: 위쪽 탭(열 역할 · 담당자 배정), 그리드(칸 편집·크기 조절)와 그 아래 시트 탭, 오른쪽 상세.
- * 열 역할·셀 예외·담당자 배정·참여자 권한은 시트마다, 제목·안내·마감·직접 넣은 명단은 모든 시트가 같이 쓴다. */
+/** 1b 취합 설정: 위쪽 탭(열 역할 · 담당자 배정), 그리드(칸 편집·크기 조절)와 그 아래 시트 탭, 두 탭 공통인 행 추가
+ * 스위치, 오른쪽 상세. 열 역할·셀 예외·담당자 배정·참여자 권한은 시트마다, 제목·안내·마감·직접 넣은 명단은 모든 시트가
+ * 같이 쓴다. */
 export function ConfigScreen({ models, sheet, onSheet, active }: Props) {
   const at = Math.min(sheet, models.length - 1);
   const tabs = <SheetTabs names={models.map((m) => m.sheet)} active={at} onSelect={onSheet} />;
@@ -272,15 +272,17 @@ function SheetConfig({
             onStructure={(edit) => void s.structure(edit)}
           />
         )}
-        {tab === "roles" ? <Legend s={s} /> : <AccessFooter s={s} />}
+        <footer className="config-foot">
+          <AddRowsSwitch s={s} />
+        </footer>
       </div>
       {view && (
         <aside className="config-side" aria-label="설정 패널">
           {tab === "roles" ? (
             <>
               <ColumnPanel s={s} />
-              <ExceptionsPanel s={s} />
               <PermissionsPanel s={s} />
+              <ExceptionsPanel s={s} />
             </>
           ) : (
             <>
@@ -510,8 +512,9 @@ function ViewerPick({ s }: { s: ConfigState }) {
 }
 
 /**
- * 열 역할 줄: 칸이나 열을 고르고 입력/잠금 중 하나를 고른다. 일부 칸만 골라도 **고른 열 전체**에 적용한다 — 칸 단위
- * 입력 가능·입력 금지는 오른쪽 '셀 예외'에서만 정한다. 필수는 오른쪽 열 속성에서.
+ * 열 역할 줄(열 역할은 여기서만 정한다): 칸이나 열을 고르고 입력/잠금 중 하나를 고르거나 조회조건을 켜고 끈다. 일부 칸만
+ * 골라도 **고른 열 전체**에 적용한다 — 칸 단위 입력 가능·입력 금지는 오른쪽 '셀 예외'에서만 정한다. 필수·형식·안내는 오른쪽
+ * 열 속성에서.
  */
 function RoleBar({ s }: { s: ConfigState }) {
   const disabled = !s.range || s.busy;
@@ -521,46 +524,84 @@ function RoleBar({ s }: { s: ConfigState }) {
   // 고른 열들의 역할이 모두 같으면 그 역할을 켠 것으로 보인다(셀 예외는 따로 — 오른쪽 '셀 예외').
   const cols = r ? s.view!.config.columns.slice(r.col, r.col + r.cols) : [];
   const role = cols.length > 0 && cols.every((c) => c.role === cols[0]!.role) ? cols[0]!.role : null;
+  // 조회조건: 모두 켜짐 · 일부만(누르면 모두 켠다) · 꺼짐.
+  const filtered = cols.filter((c) => c.filter).length;
+  const filter = filtered === 0 ? false : filtered === cols.length ? true : "mixed";
   const hint = !r
-    ? "열 머리글(A, B, C…)이나 칸을 고르세요. 입력/잠금은 고른 열 전체에 적용돼요. Shift로 여러 열을 함께 고를 수 있어요."
+    ? "열 머리글(A, B, C…)이나 칸을 고르세요. 입력/잠금·조회조건은 고른 열 전체에 적용돼요. Shift로 여러 열을 함께 고를 수 있어요."
     : whole
-      ? `${colSpan(s.model, r)}열을 골랐어요. 필수는 오른쪽 열 속성에서 정해요.`
+      ? `${colSpan(s.model, r)}열을 골랐어요. 필수·형식은 오른쪽 열 속성에서 정해요.`
       : `${rangeLabel(s.model, r)}을 골랐어요. 입력/잠금은 ${colSpan(s.model, r)}열 전체에 적용돼요. 이 칸만 바꾸려면 오른쪽 셀 예외에서.`;
   return (
     <div className="role-bar" role="toolbar" aria-label="역할 지정">
       <span className="role-hint">{hint}</span>
-      <div className="segmented role-seg" role="group" aria-label="입력 또는 잠금">
+      <div className="role-toggle" role="group" aria-label="입력 또는 잠금">
         <button
-          className={role === "input" ? "on" : ""}
+          className="input"
           aria-pressed={role === "input"}
           title="고른 열 전체를 참여자가 쓸 수 있는 열로"
           disabled={disabled}
           onClick={() => brush("input")}
         >
-          <span className="role-sw input" />
+          <RoleIcon kind="input" />
           입력
         </button>
         <button
-          className={role === "locked" ? "on" : ""}
+          className="lock"
           aria-pressed={role === "locked"}
           title="고른 열 전체를 보기만 가능한 열로"
           disabled={disabled}
           onClick={() => brush("locked")}
         >
-          <span className="role-sw lock" />
+          <RoleIcon kind="lock" />
           잠금
         </button>
       </div>
       <button
-        className="ghost role"
-        aria-label="조회조건"
-        title="열을 참여자 화면의 조회조건(드롭다운 필터)으로(다시 누르면 해제)"
+        className="filter-toggle"
+        aria-pressed={filter}
+        title={
+          filter === "mixed"
+            ? "고른 열 중 일부만 조회조건이에요. 누르면 모두 조회조건으로"
+            : "열을 참여자 화면의 조회조건(드롭다운 필터)으로(다시 누르면 해제)"
+        }
         disabled={disabled}
         onClick={() => brush("filter")}
       >
-        <span className="tag tag-filter">조회</span>조회조건
+        <RoleIcon kind="filter" />
+        조회조건
+        <span className="filter-state" aria-hidden>
+          {filter === true ? "켬" : filter === "mixed" ? "일부" : "끔"}
+        </span>
       </button>
     </div>
+  );
+}
+
+/** 역할 줄 아이콘(16×16 선, 글자색을 따른다). */
+function RoleIcon({ kind }: { kind: "input" | "lock" | "filter" }) {
+  return (
+    <svg
+      className="role-icon"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      {kind === "input" ? (
+        <path d="M10.5 2.5l3 3L6 13H3v-3zM9 4l3 3" />
+      ) : kind === "lock" ? (
+        <>
+          <rect x="3" y="7" width="10" height="7" rx="1.5" />
+          <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+        </>
+      ) : (
+        <path d="M2.5 3h11L9 8.5V13l-2-1V8.5z" />
+      )}
+    </svg>
   );
 }
 
@@ -625,131 +666,23 @@ function ViewerBanner({ s }: { s: ConfigState }) {
   );
 }
 
-/** '담당자 배정' 탭 그리드 아래: 고른 칸을 편집할 수 있는 사람(담당자가 없으면 누구나), 참여자 행 추가 스위치. */
-function AccessFooter({ s }: { s: ConfigState }) {
-  const { view, range, model } = s;
-  const acc = view && range ? rangeAccess(view, s.flags, model.cols, range) : null;
-  const inputCells = acc ? acc.cells - acc.locked : 0;
-  return (
-    <footer className="legend access-footer" aria-label="편집할 수 있는 사람">
-      {!view ? null : !range || !acc ? (
-        <span className="muted">칸을 고르면 그 칸을 편집할 수 있는 사람이 보입니다.</span>
-      ) : (
-        <>
-          <span className="access-where">
-            <span className="mono">{rangeLabel(model, range)}</span>
-            {acc.cells > 1 && <span className="muted"> · {acc.cells.toLocaleString()}칸</span>}
-          </span>
-          <b>편집 가능</b>
-          {inputCells === 0 ? (
-            <span className="muted" data-testid="editors">
-              없음 — 잠금 칸이라 참여자는 편집할 수 없습니다
-            </span>
-          ) : (
-            <span className="editors" data-testid="editors">
-              {acc.open > 0 && (
-                <span className="person anyone" title="담당자가 없는 입력 칸은 누구나 편집할 수 있습니다">
-                  누구나{acc.open < inputCells ? ` (${acc.open.toLocaleString()}칸)` : ""}
-                </span>
-              )}
-              {acc.people.map((p) => (
-                <span key={p} className="person">
-                  <span className="mmg-dot" style={{ background: personColor(p) }} />
-                  {view.roster[p]}
-                </span>
-              ))}
-            </span>
-          )}
-          {acc.locked > 0 && inputCells > 0 && <span className="muted">잠금 {acc.locked.toLocaleString()}칸 제외</span>}
-          {acc.required > 0 && <span className="tag tag-required">필수</span>}
-        </>
-      )}
-      <span className="spacer" />
-      <AddRowsSwitch s={s} />
-    </footer>
-  );
-}
-
-/** '열 역할' 탭 그리드 아래: 입력·필수·잠금 범례와 집계. */
-function Legend({ s }: { s: ConfigState }) {
-  const l = s.view?.legend;
-  const unassigned = s.view?.progress.unassigned ?? 0;
-  return (
-    <footer className="legend">
-      {l && (
-        <>
-          <span className="legend-item">
-            <span className="role-sw input" />
-            <b>입력</b>
-            <span className="muted">참여자가 쓸 수 있음 · {l.inputCols}열</span>
-          </span>
-          <span className="legend-item">
-            <span className="role-sw req" />
-            <b>필수</b>
-            <span className="muted">반드시 채워야 함 · 비어 있음 {l.requiredMissing.toLocaleString()}</span>
-          </span>
-          <span className="legend-item">
-            <span className="role-sw lock" />
-            <b>잠금</b>
-            <span className="muted">보기만 가능 · {l.lockedCols}열</span>
-          </span>
-          {l.filterCols > 0 && (
-            <span className="legend-item">
-              <span className="tag tag-filter">조회</span>
-              <span className="muted">조회조건 {l.filterCols}열</span>
-            </span>
-          )}
-          {l.exceptions > 0 && (
-            <span className="legend-item">
-              <span className="chip-swatch exception" />
-              <span className="muted">예외 {l.exceptions}</span>
-            </span>
-          )}
-          {unassigned > 0 && (
-            <span className="muted" title="담당자가 아무도 없는 필수 칸은 누구나 입력할 수 있습니다">
-              담당자 없는 필수 {unassigned.toLocaleString()}칸(누구나 입력)
-            </span>
-          )}
-        </>
-      )}
-      <span className="spacer" />
-      <AddRowsSwitch s={s} />
-    </footer>
-  );
-}
-
-/** 그리드 아래 오른쪽: 참여자 행 추가·삭제 허용(참여자 권한 '행 추가'·'행 삭제'와 같다). */
+/** 그리드 아래 오른쪽(두 탭 공통): 참여자 행 추가 허용. 참여자는 자기가 추가한 행을 늘 지울 수 있다. */
 function AddRowsSwitch({ s }: { s: ConfigState }) {
   const perms = s.view?.config.permissions;
   if (!perms) return null;
   return (
-    <>
-      <button
-        className="switch"
-        role="switch"
-        aria-checked={perms.addRows}
-        disabled={s.busy}
-        title="켜면 참여자 화면의 마지막 행 번호 아래에 ＋가 생겨 표 맨 아래에 행을 붙일 수 있습니다"
-        onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, addRows: !perms.addRows } })}
-      >
-        참여자가 새 행을 추가할 수 있게 하기
-        <span className="track">
-          <span className="knob" />
-        </span>
-      </button>
-      <button
-        className="switch"
-        role="switch"
-        aria-checked={perms.deleteRows}
-        disabled={s.busy}
-        title="켜면 참여자가 행 번호를 오른쪽 클릭해 자기가 추가한 행과 자기에게 배정된 행을 지울 수 있습니다(엑셀에서 불러온 행이면 저장할 때 Excel에서도 지웁니다)"
-        onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, deleteRows: !perms.deleteRows } })}
-      >
-        참여자가 행을 지울 수 있게 하기
-        <span className="track">
-          <span className="knob" />
-        </span>
-      </button>
-    </>
+    <button
+      className="switch"
+      role="switch"
+      aria-checked={perms.addRows}
+      disabled={s.busy}
+      title="켜면 참여자 화면의 마지막 행 번호 아래에 ＋가 생겨 표 맨 아래에 행을 붙일 수 있습니다. 참여자는 자기가 추가한 행을 행 번호 오른쪽 클릭으로 지울 수 있습니다"
+      onClick={() => void s.apply({ op: "setPermissions", permissions: { ...perms, addRows: !perms.addRows } })}
+    >
+      참여자가 새 행을 추가할 수 있게 하기
+      <span className="track">
+        <span className="knob" />
+      </span>
+    </button>
   );
 }

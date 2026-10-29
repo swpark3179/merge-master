@@ -133,11 +133,12 @@ pub enum DeadlineAction {
 pub struct Permissions {
     pub format: FormatPolicy,
     pub others_rows: OthersRows,
+    /// 참여자 조회조건(필터). 늘 켠다 — 1b에서 끄는 곳이 없고 참여자 화면도 보지 않는다. 이 필드가 꼭 있어야 하는 옛
+    /// 에이전트·기록 파일과 맞추려고 남겨 둔다.
     pub filter_sort: bool,
+    /// 참여자가 표 맨 아래에 행을 붙일 수 있다(1b '참여자가 새 행을 추가할 수 있게 하기'). 새 업무는 허용. 참여자는 자기가
+    /// 추가한 행을 늘 지울 수 있다(따로 권한이 없다).
     pub add_rows: bool,
-    /// 참여자가 자기가 추가한 행을 지울 수 있다(1b 참여자 권한 '행 삭제'). 기본은 금지.
-    #[serde(default)]
-    pub delete_rows: bool,
     /// 마감 시각이 되면 읽기 전용으로 바꿀지 공유를 닫을지. 예전 '마감 후 자동 읽기 전용' 설정은 읽지 않는다(읽기 전용).
     #[serde(default)]
     pub deadline_action: DeadlineAction,
@@ -161,8 +162,7 @@ impl Default for Permissions {
             format: FormatPolicy::None,
             others_rows: OthersRows::ReadOnly,
             filter_sort: true,
-            add_rows: false,
-            delete_rows: false,
+            add_rows: true,
             deadline_action: DeadlineAction::ReadOnly,
             resize: false,
             overwrite_formulas: true,
@@ -625,6 +625,15 @@ pub(crate) mod tests {
         // 이 설정이 없던 옛 기록 파일도 허용으로 읽는다.
         let old = r#"{"format":"none","othersRows":"readOnly","filterSort":true,"addRows":false}"#;
         let p: Permissions = serde_json::from_str(old).unwrap();
-        assert!(p.overwrite_formulas && !p.delete_rows);
+        assert!(p.overwrite_formulas);
+    }
+
+    #[test]
+    fn new_jobs_let_participants_add_rows_and_old_records_keep_theirs() {
+        assert!(Permissions::default().add_rows && Permissions::default().filter_sort);
+        // 예전 '행 삭제' 권한(deleteRows)은 읽고 버린다. 저장해 둔 행 추가 설정은 그대로.
+        let old = r#"{"format":"none","othersRows":"readOnly","filterSort":false,"addRows":false,"deleteRows":true}"#;
+        let p: Permissions = serde_json::from_str(old).unwrap();
+        assert!(!p.add_rows);
     }
 }

@@ -28,7 +28,7 @@ function defaultHint(f: InputFormat): string {
   }
 }
 
-/** 활성 칸이 있는 열의 역할(입력/잠금)·필수(입력일 때만)·조회조건·형식·안내. */
+/** 활성 칸이 있는 열의 필수(입력일 때만)·형식·안내. 역할(입력/잠금)·조회조건은 위쪽 역할 줄에서 바꾸고 여기서는 보이기만 한다. */
 export function ColumnPanel({ s }: { s: ConfigState }) {
   const col = s.selection?.anchor.col;
   if (col === undefined) {
@@ -58,26 +58,12 @@ function ColumnEditor({ s, col }: { s: ConfigState; col: number }) {
       <div className="card-head">
         <span className="col-badge">{letter(s, col)}</span>
         <b>{s.view!.labels[col] || `${letter(s, col)}열`}</b>
-        <span className="muted small">열 전체</span>
+        <span className="spacer" />
+        <span className={`tag role-tag ${rule.role}`}>{rule.role === "input" ? "입력" : "잠금"}</span>
+        {rule.filter && <span className="tag tag-filter">조회</span>}
       </div>
-      <div className="segmented" role="group" aria-label="열 역할">
-        <button
-          className={rule.role === "input" ? "on" : ""}
-          aria-pressed={rule.role === "input"}
-          onClick={() => set({ role: "input" })}
-        >
-          입력
-        </button>
-        <button
-          className={rule.role === "locked" ? "on" : ""}
-          aria-pressed={rule.role === "locked"}
-          onClick={() => set({ role: "locked", required: false })}
-        >
-          잠금
-        </button>
-      </div>
-      <div className="row-checks">
-        {rule.role === "input" && (
+      {rule.role === "input" ? (
+        <div className="row-checks">
           <label className="check">
             <input
               type="checkbox"
@@ -87,11 +73,10 @@ function ColumnEditor({ s, col }: { s: ConfigState; col: number }) {
             />{" "}
             필수
           </label>
-        )}
-        <label className="check">
-          <input type="checkbox" checked={rule.filter} onChange={(e) => set({ filter: e.target.checked })} /> 조회조건
-        </label>
-      </div>
+        </div>
+      ) : (
+        <div className="muted small">잠금 열은 필수를 정할 수 없어요. 위쪽 역할 줄에서 입력으로 바꾸세요.</div>
+      )}
       <div className="kv">
         <span className="muted">형식</span>
         <select
@@ -390,6 +375,7 @@ export function RangeAssignmentsPanel({ s }: { s: ConfigState }) {
   );
 }
 
+/** 열 역할 탭 오른쪽: 참여자 권한(시트마다). 행 추가는 그리드 아래 스위치에서, 조회조건은 늘 켠다. */
 export function PermissionsPanel({ s }: { s: ConfigState }) {
   const p = s.view!.config.permissions;
   const set = (patch: Partial<Permissions>) => void s.apply({ op: "setPermissions", permissions: { ...p, ...patch } });
@@ -473,19 +459,6 @@ export function PermissionsPanel({ s }: { s: ConfigState }) {
             </button>
           ))}
         </div>
-      </div>
-      <div className="row-checks">
-        <label className="check">
-          <input type="checkbox" checked={p.filterSort} onChange={(e) => set({ filterSort: e.target.checked })} />{" "}
-          필터·정렬
-        </label>
-        <label className="check">
-          <input type="checkbox" checked={p.addRows} onChange={(e) => set({ addRows: e.target.checked })} /> 행 추가
-        </label>
-        <label className="check" title="참여자는 자기가 추가한 행과 자기에게 배정된 행을 지울 수 있습니다">
-          <input type="checkbox" checked={p.deleteRows} onChange={(e) => set({ deleteRows: e.target.checked })} /> 행
-          삭제
-        </label>
       </div>
     </section>
   );

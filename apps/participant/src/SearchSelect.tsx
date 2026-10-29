@@ -1,7 +1,7 @@
 import type { KeyboardEvent } from "react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
-import { matchOptions, selectionLabel, toggleHits, toggleValue } from "./filters";
+import { matchOptions, optionLabel, selectionLabel, toggleHits, toggleValue } from "./filters";
 
 /** 펼친 목록의 한 줄: '전체'(조건 풀기), '검색 결과 모두 선택', 항목. */
 type Row = { kind: "all" } | { kind: "hits" } | { kind: "item"; value: string };
@@ -93,7 +93,7 @@ export function SearchSelect({
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         className={value.length > 0 ? "on" : undefined}
-        title={value.length > 0 ? value.join(", ") : "전체"}
+        title={value.length > 0 ? value.map(optionLabel).join(", ") : "전체"}
         onClick={() => (open ? setOpen(false) : show())}
         onKeyDown={(e) => {
           if (!open && (e.key === "ArrowDown" || e.key === "Enter")) {
@@ -144,7 +144,7 @@ export function SearchSelect({
                       ? "전체"
                       : row.kind === "hits"
                         ? `검색 결과 모두 선택 (${hits.length})`
-                        : row.value}
+                        : optionLabel(row.value)}
                   </span>
                 </li>
               );

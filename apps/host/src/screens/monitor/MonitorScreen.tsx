@@ -13,6 +13,7 @@ import type { CellDecoration, GridHit, GridMark, GridSelection, SheetGridHandle 
 import {
   filterOptions,
   mergeValueCell,
+  optionLabel,
   partlyShownMerges,
   rowsNotMatching,
   selectForMenu,
@@ -100,6 +101,7 @@ export function sheetAddr(sheets: SheetModel[], sheet: number, r: CellRef | Cell
 }
 
 interface Filter {
+  /** 열 → 고른 값(빈 글자면 빈칸인 행). */
   values: Record<number, string>;
   missingOnly: boolean;
   recentDeleted: boolean;
@@ -774,21 +776,21 @@ function SheetMonitor({
         {filterCols.length > 0 && <span className="tag tag-filter">조회조건</span>}
         {filterCols.map((c) => (
           <label key={c} className="filter">
-            {labels[c] || colLetters(c)}:
+            {labels[c] || colLetters(c)}:{/* 항목 값은 '='를 붙여 '전체'(빈 값)와 빈칸 항목(빈 글자)을 가른다. */}
             <select
               aria-label={`${labels[c]} 조회조건`}
-              value={filter.values[c] ?? ""}
+              value={c in filter.values ? `=${filter.values[c]}` : ""}
               onChange={(e) => {
                 const values = { ...filter.values };
-                if (e.target.value) values[c] = e.target.value;
+                if (e.target.value) values[c] = e.target.value.slice(1);
                 else delete values[c];
                 setFilter({ ...filter, values });
               }}
             >
               <option value="">전체</option>
               {options.get(c)?.map((o) => (
-                <option key={o} value={o}>
-                  {o}
+                <option key={o} value={`=${o}`}>
+                  {optionLabel(o)}
                 </option>
               ))}
             </select>
