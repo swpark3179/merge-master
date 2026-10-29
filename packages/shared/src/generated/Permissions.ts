@@ -3,11 +3,17 @@ import type { DeadlineAction } from "./DeadlineAction";
 import type { FormatPolicy } from "./FormatPolicy";
 import type { OthersRows } from "./OthersRows";
 
-export type Permissions = { format: FormatPolicy, othersRows: OthersRows, filterSort: boolean, addRows: boolean, 
+export type Permissions = { format: FormatPolicy, othersRows: OthersRows, 
 /**
- * 참여자가 자기가 추가한 행을 지울 수 있다(1b 참여자 권한 '행 삭제'). 기본은 금지.
+ * 참여자 조회조건(필터). 늘 켠다 — 1b에서 끄는 곳이 없고 참여자 화면도 보지 않는다. 이 필드가 꼭 있어야 하는 옛
+ * 에이전트·기록 파일과 맞추려고 남겨 둔다.
  */
-deleteRows: boolean, 
+filterSort: boolean, 
+/**
+ * 참여자가 표 맨 아래에 행을 붙일 수 있다(1b '참여자가 새 행을 추가할 수 있게 하기'). 새 업무는 허용. 참여자는 자기가
+ * 추가한 행을 늘 지울 수 있다(따로 권한이 없다).
+ */
+addRows: boolean, 
 /**
  * 마감 시각이 되면 읽기 전용으로 바꿀지 공유를 닫을지. 예전 '마감 후 자동 읽기 전용' 설정은 읽지 않는다(읽기 전용).
  */

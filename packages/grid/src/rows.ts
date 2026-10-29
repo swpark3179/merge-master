@@ -24,20 +24,35 @@ export function cellText(model: SheetModel, v: CellValue | undefined, row: numbe
   return formatValue(v, s?.numberFormat ?? "");
 }
 
-/** 조회조건 드롭다운 항목: 보이는 데이터 행의 값(처음 나온 순서, 빈 값 제외). */
+/** 조회조건 항목 '빈칸'의 값: 빈 칸의 표시 글자(`""`)와 같아서 고르면 빈 칸인 행만 남는다. */
+export const BLANK = "";
+/** 조회조건 항목 '빈칸'을 보일 때의 글자. */
+export const BLANK_LABEL = "(빈칸)";
+
+/** 조회조건 항목을 보일 글자(빈칸이면 '(빈칸)'). */
+export function optionLabel(value: string): string {
+  return value === BLANK ? BLANK_LABEL : value;
+}
+
+/**
+ * 조회조건 드롭다운 항목: 보이는 데이터 행의 값(처음 나온 순서). 빈 칸인 행이 있으면 맨 끝에 [`BLANK`]('빈칸')를 더한다
+ * (Excel 필터의 '(필드 값 없음)'처럼).
+ */
 export function filterOptions(model: SheetModel, col: number): string[] {
   const values = effectiveColumn(model, col);
   const hidden = new Set(model.hiddenRows);
   const seen = new Set<string>();
+  let blank = false;
   for (let r = model.headerRows; r < model.rows; r++) {
     if (hidden.has(r)) continue;
     const t = cellText(model, values[r], r, col);
-    if (t !== "") seen.add(t);
+    if (t === BLANK) blank = true;
+    else seen.add(t);
   }
-  return [...seen];
+  return blank ? [...seen, BLANK] : [...seen];
 }
 
-/** 조회조건(열 → 고른 값)에 맞지 않는 데이터 행. */
+/** 조회조건(열 → 고른 값, [`BLANK`]면 빈 칸)에 맞지 않는 데이터 행. */
 export function rowsNotMatching(model: SheetModel, values: Record<number, string>): Set<number> {
   const out = new Set<number>();
   const cols = Object.entries(values).map(([c, want]) => ({

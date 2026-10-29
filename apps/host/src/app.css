@@ -1239,14 +1239,100 @@ button.role {
   padding: 0 12px;
 }
 
-.role-seg {
+/* 역할 줄 입력/잠금: 흰 묶음 안에서 켠 쪽이 그 역할의 색(그리드 칸 색과 같다)으로 칠해진다. */
+.role-toggle {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.role-toggle > button,
+.filter-toggle {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.role-toggle > button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.role-toggle > button.input[aria-pressed="true"],
+.role-toggle > button.input[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--role-input-ink);
+  background: var(--role-input);
+  color: var(--role-input-ink);
+  font-weight: 700;
+}
+
+.role-toggle > button.lock[aria-pressed="true"],
+.role-toggle > button.lock[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--role-lock-ink);
+  background: var(--role-lock);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.role-icon {
+  width: 14px;
+  height: 14px;
   flex: none;
 }
 
-.role-seg > button {
-  height: 28px;
-  gap: 6px;
-  padding: 0 14px;
+/* 역할 줄 조회조건 켜기/끄기: 입력/잠금 묶음과 같은 높이(38px). 켜면 조회 태그 색, 고른 열 중 일부만이면 점선. */
+.filter-toggle {
+  height: 38px;
+  border-color: var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.filter-toggle:hover:not(:disabled) {
+  border-color: var(--field);
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.filter-toggle[aria-pressed="true"],
+.filter-toggle[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.filter-toggle[aria-pressed="mixed"] {
+  border-style: dashed;
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.filter-state {
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--chip);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+.filter-toggle[aria-pressed="true"] .filter-state {
+  background: var(--accent);
+  color: #fff;
 }
 
 /* 담당자 배정: 첫 줄 행 배정 기준, 둘째 줄 고른 칸의 담당자 */
@@ -1334,35 +1420,6 @@ button.role {
 .grid-card-head .viewer-pick {
   flex: none;
   white-space: nowrap;
-}
-
-.role-sw {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  flex: none;
-  border-radius: 3px;
-  border: 1px solid;
-}
-
-.legend .role-sw {
-  width: 14px;
-  height: 14px;
-}
-
-.role-sw.input {
-  background: var(--role-input);
-  border-color: var(--role-input-ink);
-}
-
-.role-sw.req {
-  background: var(--role-req);
-  border-color: var(--role-req-ink);
-}
-
-.role-sw.lock {
-  background: var(--role-lock);
-  border-color: var(--role-lock-ink);
 }
 
 .grid-card {
@@ -1523,21 +1580,6 @@ button.role {
   flex: none;
 }
 
-.chip-swatch {
-  display: inline-block;
-  width: 14px;
-  height: 11px;
-  margin-right: 5px;
-  border: 1px solid var(--field);
-  border-radius: 3px;
-  vertical-align: -1px;
-  background: #fff;
-}
-
-.chip-swatch.exception {
-  border: 1.5px dashed var(--ink-2);
-}
-
 .config-screen .formula-bar {
   display: flex;
   align-items: center;
@@ -1602,46 +1644,13 @@ button.role {
   border-radius: 0;
 }
 
-.legend {
+/* 그리드 아래(두 탭 공통): 오른쪽에 참여자 행 추가 스위치 */
+.config-foot {
   flex: none;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 18px;
-}
-
-.legend-item {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-/* 그리드 아래: 고른 칸을 편집할 수 있는 사람 */
-.access-footer {
   min-height: 30px;
-}
-
-.access-footer .editors {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-}
-
-.access-footer .person {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: #fff;
-}
-
-.access-footer .person.anyone {
-  border-color: var(--role-input-ink);
-  background: var(--role-input);
-  font-weight: 600;
+  justify-content: flex-end;
 }
 
 /* 오른쪽 패널 */
@@ -1680,15 +1689,29 @@ button.role {
   gap: 14px;
 }
 
+/* 열 속성 머리: 지금 역할(바꾸기는 위쪽 역할 줄) */
+.role-tag.input {
+  background: var(--role-input);
+  color: var(--role-input-ink);
+}
+
+.role-tag.locked {
+  background: var(--role-lock);
+  color: var(--role-lock-ink);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
 .kv {
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
+/* 참여자 권한 이름(서식 변경·남의 행·크기 조절·수식 칸)이 한 줄에 들어가는 너비 */
 .kv > .muted {
-  width: 56px;
+  width: 66px;
   flex: none;
+  white-space: nowrap;
 }
 
 .kv > input,
@@ -2046,6 +2069,25 @@ button.big-btn {
 
 .ipnames .card-head {
   flex-wrap: wrap;
+}
+
+/* 접고 펼치는 머리(처음엔 접힘): 꺾쇠가 펼치면 아래를 향한다 */
+.ip-toggle .chev {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--muted);
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+.ip-toggle[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+
+.ipnames-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .host-line {

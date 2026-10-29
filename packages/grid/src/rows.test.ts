@@ -1,7 +1,17 @@
 import type { SheetModel } from "@mm/shared";
 import { describe, expect, it } from "vitest";
 
-import { cutMerge, fitRowHeights, mergeValueCell, partlyShownMerges, withHiddenRows } from "./rows";
+import {
+  BLANK,
+  cutMerge,
+  filterOptions,
+  fitRowHeights,
+  mergeValueCell,
+  optionLabel,
+  partlyShownMerges,
+  rowsNotMatching,
+  withHiddenRows,
+} from "./rows";
 
 function model(values: (string | number | null)[][], merges: SheetModel["merges"] = []): SheetModel {
   const rows = values.length;
@@ -138,5 +148,36 @@ describe("cutMerge", () => {
     expect(cutMerge(m, 1, 2)).toBeNull();
     expect(cutMerge(m, 2, 1)).toBeNull();
     expect(cutMerge(m, 3, 1)).toBeNull();
+  });
+});
+
+describe("조회조건 빈칸", () => {
+  // 머리글 1행 + 데이터 5행. A열은 A3:A4 병합(값은 A3), B열은 빈 칸이 있다. 6행은 숨김.
+  const m = (): SheetModel => ({
+    ...model(
+      [
+        ["본부", "비고"],
+        ["영업", "급함"],
+        ["재무", null],
+        [null, ""],
+        ["영업", "급함"],
+        [null, null],
+      ],
+      [{ row: 2, col: 0, rows: 2, cols: 1 }],
+    ),
+    headerRows: 1,
+    hiddenRows: [5],
+  });
+
+  it("빈 칸이 있으면 맨 끝에 '빈칸' 항목(병합 안 칸은 왼쪽 위 값, 숨긴 행은 보지 않는다)", () => {
+    expect(filterOptions(m(), 0)).toEqual(["영업", "재무"]);
+    expect(filterOptions(m(), 1)).toEqual(["급함", BLANK]);
+    expect(optionLabel(BLANK)).toBe("(빈칸)");
+    expect(optionLabel("급함")).toBe("급함");
+  });
+
+  it("'빈칸'을 고르면 빈 칸인 행만 남는다", () => {
+    expect([...rowsNotMatching(m(), { 1: BLANK })]).toEqual([1, 4]);
+    expect([...rowsNotMatching(m(), { 0: "재무", 1: BLANK })]).toEqual([1, 4, 5]);
   });
 });

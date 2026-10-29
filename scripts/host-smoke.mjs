@@ -161,9 +161,11 @@ try {
   await expect(page.getByText("자동 감지됨")).toBeVisible();
   check(
     (await page.getByLabel("머리글 시작 행").inputValue()) === "1" &&
-      (await page.getByLabel("머리글 끝 행").inputValue()) === "2",
-    "머리글 1~2행",
+      (await page.getByLabel("머리글 끝 행").inputValue()) === "",
+    "머리글은 기본 없음(사용자가 정한다)",
   );
+  await page.getByLabel("머리글 끝 행").fill("2");
+  check(true, "머리글 1~2행으로 정함");
   check((await selectedText("틀 고정")) === "A–D열", "틀 고정 A–D열");
   let f = await facts();
   check(f["데이터 행"] === "1,000" && f["열"] === "9" && f["병합 영역"] === "443", "데이터 1,000행 · 9열 · 병합 443");
@@ -224,7 +226,9 @@ try {
   console.log("[1b 취합 설정]");
   await commitButton.click();
   const cfg = page.locator(".config-screen");
-  const legend = cfg.locator(".legend");
+  const addRowsSwitch = cfg
+    .locator(".config-foot")
+    .getByRole("switch", { name: "참여자가 새 행을 추가할 수 있게 하기" });
   const assignTab = cfg.getByRole("tab", { name: /담당자 배정/ });
   /** 1b 담당자 배정 탭에서 행 배정 기준 열을 고르고 열 역할 탭으로 돌아온다(기본은 배정 없음). */
   const setKeyColumn = async (letter) => {
@@ -235,10 +239,11 @@ try {
     await expect(assignTab).toContainText(`${letter}열 기준`);
     await cfg.getByRole("tab", { name: "열 역할" }).click();
   };
-  await expect(legend).toContainText("쓸 수 있음 · 9열");
+  await expect(addRowsSwitch).toHaveAttribute("aria-checked", "true");
   check(
-    (await legend.textContent()).includes("보기만 가능 · 0열") && (await legend.textContent()).includes("조회조건 3열"),
-    "기본 제안: 모든 열 입력(9열) · 잠금 없음 · 조회 3열",
+    (await cfg.locator(".legend").count()) === 0 &&
+      (await cfg.getByRole("switch", { name: /행을 지울 수 있게/ }).count()) === 0,
+    "그리드 아래는 행 추가 스위치만(기본 켬 · 범례·행 삭제 스위치 없음)",
   );
   const headCell = (col) => cfg.locator(`.mmg-cell[data-r="1"][data-c="${col}"]`);
   check(
@@ -267,6 +272,25 @@ try {
   const formula = cfg.locator(".formula-bar");
   const roleBar = cfg.getByRole("toolbar", { name: "역할 지정" });
   const columnPanel = cfg.getByRole("region", { name: "열 속성" });
+  /** 열(들)을 머리글로 고르고 역할 줄의 입력·잠금·조회조건 눌림 상태를 읽는다. */
+  const rolesOf = async (from, to = from) => {
+    await colHead(from).click();
+    if (to !== from) await colHead(to).click({ modifiers: ["Shift"] });
+    const pressed = (name) => roleBar.getByRole("button", { name, exact: true }).getAttribute("aria-pressed");
+    return [await pressed("입력"), await pressed("잠금"), await pressed("조회조건")].join(",");
+  };
+  check(
+    (await rolesOf("A", "I")).startsWith("true,false,") &&
+      (await cfg.locator('.mmg-cell[data-r="1"] .tag-filter').count()) === 3,
+    "기본 제안: 모든 열 입력 · 잠금 없음 · 조회 3열",
+  );
+  check(
+    (await columnPanel.getByRole("button", { name: "잠금", exact: true }).count()) === 0 &&
+      (await columnPanel.getByLabel("조회조건").count()) === 0,
+    "입력/잠금·조회조건은 위쪽 역할 줄에만(열 속성에는 없음)",
+  );
+  const sideCards = await cfg.locator(".config-side .side-card").evaluateAll((els) => els.map((e) => e.ariaLabel));
+  check(sideCards.join(",") === "열 속성,참여자 권한,셀 예외", "오른쪽: 열 속성 → 참여자 권한 → 셀 예외");
   check(
     (await roleBar.getByRole("button", { name: "필수" }).count()) === 0 &&
       (await roleBar.getByRole("button", { name: "담당자 배정" }).count()) === 0 &&
@@ -281,18 +305,24 @@ try {
     await lock.click();
     await colHead("G").click();
     await lock.click();
-    await expect(legend).toContainText("보기만 가능 · 6열");
+    await expect(lock).toHaveAttribute("aria-pressed", "true");
   };
   await lockKeyColumns();
-  check((await legend.textContent()).includes("쓸 수 있음 · 3열"), "A~E·G열을 잠그면 입력 3열(F·H·I) · 잠금 6열");
+  check(
+    (await rolesOf("A", "E")).startsWith("false,true,") &&
+      (await rolesOf("G")).startsWith("false,true,") &&
+      (await rolesOf("F")).startsWith("true,false,") &&
+      (await rolesOf("H", "I")).startsWith("true,false,"),
+    "A~E·G열을 잠그면 입력 3열(F·H·I) · 잠금 6열",
+  );
   await colHead("F").click();
   await expect(formula.locator(".addr")).toHaveText("F3:F1002");
   await expect(formula.locator(".value")).toHaveText("1,000개 셀 선택됨 · 입력 · 숫자(천원)");
   check((await cfg.getByLabel("단위").inputValue()) === "천원", "열 머리글 클릭 = 데이터 행 전체 선택, 열 속성 표시");
   await columnPanel.getByLabel("필수").click();
   await expect(headCell(5)).toContainText("필수");
-  const missingF = Number((await legend.textContent()).match(/비어 있음 ([\d,]+)/)[1].replace(/,/g, ""));
-  check(missingF > 500 && (await cfg.locator(".mmg-cell.deco-missing").count()) > 0, `F열 필수 → 미입력 ${missingF}`);
+  const missingF = await cfg.locator(".mmg-cell.deco-missing").count();
+  check(missingF > 0, `F열 필수 → 미입력 칸 표시(보이는 ${missingF}칸)`);
 
   await colHead("E").click();
   check((await columnPanel.getByLabel("필수").count()) === 0, "잠금 열(E)은 열 속성에 필수 체크가 없음");
@@ -307,7 +337,7 @@ try {
   const exceptions = cfg.getByRole("region", { name: "셀 예외" });
   await exceptions.getByLabel("예외 종류").selectOption("locked");
   await exceptions.getByRole("button", { name: "+ 선택 셀을 예외로" }).click();
-  await expect(legend).toContainText("예외 1");
+  await expect(exceptions.locator(".exception-row")).toHaveCount(1);
   await expect(cfg.locator(".exception-row").first()).toContainText("F6");
   check(
     (await cfg.locator('.mmg-cell[data-r="5"][data-c="5"]').getAttribute("class")).includes("deco-exception"),
@@ -380,9 +410,11 @@ try {
   check(true, "제목·안내 행과 아래 빈 행을 뺀 표 범위 A4:G25");
   check(
     (await page.getByLabel("머리글 시작 행").inputValue()) === "4" &&
-      (await page.getByLabel("머리글 끝 행").inputValue()) === "5",
-    "세로 병합 머리글 4~5행",
+      (await page.getByLabel("머리글 끝 행").inputValue()) === "",
+    "머리글은 기본 없음",
   );
+  await page.getByLabel("머리글 끝 행").fill("5");
+  check(true, "세로 병합 머리글 4~5행으로 정함");
   const frozenLabel = await selectedText("틀 고정");
   if (frozenLabel !== "A–B열") {
     const books = await invoke("excel_list_workbooks", {});
@@ -402,7 +434,7 @@ try {
   await page.screenshot({ path: join(shots, "host-import-variants.png") });
 
   await commitButton.click();
-  await expect(cfg.locator(".legend")).toContainText("입력", { timeout: 10_000 });
+  await expect(addRowsSwitch).toBeVisible({ timeout: 10_000 });
   await setKeyColumn("B");
   await expect(cfg.locator('.mmg-cell[data-r="0"][data-c="1"]')).toContainText("배정 기준");
   const vHeads = await cfg.locator(".mmg-rowhead").allTextContents();
@@ -491,8 +523,9 @@ try {
   await openBook(work, "smoke-budget.xlsx");
   await expect(page.getByLabel("데이터 범위")).toHaveValue("A1:I1002", { timeout: 30_000 });
   await waitRead();
+  await page.getByLabel("머리글 끝 행").fill("2");
   await commitButton.click();
-  await expect(cfg.locator(".legend")).toContainText("쓸 수 있음 · 9열", { timeout: 10_000 });
+  await expect(addRowsSwitch).toBeVisible({ timeout: 10_000 });
   await lockKeyColumns();
   await setKeyColumn("C");
   await colHead("F").click();

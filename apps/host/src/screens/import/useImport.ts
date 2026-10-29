@@ -53,10 +53,11 @@ type Busy = "list" | "open" | "inspect" | "read" | "commit" | null;
 /** 범위·항목을 고친 뒤 다시 읽기까지 기다리는 시간(입력 중에는 읽지 않는다). */
 const REREAD_DELAY_MS = 600;
 
+/** 감지값으로 채운 입력값. 머리글 행은 감지가 틀리기 쉬워 늘 없음(0)에서 시작하고 사용자가 정한다. */
 function formOf(ins: SheetInspection, items: ImportItems): ImportForm {
   return {
     range: formatRange(ins.table),
-    headerRows: ins.headerRows,
+    headerRows: 0,
     frozenCols: Math.min(Math.max(ins.frozenCols - ins.table.col, 0), ins.table.cols),
     items,
   };

@@ -563,7 +563,9 @@ fn add_rows(st: &mut State, c: &Client, count: u32) {
 
 #[tokio::test]
 async fn participants_add_rows_when_allowed() {
-    let mut st = State::new(fixture());
+    let mut init = fixture();
+    init.sheets[0].1.permissions.add_rows = false; // 새 업무는 허용이 기본: 끈 시트에서 시작한다
+    let mut st = State::new(init);
     let mut a = connect(&mut st, 1);
     let mut b = connect(&mut st, 2);
     join(&mut st, &a, "정하늘", None);

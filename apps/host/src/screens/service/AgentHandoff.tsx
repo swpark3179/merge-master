@@ -115,7 +115,7 @@ export function AgentHandoff(props: Props) {
   const [fileName, setFileName] = useState(() => defaultFileName(workbook, deadline));
   const [fileEdited, setFileEdited] = useState(false);
   const [slug, setSlug] = useState(props.slug || "q4");
-  const [history, setHistory] = useState(true);
+  const [history, setHistory] = useState(false); // 저장 화면과 같게 '변경 이력' 시트는 기본으로 넣지 않는다
   const [mark, setMark] = useState(false);
   const [styles, setStyles] = useState(true);
   const [cancelled, setCancelled] = useState(true);

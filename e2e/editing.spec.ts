@@ -535,7 +535,7 @@ test("행 추가: 표 아래에 붙인 행은 모두에게 보이고 추가한 �
   const b = await open(browser, "최도윤");
   const addRow = (page: Page) => page.getByRole("button", { name: "행 추가", exact: true });
   await expect(addRow(a)).toHaveCount(0);
-  expect((await request.post("/__dev/config", { data: { addRows: true, deleteRows: true } })).ok()).toBe(true);
+  expect((await request.post("/__dev/config", { data: { addRows: true } })).ok()).toBe(true);
   try {
     const count = async (page: Page) =>
       Number((await page.getByTestId("row-count").textContent())!.split("행")[0]!.replace(/,/g, ""));
@@ -585,6 +585,6 @@ test("행 추가: 표 아래에 붙인 행은 모두에게 보이고 추가한 �
     await expect.poll(() => count(b)).toBe(before);
     await expect(b.locator(".toast").last()).toContainText("한지우 님이");
   } finally {
-    await request.post("/__dev/config", { data: { addRows: false, deleteRows: false } });
+    await request.post("/__dev/config", { data: { addRows: false } });
   }
 });

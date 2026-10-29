@@ -14,6 +14,8 @@ export { ContextMenu, MenuItem, MenuNote, MenuSep, SIZE_LIMITS, SizeControl } fr
 export type { ContextMenuProps, MenuItemProps, SizeControlProps } from "./ContextMenu";
 export { parseTsv, toTsv } from "./clipboard";
 export {
+  BLANK,
+  BLANK_LABEL,
   cellText,
   cutMerge,
   effectiveColumn,
@@ -21,6 +23,7 @@ export {
   FIT_MAX_LINES,
   fitRowHeights,
   mergeValueCell,
+  optionLabel,
   partlyShownMerges,
   rowsNotMatching,
   withHiddenRows,

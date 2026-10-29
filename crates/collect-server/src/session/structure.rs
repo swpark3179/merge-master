@@ -26,8 +26,8 @@ pub const ADDED_ROWS_NOTE: &str = "참여자가 추가한 행";
 pub(super) const SAVING: &str = "엑셀로 저장하는 중에는 행·열을 지울 수 없습니다. 저장이 끝난 뒤 다시 해 주세요";
 
 impl State {
-    /// 참여자 요청: 행 추가(권한 '행 추가'), 내가 추가했거나 내게 배정된 행 지우기(권한 '행 삭제'), 취소 표시(내가 입력할
-    /// 수 있는 칸이 있는 행). 열은 호스트만 바꾼다.
+    /// 참여자 요청: 행 추가(권한 '행 추가'), 내가 추가한 행 지우기(늘 — 따로 권한이 없다), 취소 표시(내가 입력할 수 있는
+    /// 칸이 있는 행). 열은 호스트만 바꾼다.
     pub(super) fn participant_structure(&mut self, conn: ConnId, sheet: u32, edit: StructureEdit, layout: Option<u32>) {
         let Some((name, p)) = self.person_of(conn) else { return };
         self.touch(conn);
@@ -46,9 +46,6 @@ impl State {
                 Err("이 시트에서는 행을 추가할 수 없습니다".to_string())
             }
             StructureEdit::AddRows { .. } => check_add(&slot.model, &slot.baseline, edit).map(drop),
-            StructureEdit::DeleteRows { .. } if !permissions.delete_rows => {
-                Err("이 시트에서는 행을 지울 수 없습니다".to_string())
-            }
             StructureEdit::DeleteRows { .. } if self.saving => Err(SAVING.to_string()),
             StructureEdit::DeleteRows { from, count } => {
                 let access = &self.rt[si].access;
@@ -135,7 +132,7 @@ impl State {
                 if imported > 0 {
                     self.cut_recalc(si, from, imported);
                 }
-                // 내게 배정된 행을 모두 지운 참여자도 명단에 남는다(새 시트를 받을 때 끊기지 않게).
+                // 추가한 행(행 배정 기준 칸에 내 이름)을 모두 지운 참여자도 명단에 남는다(새 시트를 받을 때 끊기지 않게).
                 if person.is_some() {
                     let roster = union_roster(self.sheets.iter().map(|s| (&s.model, &s.config)));
                     if !roster.iter().any(|n| n.trim() == by.trim()) {

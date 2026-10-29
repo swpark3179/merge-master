@@ -373,10 +373,8 @@ export function Workspace({ s }: { s: SessionState }) {
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, sheet.rev]);
-  const filterCols = useMemo(
-    () => (sv.permissions.filterSort ? columns.map((c, i) => (c.filter ? i : -1)).filter((i) => i >= 0) : []),
-    [columns, sv.permissions.filterSort],
-  );
+  // 조회조건은 늘 켠다(권한 `filterSort`는 옛 기록 호환으로만 남아 있다).
+  const filterCols = useMemo(() => columns.map((c, i) => (c.filter ? i : -1)).filter((i) => i >= 0), [columns]);
   const options = useMemo(() => new Map(filterCols.map((c) => [c, filterOptions(model, c)])), [filterCols, model]);
 
   const ctx: EditContext = {
@@ -747,8 +745,10 @@ export function Workspace({ s }: { s: SessionState }) {
     if (!s.addRows(1)) notify("연결이 끊겨 행을 추가하지 못했습니다. 다시 연결되면 해 주세요", "warn");
   };
 
-  /** 내가 추가한 행인가(지울 수 있는 행). */
+  /** 내가 추가한 행인가(지울 수 있는 행 — 따로 권한 없이 늘). */
   const mine = (r: number) => (model.addedRows ?? []).some((a) => a.row === r && a.by === w.name);
+  /** 행 메뉴에 '행 삭제'를 보일까: 행을 추가할 수 있거나(지금 막혀도) 내가 추가한 행이 남아 있으면. */
+  const canDelete = sv.permissions.addRows || (model.addedRows ?? []).some((a) => a.by === w.name);
 
   /** 강조 메모 메뉴(메모 숨기기·그 칸의 셀 이력)를 연다. `at`: 누른 칸(말풍선이면 강조의 머리 칸). */
   const openNoteMenu = (at: CellRef, e: ReactMouseEvent) => {
@@ -786,7 +786,7 @@ export function Workspace({ s }: { s: SessionState }) {
     const any =
       hit.kind === "col"
         ? canResize
-        : canResize || p.addRows || p.deleteRows || (hit.row >= model.headerRows && !s.readOnly);
+        : canResize || p.addRows || canDelete || (hit.row >= model.headerRows && !s.readOnly);
     if (!any) return;
     e.preventDefault();
     if (editorRef.current) leave();
@@ -855,14 +855,14 @@ export function Workspace({ s }: { s: SessionState }) {
     const data = rows.every((x) => x >= model.headerRows);
     const label = (x: number) => model.origin.row + x + 1;
     const p = sv.permissions;
-    // 내가 추가한 행이나 내게 배정된(행 배정) 행. 병합의 첫 행만 지울 수는 없다(서버도 같은 규칙으로 검사한다).
+    // 내가 추가한 행만. 병합의 첫 행만 지울 수는 없다(서버도 같은 규칙으로 검사한다).
     const cut = cutMerge(model, from, count);
-    const deletable = data && !cut && rows.every((x) => mine(x) || sv.rowOwner[x] === w.color);
+    const deletable = data && !cut && rows.every(mine);
     const deleteWhy = !data
       ? "머리글 행은 지울 수 없습니다"
       : cut
         ? `병합된 칸(${addr({ row: cut.row, col: cut.col })}:${addr({ row: cut.row + cut.rows - 1, col: cut.col + cut.cols - 1 })})의 첫 행만 지울 수는 없습니다. 병합된 행을 모두 함께 지우세요`
-        : "내가 추가한 행이나 내게 배정된 행만 지울 수 있습니다";
+        : "내가 추가한 행만 지울 수 있습니다";
     const imported = rows.filter((x) => !(model.addedRows ?? []).some((a) => a.row === x)).length;
     const doDelete = () => {
       const filled = rows.reduce(
@@ -910,7 +910,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 onCommit={(pt) => onResize("row", row, pt)}
               />
             )}
-            {canResize && (p.addRows || p.deleteRows || data) && <MenuSep />}
+            {canResize && (p.addRows || canDelete || data) && <MenuSep />}
             {p.addRows && (
               <MenuItem
                 disabled={s.readOnly}
@@ -934,7 +934,7 @@ export function Workspace({ s }: { s: SessionState }) {
                 {allCancelled ? "취소 표시 풀기" : "취소 행으로 표시"}
               </MenuItem>
             )}
-            {p.deleteRows && (
+            {canDelete && (
               <MenuItem
                 danger
                 disabled={s.readOnly || !deletable}

@@ -160,6 +160,7 @@ async fn unknown_sheet_is_refused_without_panicking() {
 async fn participant_permissions_are_per_sheet() {
     let mut init = two_sheets();
     init.sheets[1].1.permissions.others_rows = OthersRows::Hidden;
+    init.sheets[0].1.permissions.add_rows = false;
     init.sheets[1].1.permissions.add_rows = true;
     let mut st = State::new(init);
     let mut lee = connect(&mut st, 1);
@@ -188,7 +189,10 @@ async fn participant_permissions_are_per_sheet() {
 
 #[tokio::test]
 async fn common_settings_follow_the_first_sheet() {
-    let mut st = State::new(two_sheets());
+    let mut init = two_sheets();
+    init.sheets[0].1.permissions.add_rows = false;
+    init.sheets[1].1.permissions.add_rows = false;
+    let mut st = State::new(init);
     host(&mut st, |s| {
         let meta = ConfigEdit::SetMeta {
             title: "인력·예산".into(),
