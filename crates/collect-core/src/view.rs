@@ -148,7 +148,7 @@ mod tests {
         let flags = decode(&v.flags);
         let mine = |r: u32, c: u32| flags[(r * m.cols + c) as usize] & flag::MINE != 0;
         assert!(mine(6, 5) && !mine(2, 5));
-        assert!(v.hidden_rows.is_empty()); // 기본은 읽기 전용으로 보인다
+        assert!(v.hidden_rows.is_empty()); // 읽기 전용이면 남의 행도 보인다
 
         cfg.permissions.others_rows = OthersRows::Hidden;
         let v = config_view(&m, &cfg, Some("김민지")).unwrap();

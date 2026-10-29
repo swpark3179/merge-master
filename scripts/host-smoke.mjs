@@ -261,14 +261,16 @@ try {
   );
   await setKeyColumn("C");
   check(
-    (await headCell(0).textContent()).includes("조회") &&
+    (await cfg.locator('.mmg-colhead[data-col-head="0"] .tag-filter').count()) === 1 &&
+      !(await headCell(0).textContent()).includes("조회") &&
       (await headCell(2).textContent()).includes("배정 기준") &&
       (await headCell(8).textContent()).includes("목록"),
-    "머리글 태그: 본부 조회 · 담당자 배정 기준 · 집행 시기 목록",
+    "열 태그: A열 머리글에 조회 · 머리글 칸에 담당자 배정 기준 · 집행 시기 목록",
   );
   check((await cfg.locator(".mmg-rowhead .mmg-dot").count()) > 10, "C열을 기준으로 고르면 행 번호 옆 담당자 색 점");
 
-  const colHead = (letter) => cfg.locator(".mmg-colhead", { hasText: new RegExp(`^${letter}$`) });
+  // 열 머리글에는 조회·필수 태그가 붙으므로 글자 대신 열 번호로 찾는다(표가 A열부터).
+  const colHead = (letter) => cfg.locator(`.mmg-colhead[data-col-head="${letter.charCodeAt(0) - 65}"]`);
   const formula = cfg.locator(".formula-bar");
   const roleBar = cfg.getByRole("toolbar", { name: "역할 지정" });
   const columnPanel = cfg.getByRole("region", { name: "열 속성" });
@@ -281,8 +283,8 @@ try {
   };
   check(
     (await rolesOf("A", "I")).startsWith("true,false,") &&
-      (await cfg.locator('.mmg-cell[data-r="1"] .tag-filter').count()) === 3,
-    "기본 제안: 모든 열 입력 · 잠금 없음 · 조회 3열",
+      (await cfg.locator(".mmg-colhead .tag-filter").count()) === 3,
+    "기본 제안: 모든 열 입력 · 잠금 없음 · 조회 3열(열 머리글 태그)",
   );
   check(
     (await columnPanel.getByRole("button", { name: "잠금", exact: true }).count()) === 0 &&
@@ -291,6 +293,12 @@ try {
   );
   const sideCards = await cfg.locator(".config-side .side-card").evaluateAll((els) => els.map((e) => e.ariaLabel));
   check(sideCards.join(",") === "열 속성,참여자 권한,셀 예외", "오른쪽: 열 속성 → 참여자 권한 → 셀 예외");
+  const perms = cfg.getByRole("region", { name: "참여자 권한" });
+  const permsOn = await perms.locator(".segmented button.on").allTextContents();
+  check(
+    permsOn.join(",") === "허용,편집 가능,허용,값으로 바꾸기",
+    "참여자 권한 기본: 서식 허용 · 남의 행 편집 가능 · 크기 조절 허용 · 수식 칸 값으로 바꾸기",
+  );
   check(
     (await roleBar.getByRole("button", { name: "필수" }).count()) === 0 &&
       (await roleBar.getByRole("button", { name: "담당자 배정" }).count()) === 0 &&
@@ -319,13 +327,16 @@ try {
   await expect(formula.locator(".addr")).toHaveText("F3:F1002");
   await expect(formula.locator(".value")).toHaveText("1,000개 셀 선택됨 · 입력 · 숫자(천원)");
   check((await cfg.getByLabel("단위").inputValue()) === "천원", "열 머리글 클릭 = 데이터 행 전체 선택, 열 속성 표시");
-  await columnPanel.getByLabel("필수").click();
-  await expect(headCell(5)).toContainText("필수");
+  await columnPanel.getByRole("switch", { name: "필수" }).click();
+  await expect(colHead("F").locator(".tag-required")).toHaveText("필수");
   const missingF = await cfg.locator(".mmg-cell.deco-missing").count();
   check(missingF > 0, `F열 필수 → 미입력 칸 표시(보이는 ${missingF}칸)`);
 
   await colHead("E").click();
-  check((await columnPanel.getByLabel("필수").count()) === 0, "잠금 열(E)은 열 속성에 필수 체크가 없음");
+  check(
+    (await columnPanel.getByRole("switch", { name: "필수" }).count()) === 0,
+    "잠금 열(E)은 열 속성에 필수 스위치가 없음",
+  );
 
   // 칸 하나를 골라도 위쪽 입력/잠금은 열 전체: 칸 단위는 오른쪽 셀 예외에서만.
   await cfg.locator('.mmg-cell[data-r="5"][data-c="5"]').click();
@@ -373,6 +384,8 @@ try {
   await expect(h4).toContainText("호스트가 고친 근거");
   check(true, "1b에서 호스트가 칸 내용 고침(H4)");
 
+  // 새 업무 기본은 남의 행 편집 가능: 읽기 전용으로 바꿔 배정대로 나뉜 미리보기를 본다(끝나면 기본으로 되돌린다).
+  await cfg.getByRole("button", { name: "읽기 전용", exact: true }).click();
   await cfg.getByLabel("참여자 시점").selectOption("김민지");
   await expect(cfg.locator(".viewer-banner")).toContainText("김민지 님 시점");
   const others = await cfg.locator(".mmg-cell.deco-others").count();
@@ -383,7 +396,7 @@ try {
   const rowsAfter = await cfg.locator(".mmg-rowhead").count();
   check(rowsAfter < rowsBefore, `‘남의 행 숨김’이면 미리보기에서 남의 행이 사라짐 (${rowsBefore} → ${rowsAfter}행)`);
   await page.screenshot({ path: join(shots, "host-config-viewer.png") });
-  await cfg.getByRole("button", { name: "읽기 전용", exact: true }).click();
+  await cfg.getByRole("button", { name: "편집 가능", exact: true }).click();
   await cfg.getByRole("button", { name: "시점 끄기" }).click();
   await expect(cfg.locator(".viewer-banner")).toHaveCount(0);
 
@@ -529,8 +542,8 @@ try {
   await lockKeyColumns();
   await setKeyColumn("C");
   await colHead("F").click();
-  await columnPanel.getByLabel("필수").click();
-  await expect(headCell(5)).toContainText("필수");
+  await columnPanel.getByRole("switch", { name: "필수" }).click();
+  await expect(colHead("F").locator(".tag-required")).toHaveText("필수");
   // 서비스 중에 다시 확정: 접속 중이던 명단 밖 참여자(김민수)는 새 명단에 없어 끊긴다.
   await expect(p3.getByText("명단에서 빠졌습니다")).toBeVisible({ timeout: 10_000 });
   check(true, "서비스 중 다시 확정 → 새 명단에 없는 참여자는 끊김");
@@ -596,11 +609,11 @@ try {
   await mon.getByRole("button", { name: "필터 지우기" }).click();
   check(true, "담당자별 진행률을 누르면 그 사람 행만(170행)");
 
-  // 크기 조절: 호스트가 모니터링 그리드의 H열 머리글 경계를 끌면 참여자 화면에도 바로 보인다(참여자는 기본 금지).
+  // 크기 조절: 호스트가 모니터링 그리드의 H열 머리글 경계를 끌면 참여자 화면에도 바로 보인다(참여자도 새 업무 기본은 허용).
   const colHeadOf = (scope, letter) => scope.locator(".mmg-colhead", { hasText: new RegExp(`^${letter}$`) });
   check(
-    (await colHeadOf(p4, "H").locator(".mmg-resize-col").count()) === 0,
-    "참여자 크기 조절은 기본 금지(손잡이 없음)",
+    (await colHeadOf(p4, "H").locator(".mmg-resize-col").count()) === 1,
+    "참여자 크기 조절은 새 업무 기본 허용(손잡이 있음)",
   );
   const pWidth = async () => (await colHeadOf(p4, "H").boundingBox()).width;
   const pWidthBefore = await pWidth();

@@ -111,7 +111,7 @@ function SheetConfig({
     setMenu({ x: e.clientX, y: e.clientY, hit });
   };
 
-  // 머리글 맨 아래 행(병합이면 그 병합의 왼쪽 위)에 열 태그(조회·배정 기준·필수·목록)를 붙인다.
+  // 머리글 맨 아래 행(병합이면 그 병합의 왼쪽 위)에 열 태그(배정 기준·목록)를 붙인다. 조회·필수는 열 머리글(A, B, C…)에.
   const headTagCells = useMemo(() => {
     const map = new Map<string, number>();
     if (hr === 0) return map;
@@ -145,22 +145,10 @@ function SheetConfig({
         const col = headTagCells.get(`${r}:${c}`);
         if (col === undefined || !rule) return undefined;
         const tags: ReactNode[] = [];
-        if (rule.filter)
-          tags.push(
-            <span key="f" className="tag tag-filter">
-              조회
-            </span>,
-          );
         if (view.config.assignment.keyCol === col)
           tags.push(
             <span key="k" className="tag tag-key">
               배정 기준
-            </span>,
-          );
-        if (rule.required)
-          tags.push(
-            <span key="r" className="tag tag-required">
-              필수
             </span>,
           );
         if (rule.format.kind === "list")
@@ -181,6 +169,22 @@ function SheetConfig({
       return cls.length ? { className: cls.join(" ") } : undefined;
     },
     [view, flags, model, headTagCells, rowMine],
+  );
+
+  // 열 머리글(머리글 행이 없어도 늘 보인다)에 조회조건·필수 태그. 좁은 열에서 잘리면 마우스를 올려 본다.
+  const colHeadAdornment = useCallback(
+    (c: number) => {
+      const rule = view?.config.columns[c];
+      if (!rule || !(rule.filter || rule.required)) return undefined;
+      const title = [rule.filter && "조회조건", rule.required && "필수"].filter(Boolean).join(" · ");
+      return (
+        <span className="col-tags" title={title}>
+          {rule.filter && <span className="tag tag-filter">조회</span>}
+          {rule.required && <span className="tag tag-required">필수</span>}
+        </span>
+      );
+    },
+    [view],
   );
 
   const rowMarker = useCallback(
@@ -244,6 +248,7 @@ function SheetConfig({
                 model={shown}
                 decorate={decorate}
                 rowMarker={rowMarker}
+                colHeadAdornment={colHeadAdornment}
                 selection={s.selection}
                 onSelectionChange={editor.onSelectionChange}
                 overlay={editor.overlay}

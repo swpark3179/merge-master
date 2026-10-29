@@ -9,7 +9,8 @@
 //! ```
 //! `--fixture`를 여러 번 주면 그 순서대로 여러 시트를 함께 취합한다. `--required`·`--locked`의 `2:C`는 둘째 시트의 C열(번호가
 //! 없으면 첫 시트). 설정은 시트마다 `CollectConfig::suggest`로 만든 초안(모든 열 입력, 행 배정 기준은 후보 1순위)에 위 옵션을
-//! 더한다. `--locked`는 호스트가 1b에서 하듯 그 열을 잠근다.
+//! 더한다. `--locked`는 호스트가 1b에서 하듯 그 열을 잠근다. 참여자 권한은 새 업무 기본(모두 허용)과 달리 남의 행 읽기
+//! 전용(`--others-hidden`이면 숨김)·서식 변경 금지·크기 조절 금지로 시작한다(`/__dev/config`로 바꾼다).
 //!
 //! `--session <주소 경로>`는 같은 서버에 업무를 하나 더 연다(여러 업무 동시 진행). 그 뒤에 오는 `--fixture`·`--slug`·`--title`·
 //! `--requester`·`--required`·`--locked`·`--others-hidden`·`--add-rows`·`--auto-approve`는 그 업무 것이고, 첫 `--session` 앞은 첫 업무(주소 경로
@@ -26,7 +27,7 @@ use std::net::IpAddr;
 use anyhow::Context;
 use collect_core::SheetModel;
 use collect_core::a1::col_from_letters;
-use collect_core::config::{CollectConfig, ColumnRole, ColumnRule, OthersRows, suggested_key_col};
+use collect_core::config::{CollectConfig, ColumnRole, ColumnRule, FormatPolicy, OthersRows, suggested_key_col};
 use collect_server::{Hub, IpNames, META_JOB, ServerConfig, SessionHandle, SessionInit, lan_addresses, start};
 
 /// 업무 하나의 옵션.
@@ -63,11 +64,12 @@ impl JobSpec {
         for path in &self.fixtures {
             let model: SheetModel = serde_json::from_slice(&std::fs::read(path).with_context(|| path.clone())?)?;
             let mut config = CollectConfig::suggest(&model);
-            // 개발 서버는 담당자 열(후보 1순위)로 행을 배정해 둔다(호스트 앱은 1b에서 고른다).
+            // 개발 서버는 담당자 열(후보 1순위)로 행을 배정해 둔다(호스트 앱은 1b에서 고른다). 배정이 칸을 나누도록 남의 행은
+            // 읽기 전용, 서식 변경·크기 조절은 금지로 둔다(새 업무 기본은 모두 허용).
             config.assignment.key_col = suggested_key_col(&model);
-            if self.others_hidden {
-                config.permissions.others_rows = OthersRows::Hidden;
-            }
+            config.permissions.others_rows = if self.others_hidden { OthersRows::Hidden } else { OthersRows::ReadOnly };
+            config.permissions.format = FormatPolicy::None;
+            config.permissions.resize = false;
             config.permissions.add_rows = self.add_rows;
             sheets.push((model, config));
         }
