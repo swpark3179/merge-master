@@ -302,3 +302,44 @@ async fn backup_copy_can_be_recovered_elsewhere() {
     let memory = SessionHandle::spawn(fixture());
     assert!(memory.backup_store(temp("none.sqlite")).await.is_err());
 }
+
+/// 마지막 접속 시각(1c 접속자 표)은 앱을 다시 켜도 남는다. 시각을 남기기 전 파일은 그 사람의 마지막 입력 시각으로 채운다.
+#[tokio::test]
+async fn last_seen_comes_back() {
+    let seen =
+        |st: &State, name: &str| st.snapshot().participants.iter().find(|p| p.name == name).unwrap().last_seen_ms;
+    let path = temp("seen.sqlite");
+    let mut init = fixture();
+    init.store = Some(Store::open(&path).unwrap());
+    let mut st = State::new(init);
+    let mut lee = connect(&mut st, 1);
+    let mut choi = connect(&mut st, 2);
+    join(&mut st, &lee, "이서연", None);
+    join(&mut st, &choi, "최도윤", None);
+    lee.take();
+    choi.take();
+    let r = st.rt[0].access.rows_of(st.rt[0].access.person("이서연").unwrap())[0];
+    set(&mut st, &lee, "b1", r, F, CellValue::Number(1.0));
+    let edited = st.log.last().unwrap().at_ms;
+    st.handle(Command::Disconnect { conn: 1 });
+    let (lee_seen, choi_seen) = (seen(&st, "이서연"), seen(&st, "최도윤"));
+    assert!(lee_seen.is_some_and(|t| t >= edited) && choi_seen.is_some());
+    st.store.as_ref().unwrap().flush().unwrap();
+    drop(st); // 최도윤은 접속한 채 앱이 꺼짐
+
+    let st = State::new(recover(&path).unwrap().init);
+    assert_eq!(seen(&st, "이서연"), lee_seen, "나간 시각");
+    assert_eq!(seen(&st, "최도윤"), choi_seen, "접속 중에 꺼졌으면 들어온 시각");
+    assert_eq!(seen(&st, "김민지"), None);
+    assert!(st.snapshot().participants.iter().all(|p| p.status == ParticipantStatus::Offline));
+    drop(st);
+
+    // 시각을 남기기 전 파일(블롭 없음 = 비어 있음): 입력한 사람은 마지막 입력 시각, 들어오기만 한 사람은 모른다.
+    let store = Store::open(&path).unwrap();
+    store.blob(BLOB_SEEN, 0, collect_store::pack_json(&BTreeMap::<String, i64>::new()));
+    store.flush().unwrap();
+    drop(store);
+    let st = State::new(recover(&path).unwrap().init);
+    assert_eq!(seen(&st, "이서연"), Some(edited));
+    assert_eq!(seen(&st, "최도윤"), None);
+}

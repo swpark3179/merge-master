@@ -25,4 +25,8 @@ editing?: SheetCell,
 /**
  * 필수 칸(모든 시트 합).
  */
-required: number, filled: number, ip?: string, };
+required: number, filled: number, ip?: string, 
+/**
+ * 마지막 접속 시각(유닉스 ms): 접속 중이면 이번에 들어온 시각, 나갔으면 나간 시각. 한 번도 들어오지 않았으면 없다.
+ */
+lastSeenMs?: number, };

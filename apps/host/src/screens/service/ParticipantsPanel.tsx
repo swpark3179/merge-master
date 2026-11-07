@@ -1,8 +1,9 @@
 import type { HostSnapshot, ParticipantRow, SheetCell, SheetModel } from "@mm/shared";
-import { a1, personColor, sheetPrefix } from "@mm/shared";
+import { a1, formatSeen, formatSeenFull, personColor, sheetPrefix } from "@mm/shared";
 import { useEffect, useState } from "react";
 
 import { errorText } from "../../api";
+import { useToast } from "../../frame";
 import { useApi } from "../../job";
 
 interface Props {
@@ -25,6 +26,20 @@ function StatusText({ p }: { p: ParticipantRow }) {
   return <span className="muted">○ 미접속</span>;
 }
 
+/** 마지막 접속: 접속 중이면 '지금', 나갔으면 그 시각, 한 번도 들어오지 않았으면 '기록 없음'(개별로 연락할 사람). */
+function SeenText({ p, known }: { p: ParticipantRow; known: boolean }) {
+  if (!known) return <span className="muted">–</span>;
+  if (p.lastSeenMs == null) {
+    return (
+      <span className="warn" title="한 번도 접속하지 않았습니다">
+        기록 없음
+      </span>
+    );
+  }
+  if (p.status !== "offline") return <span title={`${formatSeenFull(p.lastSeenMs)}부터 접속 중`}>지금</span>;
+  return <span title={formatSeenFull(p.lastSeenMs)}>{formatSeen(p.lastSeenMs)}</span>;
+}
+
 /** 시트 주소(시트가 둘 이상이면 `인력계획!F7`). */
 function where(sheets: SheetModel[], at: SheetCell): string {
   const m = sheets[at.sheet];
@@ -33,7 +48,7 @@ function where(sheets: SheetModel[], at: SheetCell): string {
   return sheets.length > 1 && m ? `${sheetPrefix(m.sheet)}${cell}` : cell;
 }
 
-/** 1c 접속자: 승인 대기 + 명단 표(상태·배정·현재 위치·필수 입력). */
+/** 1c 접속자: 승인 대기 + 명단 표(상태·마지막 접속·배정·현재 위치·필수 입력). */
 export function ParticipantsPanel({
   running,
   snapshot,
@@ -45,6 +60,7 @@ export function ParticipantsPanel({
   onError,
 }: Props) {
   const api = useApi();
+  const toast = useToast();
   const [approving, setApproving] = useState<string | null>(null);
   const [range, setRange] = useState("");
   /** 배정 범위의 시트(범위에 `시트!`를 적으면 그쪽이 먼저). */
@@ -80,6 +96,8 @@ export function ParticipantsPanel({
     }));
   const pending = snapshot?.pending ?? [];
   const online = snapshot?.online ?? 0;
+  /** 한 번도 접속하지 않은 사람(세션 상태를 읽기 전에는 모른다). */
+  const never = snapshot ? rows.filter((p) => p.lastSeenMs == null) : [];
 
   const run = async (f: () => Promise<unknown>) => {
     try {
@@ -89,12 +107,19 @@ export function ParticipantsPanel({
     }
   };
 
+  const copyNever = () =>
+    run(async () => {
+      await navigator.clipboard.writeText(never.map((p) => p.name).join(", "));
+      toast(`접속 기록이 없는 ${never.length}명의 이름을 복사했어요`);
+    });
+
   return (
     <section className="participants" aria-label="접속자">
       <div className="card-head">
         <b className="big">접속자</b>
         <span className="muted">
           명단 {rows.length}명 · 접속 중 {online}
+          {never.length > 0 ? ` · 접속 기록 없음 ${never.length}` : ""}
           {pending.length > 0 ? ` · 승인 대기 ${pending.length}` : ""}
         </span>
         <span className="spacer" />
@@ -203,6 +228,7 @@ export function ParticipantsPanel({
         <div className="ptr phead" role="row">
           <span role="columnheader">이름</span>
           <span role="columnheader">상태</span>
+          <span role="columnheader">마지막 접속</span>
           <span role="columnheader">배정</span>
           <span role="columnheader">현재 위치</span>
           <span role="columnheader">필수 입력</span>
@@ -224,6 +250,9 @@ export function ParticipantsPanel({
               </span>
               <span title={p.ip ? `IP ${p.ip}` : undefined}>
                 <StatusText p={p} />
+              </span>
+              <span className="small">
+                <SeenText p={p} known={snapshot !== null} />
               </span>
               <span className="small">{p.assignment}</span>
               <span className="mono small">
@@ -295,7 +324,18 @@ export function ParticipantsPanel({
           );
         })}
       </div>
-      <div className="muted small">미접속자에게 안내문을 다시 보내려면 주소·안내문을 복사해 메신저로 공유합니다.</div>
+      <div className="pfoot muted small">
+        <span>미접속자에게 안내문을 다시 보내려면 주소·안내문을 복사해 메신저로 공유합니다.</span>
+        {never.length > 0 && (
+          <button
+            className="ghost small"
+            title="한 번도 접속하지 않은 사람의 이름을 쉼표로 이어 복사합니다"
+            onClick={() => void copyNever()}
+          >
+            접속 기록 없는 {never.length}명 이름 복사
+          </button>
+        )}
+      </div>
     </section>
   );
 }

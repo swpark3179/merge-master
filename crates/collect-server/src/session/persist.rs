@@ -3,7 +3,8 @@
 //! - 칸 값: 변경 기록(`changes`)에 칸마다 남는다. 시트 전체(서식·병합·값)는 블롭 `sheet`로 가끔(시트를 확정할 때, 설정·서식이
 //!   바뀔 때, 스냅샷을 남길 때) 남기고, 복구할 때는 그 뒤 기록만 되짚는다.
 //! - 블롭 `baseline`(저장할 때 비교하는 기준 시트), `config`(취합 설정), `comms`(공지·강조·채팅), `people`(입장한 사람의
-//!   재접속 토큰 — 앱을 다시 켜도 승인받은 브라우저는 다시 승인받지 않는다)는 바뀔 때마다 통째로.
+//!   재접속 토큰 — 앱을 다시 켜도 승인받은 브라우저는 다시 승인받지 않는다), `seen`(사람마다 마지막 접속 시각)은 바뀔 때마다
+//!   통째로.
 //! - 메타 `closed`(취합 마감), `server`(서비스 포트·경로·실행 여부: 다시 켜면 같은 포트로 연다).
 
 use std::collections::{BTreeMap, HashMap};
@@ -23,6 +24,8 @@ pub const BLOB_BASELINE: &str = "baseline";
 pub const BLOB_CONFIG: &str = "config";
 pub const BLOB_COMMS: &str = "comms";
 pub const BLOB_PEOPLE: &str = "people";
+/// 사람마다 마지막 접속 시각(이름 → 유닉스 ms). 이 블롭이 생기기 전 파일에는 없다.
+pub const BLOB_SEEN: &str = "seen";
 pub const META_CLOSED: &str = "closed";
 pub const META_SERVER: &str = "server";
 /// 호스트 앱의 업무 id(다시 확정해 새 파일이 생겨도 같은 업무면 같다). 7단계 전 파일에는 없다.
@@ -55,6 +58,7 @@ pub(super) struct Persisted {
     comms_rev: Option<u64>,
     closed: Option<bool>,
     tokens: Option<BTreeMap<String, String>>,
+    seen_rev: Option<u64>,
 }
 
 /// 파일에서 읽어 세션에 넘기는 것(시트·설정 밖의 상태).
@@ -69,6 +73,8 @@ pub struct Restore {
     pub(super) host_meta: BTreeMap<String, String>,
     /// 입장한 사람의 재접속 토큰(이름 → 토큰).
     pub(super) tokens: BTreeMap<String, String>,
+    /// 마지막 접속 시각(이름 → 유닉스 ms).
+    pub(super) seen: BTreeMap<String, i64>,
 }
 
 /// [`recover`] 결과.
@@ -104,6 +110,10 @@ impl State {
         self.people.iter().map(|(name, p)| (name.clone(), p.token.clone())).collect()
     }
 
+    fn seen(&self) -> BTreeMap<String, i64> {
+        self.people.iter().filter_map(|(name, p)| Some((name.clone(), p.seen_ms?))).collect()
+    }
+
     fn configs(&self) -> Vec<CollectConfig> {
         self.sheets.iter().map(|s| s.config.clone()).collect()
     }
@@ -136,6 +146,11 @@ impl State {
             let tokens = self.tokens();
             store.blob(BLOB_PEOPLE, self.last_seq(), pack_json(&tokens));
             self.persisted.tokens = Some(tokens);
+        }
+        // 마지막 접속 시각은 누가 들어오거나 나갈 때만 바뀐다.
+        if self.persisted.seen_rev != Some(self.seen_rev) {
+            store.blob(BLOB_SEEN, self.last_seq(), pack_json(&self.seen()));
+            self.persisted.seen_rev = Some(self.seen_rev);
         }
         if !full {
             return;
@@ -184,8 +199,20 @@ impl State {
         self.closed = r.closed;
         self.host_meta = r.host_meta;
         let now = tokio::time::Instant::now();
+        // 마지막 접속 시각: 남긴 시각과 그 사람의 마지막 입력 중 늦은 것(입력은 접속해 있을 때만 한다). 앱이 갑자기 꺼졌으면
+        // 남긴 시각은 들어온 시각이고, 시각을 남기기 전 파일에는 입력만 있다.
+        let mut seen = r.seen;
+        for e in &r.log {
+            match seen.get_mut(&e.user) {
+                Some(at) => *at = (*at).max(e.at_ms),
+                None => {
+                    seen.insert(e.user.clone(), e.at_ms);
+                }
+            }
+        }
         for (name, token) in r.tokens {
-            let person = super::Person { token, conn: None, last_active: now, cursor: None, ip: None };
+            let seen_ms = seen.get(&name).copied();
+            let person = super::Person { token, conn: None, last_active: now, cursor: None, ip: None, seen_ms };
             self.people.insert(name, person);
         }
         for e in &r.log {
@@ -212,6 +239,7 @@ impl State {
             comms_rev: Some(self.comms.rev),
             closed: Some(self.closed),
             tokens: Some(self.tokens()),
+            seen_rev: Some(self.seen_rev),
         };
     }
 }
@@ -250,6 +278,7 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
     }
     let comms: CommsData = blob(&saved.blobs, BLOB_COMMS).map(|(_, c)| c).unwrap_or_default();
     let tokens: BTreeMap<String, String> = blob(&saved.blobs, BLOB_PEOPLE).map(|(_, t)| t).unwrap_or_default();
+    let seen: BTreeMap<String, i64> = blob(&saved.blobs, BLOB_SEEN).map(|(_, t)| t).unwrap_or_default();
     // 시트를 남긴 뒤의 기록을 그 시트에 되짚는다. 기록된 값 쓰기는 수식 칸의 수식을 버린다(재계산 결과는 기록하지 않는다).
     for e in saved.changes.iter().filter(|e| e.seq > sheet_seq && !e.gone) {
         if let Some(cell) = models.get_mut(e.sheet as usize).and_then(|m| m.cell_mut(CellRef::new(e.row, e.col))) {
@@ -268,7 +297,7 @@ pub fn recover(path: &Path) -> Result<Recovered, String> {
         .filter_map(|k| Some((k.to_string(), meta.get(k)?.clone())))
         .collect();
     let restore =
-        Restore { log: saved.changes, snapshots: saved.snapshots, baselines, comms, closed, host_meta, tokens };
+        Restore { log: saved.changes, snapshots: saved.snapshots, baselines, comms, closed, host_meta, tokens, seen };
     let mut sheets = meta_sheets(&meta);
     if sheets.len() != models.len() {
         sheets = models.iter().map(|m| m.sheet.clone()).collect();
