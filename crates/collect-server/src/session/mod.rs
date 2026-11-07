@@ -20,8 +20,9 @@ mod structure;
 pub use comms::CommsData;
 pub use comms::{CommsSnapshot, HighlightAudience, HighlightSummary, NoticeSummary, NoticeTarget};
 pub use persist::{
-    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SHEET, META_CLOSED, META_DEADLINE_FIRED, META_DISCARDED,
-    META_ENDED, META_HELD, META_JOB, META_SERVER, META_SHEETS, Recovered, Restore, ServerMeta, meta_sheets, recover,
+    BLOB_BASELINE, BLOB_COMMS, BLOB_CONFIG, BLOB_PEOPLE, BLOB_SEEN, BLOB_SHEET, META_CLOSED, META_DEADLINE_FIRED,
+    META_DISCARDED, META_ENDED, META_HELD, META_JOB, META_SERVER, META_SHEETS, Recovered, Restore, ServerMeta,
+    meta_sheets, recover,
 };
 pub use snapshots::AUTO_SNAPSHOT;
 
@@ -188,6 +189,10 @@ pub struct ParticipantRow {
     pub filled: u32,
     #[ts(optional)]
     pub ip: Option<String>,
+    /// 마지막 접속 시각(유닉스 ms): 접속 중이면 이번에 들어온 시각, 나갔으면 나간 시각. 한 번도 들어오지 않았으면 없다.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub last_seen_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
@@ -948,6 +953,9 @@ struct Person {
     last_active: Instant,
     cursor: Option<SheetCell>,
     ip: Option<IpAddr>,
+    /// 마지막 접속 시각(유닉스 ms): 들어올 때와 나갈 때 적는다(기록 파일 블롭 [`BLOB_SEEN`]). 예전 기록 파일에서 되살린
+    /// 사람은 모를 수 있다.
+    seen_ms: Option<i64>,
 }
 
 struct Pending {
@@ -1025,6 +1033,8 @@ struct State {
     read_only: bool,
     conns: HashMap<ConnId, Conn>,
     people: HashMap<String, Person>,
+    /// 누가 들어오거나 나갈 때마다 는다(마지막 접속 시각을 기록 파일에 다시 남길 때를 안다).
+    seen_rev: u64,
     pending: Vec<Pending>,
     last_presence: Vec<PresenceEntry>,
     /// 반영한 묶음(`이름 + NUL + 묶음 ID`). 다시 연결한 뒤 같은 묶음을 또 보내도 한 번만 반영한다.
@@ -1092,6 +1102,7 @@ impl State {
             read_only: false,
             conns: HashMap::new(),
             people: HashMap::new(),
+            seen_rev: 0,
             pending: Vec::new(),
             last_presence: Vec::new(),
             applied: HashSet::new(),
@@ -1488,6 +1499,8 @@ impl State {
             && p.conn == Some(conn)
         {
             p.conn = None;
+            p.seen_ms = Some(edit::now_ms());
+            self.seen_rev += 1;
         }
     }
 
@@ -1501,11 +1514,14 @@ impl State {
             last_active: now,
             cursor: None,
             ip: None,
+            seen_ms: None,
         });
         p.token = token;
         p.conn = Some(conn);
         p.last_active = now;
         p.ip = Some(ip);
+        p.seen_ms = Some(edit::now_ms());
+        self.seen_rev += 1;
         if let Some(c) = self.conns.get_mut(&conn) {
             c.name = Some(name.to_string());
         }
@@ -1533,6 +1549,8 @@ impl State {
         {
             p.conn = None;
             p.cursor = None;
+            p.seen_ms = Some(edit::now_ms());
+            self.seen_rev += 1;
             let now = Instant::now();
             for rt in &mut self.rt {
                 for lock in rt.locks.values_mut() {
@@ -2022,6 +2040,7 @@ impl State {
                     required: progress.required,
                     filled: progress.filled,
                     ip: person.and_then(|p| p.ip).map(|ip| ip.to_string()),
+                    last_seen_ms: person.and_then(|p| p.seen_ms),
                 }
             })
             .collect();

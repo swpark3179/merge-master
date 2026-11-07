@@ -258,6 +258,37 @@ async fn idle_participant_becomes_away_then_back() {
 }
 
 #[tokio::test]
+async fn last_seen_is_join_time_then_leave_time() {
+    let mut st = State::new(fixture());
+    assert!(st.snapshot().participants.iter().all(|p| p.last_seen_ms.is_none()), "아무도 들어온 적 없다");
+    let before = edit::now_ms();
+    let mut a = connect(&mut st, 1);
+    let mut b = connect(&mut st, 2);
+    join(&mut st, &a, "이서연", None);
+    join(&mut st, &b, "최도윤", None);
+    a.take();
+    b.take();
+    let joined = row(&st.snapshot(), "이서연").last_seen_ms.expect("들어온 시각");
+    assert!(joined >= before && joined <= edit::now_ms());
+    // 접속해 있는 동안은 들어온 시각 그대로(입력·이동마다 표를 다시 보내지 않는다).
+    st.handle(Command::Client { conn: 1, msg: ClientMsg::Ping });
+    assert_eq!(row(&st.snapshot(), "이서연").last_seen_ms, Some(joined));
+    assert_eq!(row(&st.snapshot(), "김민지").last_seen_ms, None, "명단에만 있는 사람");
+
+    st.handle(Command::Disconnect { conn: 1 });
+    let snap = st.snapshot();
+    let left = row(&snap, "이서연");
+    assert_eq!(left.status, ParticipantStatus::Offline);
+    assert!(left.last_seen_ms.is_some_and(|t| t >= joined), "나간 시각");
+    // 호스트가 연결을 끊어도 그 시각이 남는다.
+    st.handle(Command::Kick { name: "최도윤".into(), reply: oneshot::channel().0 });
+    let snap = st.snapshot();
+    let kicked = row(&snap, "최도윤");
+    assert_eq!(kicked.status, ParticipantStatus::Offline);
+    assert!(kicked.last_seen_ms.is_some());
+}
+
+#[tokio::test]
 async fn host_update_resends_sheet_or_removes() {
     let mut st = State::new(fixture());
     let mut a = connect(&mut st, 1);

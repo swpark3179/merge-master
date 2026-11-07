@@ -2162,7 +2162,7 @@ button.big-btn {
 
 .ptr {
   display: grid;
-  grid-template-columns: 110px 120px minmax(0, 1fr) 90px 170px 44px;
+  grid-template-columns: 110px 120px 110px minmax(0, 1fr) 90px 170px 44px;
   align-items: center;
   gap: 8px;
   min-height: 44px;
@@ -2254,6 +2254,14 @@ button.big-btn {
 
 .danger-text {
   color: var(--danger) !important;
+}
+
+/* 1c 표 아래 안내 + '접속 기록 없는 사람 이름 복사' */
+.pfoot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
 /* 1c 현재 위치: 편집 중(다른 사람에게 잠김) */
