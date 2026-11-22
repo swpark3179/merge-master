@@ -67,6 +67,22 @@ pub fn pick_folder(start: &Path) -> Option<std::path::PathBuf> {
     rfd::FileDialog::new().set_title("기본 저장 폴더 고르기").set_directory(start).pick_folder()
 }
 
+/// 엑셀로 저장할 파일을 고른다(`start`의 폴더·이름에서 시작, 확장자 `ext`만). 같은 이름이 있으면 대화 상자가 덮어쓸지 묻는다.
+pub fn save_workbook(title: &str, start: &Path, ext: &str) -> Option<std::path::PathBuf> {
+    let mut dialog = rfd::FileDialog::new().set_title(title).add_filter(format!("Excel 통합 문서 (*.{ext})"), &[ext]);
+    if let Some(dir) = start.parent().filter(|d| d.is_dir()) {
+        dialog = dialog.set_directory(dir);
+    }
+    if let Some(name) = start.file_name() {
+        dialog = dialog.set_file_name(name.to_string_lossy());
+    }
+    let mut path = dialog.save_file()?;
+    if path.extension().is_none() {
+        path.set_extension(ext);
+    }
+    Some(path)
+}
+
 /// 글자를 클립보드에 넣는다.
 pub fn copy_text(text: &str) -> bool {
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();

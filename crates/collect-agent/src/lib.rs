@@ -5,7 +5,8 @@
 //! - 포트 하나(기본 8090)에 참여자 서버(`/`, `/{slug}`, `/ws` …)와 관리 API(`/agent/*`, [`api`] — 넘긴 호스트 앱의
 //!   관리자 연결 [`host_link`] 포함)를 함께 둔다.
 //! - 데이터 폴더(`%LOCALAPPDATA%\merge-master-agent`): `agent.json`(설정), `ip-names.json`(에이전트 PC의 IP 명단),
-//!   `services\<id>\`(서비스마다 기록 파일·원본·상태·취합 데이터), `logs\`, `webview\`(IP 명단 창).
+//!   `services\<id>\`(서비스마다 기록 파일·원본·상태·취합 데이터, `backups\` 1시간마다 남기는 기록 파일 사본 최근 3개 —
+//!   [`backup`]), `logs\`, `webview\`(IP 명단 창).
 //! - 플랫폼과 상관없는 부분(관리 API·서비스·마감·되살리기·경로)은 Linux에서도 시험한다([`FakeEngine`]).
 
 pub mod admin;
@@ -13,6 +14,7 @@ pub mod admin;
 pub mod admin_window;
 pub mod agent;
 pub mod api;
+pub mod backup;
 pub mod engine;
 #[cfg(windows)]
 pub mod excel;

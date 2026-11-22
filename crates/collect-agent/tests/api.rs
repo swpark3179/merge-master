@@ -849,8 +849,16 @@ async fn admin_link_gives_the_host_full_control() {
     assert_eq!(v["config"]["permissions"]["deadlineAction"], "readOnly");
     assert_eq!(v["config"]["deadline"], "2026-10-21T12:00");
     env.clock.set("2026-10-20T18:30"); // 처음 마감은 지났다
-    assert!(running.agent.tick().is_empty(), "바꾼 마감까지 서비스");
-    assert_eq!(status(port, "svc-l", &token).await.status.unwrap().state, ServiceState::Running);
+    // 바꾼 마감까지 서비스한다(받은 지 1시간이 넘어 백업만 한다 — 저장은 시작하지 않는다).
+    for h in running.agent.tick() {
+        h.await.unwrap();
+    }
+    assert_eq!(
+        status(port, "svc-l", &token).await.status.unwrap().state,
+        ServiceState::Running,
+        "바꾼 마감까지 서비스"
+    );
+    assert_eq!(running.agent.backups("svc-l").len(), 1);
 
     // 연결이 열려 있어도 에이전트는 바로 끝난다. 다시 켜도 바꾼 마감·값이 남아 있다.
     drop(ws);
@@ -889,4 +897,180 @@ impl Link {
         let wait = rx.wait_for(|s| matches!(s, LinkStatus::Stopped(_)));
         tokio::time::timeout(Duration::from_secs(10), wait).await.expect("연결이 멈춤").unwrap().clone()
     }
+}
+
+// ------------------------------------------------------------------ 백업
+
+/// 서비스 중인 세션의 칸 하나를 바꾼다(참여자 입력처럼 변경 기록에 남는다).
+async fn set_cell(running: &Running, id: &str, row: u32, value: f64) {
+    let service = running.agent.services_now().into_iter().find(|s| s.id == id).unwrap();
+    service
+        .session()
+        .unwrap()
+        .with(move |s| {
+            let at = collect_core::CellRef::new(row, 5);
+            s.host_set(
+                "정하늘",
+                collect_core::history::BatchOrigin::Edit,
+                0,
+                vec![(at, collect_core::CellValue::Number(value))],
+            );
+        })
+        .await
+        .unwrap();
+}
+
+/// 시계를 맞추고 1초 점검을 한 번 돌린다(시작한 저장·백업을 기다린다).
+async fn tick_at(env: &Env, running: &Running, t: &str) {
+    env.clock.set(t);
+    for h in running.agent.tick() {
+        h.await.unwrap();
+    }
+}
+
+fn backup_labels(running: &Running, id: &str) -> Vec<String> {
+    running.agent.backups(id).iter().map(|b| b.label()).collect()
+}
+
+#[tokio::test]
+async fn hourly_backups_keep_the_latest_three() {
+    let env = Env::new("backup-hourly");
+    let running = env.start().await;
+    let port = running.port();
+    let p = package(&env.data, "svc-b", "b", "b.xlsx").await;
+    assert_eq!(create(port, &p).await.status, 200);
+
+    // 받은 지 1시간이 안 됐으면 아직 없다.
+    tick_at(&env, &running, "2026-10-20T10:59").await;
+    assert!(backup_labels(&running, "svc-b").is_empty());
+    for (i, t) in ["2026-10-20T11:00", "2026-10-20T12:00", "2026-10-20T13:00", "2026-10-20T14:00"].iter().enumerate() {
+        set_cell(&running, "svc-b", 4, 100.0 + i as f64).await;
+        tick_at(&env, &running, t).await;
+    }
+    assert_eq!(backup_labels(&running, "svc-b"), ["10/20 14:00", "10/20 13:00", "10/20 12:00"], "최근 3개");
+    let dir = env.data.join("services/svc-b/backups");
+    assert!(dir.join("backup-20261020-140000.sqlite").exists());
+    assert!(!dir.join("backup-20261020-110000.sqlite").exists(), "가장 오래된 것은 지운다");
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 3, "다 쓰지 못한 파일이 남지 않는다");
+
+    // 1시간이 안 됐으면 입력이 있어도 아직, 입력이 없으면 1시간이 지나도 건너뛴다(앞 백업이 밀려나지 않게).
+    tick_at(&env, &running, "2026-10-20T14:30").await;
+    tick_at(&env, &running, "2026-10-20T15:00").await;
+    tick_at(&env, &running, "2026-10-20T16:00").await;
+    assert_eq!(backup_labels(&running, "svc-b"), ["10/20 14:00", "10/20 13:00", "10/20 12:00"]);
+    set_cell(&running, "svc-b", 5, 1.0).await;
+    tick_at(&env, &running, "2026-10-20T16:30").await;
+    assert_eq!(backup_labels(&running, "svc-b")[0], "10/20 14:00", "건너뛴 점검(16:00)부터 1시간이 아직 안 됐다");
+    tick_at(&env, &running, "2026-10-20T17:00").await;
+    assert_eq!(backup_labels(&running, "svc-b"), ["10/20 17:00", "10/20 14:00", "10/20 13:00"]);
+
+    // 마감 뒤에는 백업하지 않는다(취합 데이터를 남기고 저장한다). 백업은 서비스 폴더에 그대로 남는다.
+    tick_at(&env, &running, "2026-10-20T18:00").await;
+    until(port, "svc-b", "svc-b-token", ServiceState::Done).await;
+    tick_at(&env, &running, "2026-10-20T20:00").await;
+    assert_eq!(backup_labels(&running, "svc-b").len(), 3);
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_broken_store_comes_back_from_the_latest_backup() {
+    use agent_protocol::save_data::SaveData;
+    let env = Env::new("backup-restore");
+    let running = env.start().await;
+    let port = running.port();
+    let p = package(&env.data, "svc-r", "r", "r.xlsx").await;
+    assert_eq!(create(port, &p).await.status, 200);
+    set_cell(&running, "svc-r", 4, 111.0).await;
+    tick_at(&env, &running, "2026-10-20T11:00").await;
+    set_cell(&running, "svc-r", 4, 222.0).await; // 백업 뒤 입력(되살리면 빠진다)
+    running.stop().await;
+
+    // 기록 파일이 손상되었다(WAL까지 — 새 파일로 바꿔 넣어 앞 연결이 늦게 쓰는 것과 섞이지 않게).
+    let svc = env.data.join("services/svc-r");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(svc.join(format!("session.sqlite{suffix}")));
+    }
+    std::fs::write(svc.join("session.sqlite"), "손상된 기록 파일".repeat(200)).unwrap();
+
+    env.clock.set("2026-10-20T11:30");
+    let running = env.start().await;
+    let port = running.port();
+    let s = status(port, "svc-r", "svc-r-token").await.status.unwrap();
+    assert_eq!(s.state, ServiceState::Running, "{:?}", s.last_error);
+    assert_eq!(request(port, "GET", "/api/session?s=r", &[], b"").await.status, 200, "이어서 취합한다");
+    let data = api(port, "GET", "/agent/services/svc-r/save-data", b"", Some("svc-r-token")).await;
+    let data = SaveData::decode(&data.body).unwrap();
+    let value = data.parts.sheets[0].current.cell(collect_core::CellRef::new(4, 5)).unwrap().v.clone();
+    assert_eq!(value, collect_core::CellValue::Number(111.0), "백업 시점의 값");
+    assert!(svc.join("session.sqlite.broken").exists(), "손상된 파일은 옮겨 둔다");
+    let o = running.agent.overview().into_iter().find(|o| o.id == "svc-r").unwrap();
+    assert!(o.restored_from_ms.is_some());
+
+    // 되살린 기록 파일에 이어서 기록하고 다음 백업도 남긴다.
+    set_cell(&running, "svc-r", 4, 333.0).await;
+    tick_at(&env, &running, "2026-10-20T12:30").await;
+    assert_eq!(backup_labels(&running, "svc-r"), ["10/20 12:30", "10/20 11:00"]);
+    running.stop().await;
+    env.clock.set("2026-10-20T12:40");
+    let running = env.start().await;
+    let port = running.port();
+    let data = api(port, "GET", "/agent/services/svc-r/save-data", b"", Some("svc-r-token")).await;
+    let data = SaveData::decode(&data.body).unwrap();
+    let value = data.parts.sheets[0].current.cell(collect_core::CellRef::new(4, 5)).unwrap().v.clone();
+    assert_eq!(value, collect_core::CellValue::Number(333.0), "손상이 없으면 기록 파일(최신)로 이어 간다");
+    running.stop().await;
+}
+
+#[tokio::test]
+async fn a_backup_can_be_saved_as_a_workbook() {
+    let env = Env::new("backup-export");
+    let running = env.start().await;
+    let port = running.port();
+    let p = package(&env.data, "svc-x", "x", "x.xlsx").await;
+    assert_eq!(create(port, &p).await.status, 200);
+    set_cell(&running, "svc-x", 4, 111.0).await;
+    tick_at(&env, &running, "2026-10-20T11:00").await;
+    set_cell(&running, "svc-x", 5, 222.0).await; // 백업 뒤 입력(그 백업에는 없다)
+    let backups = running.agent.backups("svc-x");
+    assert_eq!(backups.len(), 1);
+    let name = backups[0].name.clone();
+
+    // 먼저 보일 경로: 저장할 폴더가 아직 없으면 기본 저장 폴더, 이름은 저장할 파일 + 백업 시각.
+    let default = running.agent.backup_default_path("svc-x", &name).unwrap();
+    assert_eq!(default, env.base().join("x_백업_20261020-1100.xlsx"));
+    assert!(running.agent.backup_default_path("svc-x", "../x").is_none());
+
+    let out = env.data.join("다른 곳").join("복구.xlsx");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    let saved = running.agent.export_backup("svc-x", &name, out.clone()).await.unwrap();
+    assert_eq!(saved, out.display().to_string());
+    // FakeEngine은 저장 계획 요약(시트마다 쓸 칸 수)을 쓴다: 넘기기 전 고친 칸 + 백업 전 입력 = 2(백업 뒤 입력은 없다).
+    let summary: Vec<(String, usize)> = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+    assert_eq!(summary[0].1, 2);
+    assert_eq!(
+        status(port, "svc-x", "svc-x-token").await.status.unwrap().state,
+        ServiceState::Running,
+        "서비스는 그대로"
+    );
+    assert!(!env.data.join("export").join("svc-x").exists());
+    assert_eq!(std::fs::read_dir(env.data.join("export")).map(|d| d.count()).unwrap_or(0), 0, "작업 폴더는 지운다");
+
+    let bad = |r: Result<String, collect_agent::AgentError>| r.unwrap_err().status;
+    assert_eq!(bad(running.agent.export_backup("svc-x", "../../session.sqlite", out.clone()).await), 400);
+    assert_eq!(bad(running.agent.export_backup("svc-x", &name, out.with_extension("csv")).await), 400);
+    assert_eq!(bad(running.agent.export_backup("없음", &name, out.clone()).await), 404);
+    running.stop().await;
+
+    // Excel이 없는 PC에서는 백업은 남기되 엑셀로 저장할 수 없다.
+    let env = Env::with_engine("backup-export-no-excel", FakeEngine::without_excel());
+    let running = env.start().await;
+    let port = running.port();
+    let p = package(&env.data, "svc-y", "y", "y.xlsx").await;
+    assert_eq!(create(port, &p).await.status, 200);
+    tick_at(&env, &running, "2026-10-20T11:00").await;
+    let name = running.agent.backups("svc-y")[0].name.clone();
+    let e = running.agent.export_backup("svc-y", &name, env.base().join("y.xlsx")).await.unwrap_err();
+    assert_eq!(e.status, 409);
+    assert!(e.message.contains("Excel"), "{}", e.message);
+    running.stop().await;
 }

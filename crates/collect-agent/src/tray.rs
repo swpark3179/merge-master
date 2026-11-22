@@ -1,15 +1,19 @@
 //! 트레이 아이콘과 메뉴(Windows). 메뉴는 서비스 목록·상태가 바뀔 때마다 다시 만든다.
 //!
-//! - 버전·주소(복사), 서비스 n개 / 저장 실패 n개, 진행 중인 서비스 ▸(주소 복사·지금 저장하고 끝내기·저장 없이 끝내기)
+//! - 버전·주소(복사), 서비스 n개 / 저장 실패 n개, 진행 중인 서비스 ▸(주소 복사·지금 저장하고 끝내기·저장 없이 끝내기,
+//!   백업본을 엑셀로 저장 ▸ 백업 시각마다(이 PC에 Excel이 있을 때 — [`crate::backup`])·백업 폴더 열기)
 //! - IP 명단 관리…(창, [`crate::admin_window`]), 기본 저장 폴더 표시·바꾸기·열기, Windows 시작 시 실행, 로그 폴더 열기,
 //!   설정 파일 열기, 끝내기
-//! - 서비스가 있는 동안 PC가 절전에 들어가지 않게 한다.
+//! - 서비스가 있는 동안 PC가 절전에 들어가지 않게 한다. 'Windows 시작 시 실행'은 처음 한 번 켜 둔다(재부팅해도 이어서
+//!   서비스하게 — 그 뒤 사용자가 끄면 다시 켜지 않는다).
+
+use std::path::Path;
 
 use std::sync::Arc;
 
 use agent_protocol::ServiceState;
 use tao::event::{Event, WindowEvent};
-use tao::event_loop::{ControlFlow, EventLoopBuilder};
+use tao::event_loop::{ControlFlow, EventLoopBuilder, EventLoopProxy};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
@@ -22,11 +26,14 @@ enum UserEvent {
     Refresh,
     /// IP 명단 창의 답·파일 대화상자.
     Admin(admin_window::Msg),
+    /// 백업본을 엑셀로 저장한 결과(저장한 파일 경로 또는 오류).
+    Exported(Result<String, String>),
 }
 
 /// 트레이를 띄우고 끝날 때까지 돈다(끝내기를 고르면 공유를 닫고 프로세스를 끝낸다).
 pub fn run(rt: tokio::runtime::Runtime, running: Running) -> ! {
     let agent = running.agent.clone();
+    autostart_once(&agent);
     win::refresh_autostart();
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -64,6 +71,7 @@ pub fn run(rt: tokio::runtime::Runtime, running: Running) -> ! {
     let mut rt = Some(rt);
     let mut admin: Option<AdminWindow> = None;
     let admin_proxy = event_loop.create_proxy();
+    let export_proxy = event_loop.create_proxy();
     event_loop.run(move |event, target, control_flow| {
         *control_flow = ControlFlow::Wait;
         let event = match event {
@@ -81,6 +89,17 @@ pub fn run(rt: tokio::runtime::Runtime, running: Running) -> ! {
             UserEvent::Admin(msg) => {
                 if let (Some(w), Some(rt)) = (&admin, &rt) {
                     w.handle(msg, &agent, rt);
+                }
+                return;
+            }
+            UserEvent::Exported(result) => {
+                match result {
+                    Ok(path) => {
+                        if win::confirm(&format!("백업본을 엑셀로 저장했습니다.\n{path}\n\n저장한 파일을 폴더에서 볼까요?")) {
+                            win::reveal(Path::new(&path));
+                        }
+                    }
+                    Err(e) => win::message(&format!("백업본을 엑셀로 저장하지 못했습니다.\n{e}")),
                 }
                 return;
             }
@@ -122,7 +141,7 @@ pub fn run(rt: tokio::runtime::Runtime, running: Running) -> ! {
                     return;
                 }
                 if let Some(rt) = &rt {
-                    on_menu(&agent, rt, id);
+                    on_menu(&agent, rt, &export_proxy, id);
                 }
             }
         }
@@ -130,6 +149,22 @@ pub fn run(rt: tokio::runtime::Runtime, running: Running) -> ! {
         let _ = tray.set_tooltip(Some(tooltip(&agent)));
         keep_awake(&agent);
     })
+}
+
+/// 'Windows 시작 시 실행'을 처음 한 번 켠다(재부팅 뒤에도 서비스가 이어지게). 켠 뒤로는 사용자의 선택을 따른다.
+fn autostart_once(agent: &Agent) {
+    if agent.settings().autostart_set {
+        return;
+    }
+    match win::set_autostart(true) {
+        Ok(()) => {
+            tracing::info!("Windows 시작 시 실행을 켰습니다(트레이 메뉴에서 끌 수 있습니다)");
+            if let Err(e) = agent.mark_autostart_set() {
+                tracing::warn!("{e}");
+            }
+        }
+        Err(e) => tracing::warn!("Windows 시작 시 실행을 켤 수 없습니다: {e}"),
+    }
 }
 
 fn keep_awake(agent: &Agent) {
@@ -254,6 +289,7 @@ fn menu(agent: &Agent) -> Menu {
                 }
                 _ => {}
             }
+            backup_items(&sub, agent, o, info.excel);
             let _ = list.append(&sub);
         }
         let _ = m.append(&list);
@@ -275,7 +311,73 @@ fn menu(agent: &Agent) -> Menu {
     m
 }
 
-fn on_menu(agent: &Arc<Agent>, rt: &tokio::runtime::Runtime, id: &str) {
+/// 서비스 메뉴의 백업 줄: 백업본을 엑셀로 저장 ▸(백업 시각마다, Excel이 있을 때)·백업 폴더 열기, 손상으로 백업에서 되살렸으면 그
+/// 시각. 서비스 중이 아니고 백업도 없으면 보이지 않는다.
+fn backup_items(sub: &Submenu, agent: &Agent, o: &Overview, excel: bool) {
+    let backups = agent.backups(&o.id);
+    if backups.is_empty() && o.state != ServiceState::Running && o.restored_from_ms.is_none() {
+        return;
+    }
+    let disabled = |text: String| MenuItem::new(text, false, None);
+    let _ = sub.append(&PredefinedMenuItem::separator());
+    if let Some(ms) = o.restored_from_ms {
+        let _ = sub.append(&disabled(format!("기록 파일이 손상되어 {} 백업으로 되살렸습니다", local_label(ms))));
+    }
+    if backups.is_empty() {
+        let _ = sub.append(&disabled("백업 없음(서비스 중 1시간마다 남깁니다)".into()));
+        return;
+    }
+    if excel {
+        let list = Submenu::new("백업본을 엑셀로 저장", true);
+        for b in &backups {
+            let _ = list.append(&MenuItem::with_id(
+                format!("bak:{}:{}", o.id, b.name),
+                format!("{} 백업", b.label()),
+                true,
+                None,
+            ));
+        }
+        let _ = sub.append(&list);
+    } else {
+        let _ = sub.append(&disabled("백업본을 엑셀로 저장 (Excel 없음)".into()));
+    }
+    let _ = sub.append(&MenuItem::with_id(format!("svc-bakdir:{}", o.id), "백업 폴더 열기", true, None));
+}
+
+/// 유닉스 ms → 이 PC 현지 시각 `11/22 15:00`.
+fn local_label(ms: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_millis_opt(ms).single().map_or_else(String::new, |t| crate::backup::label(t.naive_local()))
+}
+
+/// 백업 하나를 엑셀로 저장한다: 저장할 곳을 묻고(기본은 마감 때 저장할 폴더 + `저장할이름_백업_시각`), 저장은 뒤에서 한다
+/// (메뉴가 멈추지 않게 — 끝나면 [`UserEvent::Exported`]로 알린다).
+fn export_backup(
+    agent: &Arc<Agent>,
+    rt: &tokio::runtime::Runtime,
+    proxy: &EventLoopProxy<UserEvent>,
+    svc: &str,
+    name: &str,
+) {
+    let Some(start) = agent.backup_default_path(svc, name) else {
+        win::message("그 백업을 찾을 수 없습니다(새 백업이 생겨 지워졌을 수 있습니다). 메뉴를 다시 열어 주세요.");
+        return;
+    };
+    let ext = start.extension().map_or_else(|| "xlsx".into(), |e| e.to_string_lossy().to_string());
+    let Some(out) = win::save_workbook("백업본을 엑셀로 저장", &start, &ext) else { return };
+    let (agent, proxy, svc, name) = (agent.clone(), proxy.clone(), svc.to_string(), name.to_string());
+    rt.spawn(async move {
+        let result = agent.export_backup(&svc, &name, out).await.map_err(|e| e.message);
+        let _ = proxy.send_event(UserEvent::Exported(result));
+    });
+}
+
+fn on_menu(agent: &Arc<Agent>, rt: &tokio::runtime::Runtime, proxy: &EventLoopProxy<UserEvent>, id: &str) {
+    // 백업 이름에는 ':'가 없고 서비스 id도 영숫자·'-'뿐이다.
+    if let Some((svc, name)) = id.strip_prefix("bak:").and_then(|rest| rest.split_once(':')) {
+        export_backup(agent, rt, proxy, svc, name);
+        return;
+    }
     match id {
         "copy-url" => {
             if let Some(u) = agent.info().urls.first() {
@@ -328,6 +430,7 @@ fn on_menu(agent: &Arc<Agent>, rt: &tokio::runtime::Runtime, id: &str) {
                     }
                 }
                 "svc-dir" => win::reveal(&o.dir),
+                "svc-bakdir" => win::reveal(&crate::backup::dir(&o.dir)),
                 "svc-cancel" => {
                     let ask = if o.state == ServiceState::AwaitingHost {
                         format!(

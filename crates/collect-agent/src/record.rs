@@ -64,6 +64,15 @@ pub struct Record {
     /// 관리자 PC(넘긴 호스트 앱)에서 저장했다(`saved_path`는 그 PC의 경로).
     #[serde(default)]
     pub saved_on_host: bool,
+    /// 마지막으로 백업을 점검한 시각(입력이 없어 건너뛴 때도). 없으면 받은 시각부터 잰다([`crate::backup`]).
+    #[serde(default)]
+    pub last_backup_ms: Option<i64>,
+    /// 마지막 백업에 든 변경 기록 번호(같으면 그사이 입력이 없어 건너뛴다).
+    #[serde(default)]
+    pub backup_seq: Option<u64>,
+    /// 다시 켤 때 기록 파일이 손상되어 이 시각의 백업으로 되살렸다.
+    #[serde(default)]
+    pub restored_from_ms: Option<i64>,
 }
 
 impl Record {
