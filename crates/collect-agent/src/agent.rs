@@ -7,7 +7,10 @@
 //!   별도 저장 프로세스에서 엑셀로 저장하고 끝낸다. 실패하면 1분 뒤 다시(모두 3번), 그래도 안 되거나 Excel이 없으면
 //!   '관리자 저장 대기'로 두고 공유를 닫는다 — 넘긴 호스트 앱이 데이터를 받아 그 PC에서 저장하면 데이터를 지우고 끝낸다
 //!   ([`Agent::host_saved`]).
-//! - 다시 켜면([`Agent::restore`]): 서비스 중이던 것은 다시 공개하고, 꺼진 사이 마감이 지났으면 바로 저장한다.
+//! - 다시 켜면([`Agent::restore`]): 서비스 중이던 것은 다시 공개하고, 꺼진 사이 마감이 지났으면 바로 저장한다. 기록 파일이
+//!   손상되어 되살릴 수 없으면 가장 최근 백업으로 되살린다.
+//! - 백업([`crate::backup`]): 서비스 중에는 1시간마다(그사이 입력이 있었을 때만) 기록 파일의 사본을 남기고 최근 3개만 둔다.
+//!   트레이에서 특정 백업을 엑셀로 저장할 수 있다([`Agent::export_backup`] — 이 PC에 Excel이 있을 때).
 //! - 참여자: 명단 밖에서도 입력한 이름 그대로 들어온다(자동 승인 — 관리자가 승인하지 못할 수 있다).
 //! - IP 명단: 에이전트 PC의 명단(`ip-names.json`, 트레이 'IP 명단 관리')이 이긴다. 서비스마다 넘겨받은 명단은 에이전트
 //!   명단에 없는 IP만 그 서비스에서 쓴다(에이전트 명단에 섞지 않는다).
@@ -32,11 +35,13 @@ use collect_core::config::DeadlineAction;
 use collect_core::edit::ConfigEdit;
 use collect_server::host::{self, HostRequest};
 use collect_server::{
-    Gone, Hub, IpNames, META_ENDED, RecalcStatus, SaveParts, SessionHandle, lan_addresses, recover, validate_slug,
+    Gone, Hub, IpNames, META_ENDED, RecalcStatus, Recovered, SaveParts, SessionHandle, lan_addresses, recover,
+    validate_slug,
 };
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use crate::backup::{self, BackupFile};
 use crate::engine::{Engine, SaveJob};
 use crate::paths;
 use crate::record::{Record, STORE_FILE};
@@ -50,8 +55,11 @@ pub fn system_clock() -> Clock {
     Arc::new(|| chrono::Local::now().naive_local())
 }
 
-/// 끝낸 서비스 폴더를 남겨 두는 날 수(저장한 엑셀은 건드리지 않는다).
+/// 끝낸 서비스 폴더를 남겨 두는 날 수(저장한 엑셀은 건드리지 않는다). 백업도 그 폴더 안이라 함께 지워진다.
 pub const KEEP_FINISHED_DAYS: i64 = 14;
+
+/// 백업을 엑셀로 저장할 때 쓰는 작업 폴더(데이터 폴더 안, 끝나면 지운다).
+const EXPORT_DIR: &str = "export";
 
 pub struct AgentOptions {
     pub data_dir: PathBuf,
@@ -112,6 +120,8 @@ pub struct Overview {
     pub saved_on_host: bool,
     /// 서비스 폴더(취합 데이터·원본·기록).
     pub dir: PathBuf,
+    /// 다시 켤 때 기록 파일이 손상되어 이 시각의 백업으로 되살렸다.
+    pub restored_from_ms: Option<i64>,
 }
 
 pub struct Agent {
@@ -206,6 +216,13 @@ impl Agent {
         drop(s);
         self.changed();
         Ok(())
+    }
+
+    /// 'Windows 시작 시 실행'을 처음 한 번 켜 두었다고 남긴다(트레이 — 그 뒤 사용자가 끄면 다시 켜지 않는다).
+    pub fn mark_autostart_set(&self) -> Result<(), String> {
+        let mut s = self.settings.write().unwrap();
+        s.autostart_set = true;
+        s.save(&self.settings_path).map_err(|e| format!("설정을 남길 수 없습니다: {e}"))
     }
 
     /// 서비스 목록·상태가 바뀔 때마다 늘어난다(트레이 메뉴를 다시 그린다).
@@ -313,6 +330,7 @@ impl Agent {
                     saved_path: r.saved_path.clone(),
                     saved_on_host: r.saved_on_host,
                     dir: s.dir.clone(),
+                    restored_from_ms: r.restored_from_ms,
                 }
             })
             .collect()
@@ -381,6 +399,9 @@ impl Agent {
             result_file: false,
             excel_started_ms: None,
             saved_on_host: false,
+            last_backup_ms: None,
+            backup_seq: None,
+            restored_from_ms: None,
         };
         let write = || -> Result<(), String> {
             let _ = std::fs::remove_dir_all(&part);
@@ -977,7 +998,8 @@ impl Agent {
         self.changed();
     }
 
-    /// 1초마다: 마감이 된 서비스는 저장을 시작하고, 다시 해 볼 시각이 된 저장을 다시 한다. 시작한 저장 작업을 돌려준다.
+    /// 1초마다: 마감이 된 서비스는 저장을 시작하고, 다시 해 볼 시각이 된 저장을 다시 하고, 서비스 중인 것은 1시간마다 백업한다.
+    /// 시작한 저장·백업 작업을 돌려준다.
     pub fn tick(self: &Arc<Self>) -> Vec<JoinHandle<()>> {
         let now = self.now();
         let now_ms = local_ms(now);
@@ -990,6 +1012,14 @@ impl Agent {
                 _ => false,
             };
             if !due {
+                let backup_due = r.state == ServiceState::Running
+                    && now_ms - r.last_backup_ms.unwrap_or(r.created_at_ms) >= backup::EVERY_MS
+                    && s.session().is_some();
+                if backup_due {
+                    // 먼저 적어 둔다(백업이 끝나기 전 다음 점검이 다시 시작하지 않게).
+                    s.update(|r| r.last_backup_ms = Some(now_ms));
+                    started.push(tokio::spawn(self.clone().run_backup(s)));
+                }
                 continue;
             }
             if r.state == ServiceState::Running {
@@ -1001,6 +1031,125 @@ impl Agent {
             started.push(tokio::spawn(self.clone().run_save(s)));
         }
         started
+    }
+
+    /// 백업 하나([`Agent::tick`]이 1시간마다): 지난 백업 뒤 입력(칸 값 변경)이 있었으면 기록 파일의 사본을 남기고 최근
+    /// [`backup::KEEP`]개만 둔다. 실패하면 로그만 남긴다(다음 시간에 다시).
+    async fn run_backup(self: Arc<Self>, s: Arc<Service>) {
+        // 저장할 내용 뜨기(마감)와 겹치지 않게.
+        let _edits = s.edits.read().await;
+        let Some(session) = s.session().filter(|_| s.state() == ServiceState::Running) else { return };
+        let seq = match session.with(|x| x.history().last().map_or(0, |e| e.seq)).await {
+            Ok(seq) => seq,
+            Err(e) => {
+                tracing::warn!(id = %s.id, "백업할 수 없습니다: {e}");
+                return;
+            }
+        };
+        if s.record().backup_seq == Some(seq) {
+            tracing::debug!(id = %s.id, "지난 백업 뒤 입력이 없어 백업을 건너뜁니다");
+            return;
+        }
+        let dir = backup::dir(&s.dir);
+        let name = backup::file_name(self.now());
+        let (path, part) = (dir.join(&name), dir.join(format!("{name}{}", backup::PART)));
+        let result = async {
+            std::fs::create_dir_all(&dir).map_err(|e| format!("백업 폴더를 만들 수 없습니다: {e}"))?;
+            let _ = std::fs::remove_file(&part);
+            session.backup_store(part.clone()).await?;
+            std::fs::rename(&part, &path).map_err(|e| format!("백업 파일을 바꿔 넣을 수 없습니다: {e}"))
+        }
+        .await;
+        match result {
+            Ok(()) => {
+                backup::prune(&s.dir, backup::KEEP);
+                s.update(|r| r.backup_seq = Some(seq));
+                tracing::info!(id = %s.id, "백업을 남겼습니다: {name}");
+                self.changed();
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                tracing::warn!(id = %s.id, "백업을 남길 수 없습니다: {e}");
+            }
+        }
+    }
+
+    /// 그 서비스의 백업들(최신 먼저). 없는 서비스면 빈 목록.
+    pub fn backups(&self, id: &str) -> Vec<BackupFile> {
+        self.service(id).map(|s| backup::list(&s.dir)).unwrap_or_default()
+    }
+
+    /// 백업을 엑셀로 저장할 때 먼저 보일 경로: 마감 때 저장할 폴더(아직 없으면 기본 저장 폴더)에
+    /// `저장할파일명_백업_YYYYMMDD-HHMM.확장자`(원본과 같은 형식).
+    pub fn backup_default_path(&self, id: &str, name: &str) -> Option<PathBuf> {
+        let s = self.service(id)?;
+        let b = backup::find(&s.dir, name)?;
+        let r = s.record();
+        let ext = paths::workbook_ext(&r.manifest.workbook_name).unwrap_or_else(|| "xlsx".into());
+        let stem = r.output_path.file_stem().map_or_else(|| "취합".into(), |n| n.to_string_lossy().to_string());
+        let dir =
+            r.output_path.parent().filter(|d| d.is_dir()).map_or_else(|| self.settings().base_dir, Path::to_path_buf);
+        Some(dir.join(format!("{stem}_백업_{}.{ext}", b.at.format("%Y%m%d-%H%M"))))
+    }
+
+    /// 백업 하나를 엑셀로 저장한다: 넘겨받은 원본의 사본에 그 백업 시점의 취합 값을 쓴다(마감 저장과 같은 저장 계획·별도 저장
+    /// 프로세스). 서비스는 그대로다(어느 상태든 백업이 남아 있으면 된다). 이 PC에 Excel이 있어야 한다. 저장한 파일 경로를 돌려준다.
+    pub async fn export_backup(&self, id: &str, name: &str, out: PathBuf) -> Result<String, AgentError> {
+        let s = self.service(id).ok_or_else(AgentError::missing)?;
+        if !self.opts.engine.excel_available() {
+            return Err(AgentError::conflict("이 에이전트 PC에는 Excel이 없어 백업을 엑셀로 저장할 수 없습니다"));
+        }
+        let b = backup::find(&s.dir, name).ok_or_else(|| AgentError::bad("없는 백업입니다"))?;
+        let r = s.record();
+        let ext = paths::workbook_ext(&r.manifest.workbook_name).ok_or_else(|| {
+            AgentError::bad(format!("‘{}’ 형식은 엑셀로 저장할 수 없습니다", r.manifest.workbook_name))
+        })?;
+        if extension(&out.to_string_lossy()) != ext {
+            return Err(AgentError::bad(format!("원본과 같은 형식(.{ext})으로 저장해야 합니다")));
+        }
+        paths::check_length(&out)?;
+        let work = self.opts.data_dir.join(EXPORT_DIR).join(format!("{}-{}", s.id, self.now_ms()));
+        let result = self.export_in(&s, &b, &work, out).await;
+        let _ = std::fs::remove_dir_all(&work);
+        if let Ok(path) = &result {
+            tracing::info!(id = %s.id, "백업({})을 엑셀로 저장했습니다: {path}", b.name);
+        }
+        result
+    }
+
+    /// [`Agent::export_backup`]: 작업 폴더에 백업을 복사해 세션을 되살리고(파일에 쓰지 않는다) 저장 재료를 떠 저장한다.
+    async fn export_in(&self, s: &Service, b: &BackupFile, work: &Path, out: PathBuf) -> Result<String, AgentError> {
+        let (from, copy) = (b.path.clone(), work.join(STORE_FILE));
+        let init = tokio::task::spawn_blocking(move || -> Result<_, String> {
+            if let Some(dir) = copy.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("작업 폴더를 만들 수 없습니다: {e}"))?;
+            }
+            std::fs::copy(&from, &copy).map_err(|e| format!("백업을 복사할 수 없습니다: {e}"))?;
+            let mut rec = recover(&copy).map_err(|e| format!("백업을 읽을 수 없습니다: {e}"))?;
+            rec.init.store = None; // 사본에도 쓰지 않는다
+            Ok(rec.init)
+        })
+        .await
+        .map_err(|e| AgentError::internal(e.to_string()))?
+        .map_err(AgentError::internal)?;
+        if init.sheets.len() != s.record().manifest.sheets.len() {
+            return Err(AgentError::internal("백업의 시트 수가 넘겨받은 내용과 다릅니다"));
+        }
+        let session = SessionHandle::spawn(init);
+        let parts = session.save_parts().await.map_err(AgentError::internal)?;
+        drop(session);
+        let mut data = self.save_data_of(s, parts, false);
+        data.frozen_at_ms = local_ms(b.at);
+        if let Some(n) = out.file_name() {
+            data.file_name = n.to_string_lossy().to_string();
+        }
+        let path = work.join(crate::record::RESULT_FILE);
+        let file = path.clone();
+        tokio::task::spawn_blocking(move || std::fs::write(&file, data.encode()))
+            .await
+            .map_err(|e| AgentError::internal(e.to_string()))?
+            .map_err(|e| AgentError::internal(format!("취합 데이터를 쓸 수 없습니다: {e}")))?;
+        self.opts.engine.save(SaveJob { data: path, source: s.source_path(), out }).await.map_err(AgentError::internal)
     }
 
     /// 1초마다 [`Agent::tick`].
@@ -1019,11 +1168,12 @@ impl Agent {
     // ------------------------------------------------------------------ 다시 켜기
 
     /// 서비스 폴더에서 되살린다. 서비스 중이던 것은 다시 공개하고, 꺼진 사이 마감이 지났거나 저장하다 꺼졌으면 바로
-    /// 저장하게 둔다. 취합 데이터를 남긴 서비스(관리자 저장 대기·저장 중)는 세션 없이 둔다. 오래된(14일) 끝난 서비스 폴더는
-    /// 지운다.
+    /// 저장하게 둔다. 기록 파일이 손상되었으면 가장 최근 백업으로 되살린다([`recover_or_backup`]). 취합 데이터를 남긴
+    /// 서비스(관리자 저장 대기·저장 중)는 세션 없이 둔다. 오래된(14일) 끝난 서비스 폴더는 지운다.
     pub async fn restore(self: &Arc<Self>) {
-        // 앞 판(서비스 중 수식 계산)이 남긴 계산 사본.
+        // 앞 판(서비스 중 수식 계산)이 남긴 계산 사본, 백업을 엑셀로 저장하다 꺼져 남은 작업 폴더.
         let _ = std::fs::remove_dir_all(self.opts.data_dir.join("calc"));
+        let _ = std::fs::remove_dir_all(self.opts.data_dir.join(EXPORT_DIR));
         let Ok(entries) = std::fs::read_dir(self.services_dir()) else { return };
         let now = self.now();
         let now_ms = local_ms(now);
@@ -1103,16 +1253,25 @@ impl Agent {
         self.changed();
     }
 
-    /// 다시 켤 때 서비스 하나: 세션을 되살리고, 서비스 중이고 마감 전이면 다시 공개한다.
+    /// 다시 켤 때 서비스 하나: 세션을 되살리고(기록 파일이 손상되었으면 백업으로), 서비스 중이고 마감 전이면 다시 공개한다.
     async fn reopen(self: &Arc<Self>, dir: &Path, record: Record) -> Result<Arc<Service>, String> {
-        let store = dir.join(STORE_FILE);
-        let rec = tokio::task::spawn_blocking(move || recover(&store)).await.map_err(|e| e.to_string())??;
+        let at = dir.to_path_buf();
+        let (rec, restored) =
+            tokio::task::spawn_blocking(move || recover_or_backup(&at)).await.map_err(|e| e.to_string())??;
         let recalc = formula_status(rec.init.sheets.iter().map(|(m, _)| m));
         let session = SessionHandle::spawn(rec.init);
         let passed = parse_deadline(&record.manifest.deadline).is_none_or(|d| self.now() >= d);
         let running = record.state == ServiceState::Running && !passed;
         let service = Service::new(dir.to_path_buf(), record, Some(session.clone()));
         service.set_recalc(recalc);
+        if let Some(b) = restored {
+            tracing::warn!(id = %service.id, "기록 파일이 손상되어 {} 백업으로 되살렸습니다(그 뒤 입력은 빠졌을 수 있습니다)", b.label());
+            // 되살린 백업이 마지막 백업보다 오래됐을 수 있다: 다음 백업을 건너뛰지 않게 지운다.
+            service.update(|r| {
+                r.restored_from_ms = Some(local_ms(b.at));
+                r.backup_seq = None;
+            });
+        }
         self.attach(&service, &session);
         if running {
             self.hub.publish(&service.record().slug, session.clone())?;
@@ -1141,6 +1300,46 @@ fn remove_result(s: &Service) {
     {
         tracing::warn!(id = %s.id, "취합 데이터를 지울 수 없습니다: {e}");
     }
+}
+
+/// 서비스 폴더의 기록 파일에서 세션을 되살린다. 손상되어(또는 없어져) 되살릴 수 없으면 가장 최근 백업부터 차례로 기록 파일
+/// 자리에 넣어 본다. 원래 파일은 WAL과 함께 `session.sqlite.broken`으로 옮겨 둔다(남은 WAL이 백업에 붙지 않게). 백업으로
+/// 되살렸으면 그 백업도 돌려준다.
+fn recover_or_backup(dir: &Path) -> Result<(Recovered, Option<BackupFile>), String> {
+    let store = dir.join(STORE_FILE);
+    let err = match recover(&store) {
+        Ok(rec) => return Ok((rec, None)),
+        Err(e) => e,
+    };
+    let backups = backup::list(dir);
+    if backups.is_empty() {
+        return Err(err);
+    }
+    tracing::warn!("{}: 기록 파일을 되살릴 수 없어 백업으로 되살립니다: {err}", dir.display());
+    let side = |suffix: &str| dir.join(format!("{STORE_FILE}{suffix}"));
+    for suffix in ["", "-wal", "-shm"] {
+        let (from, to) = (side(suffix), side(&format!(".broken{suffix}")));
+        let _ = std::fs::remove_file(&to);
+        if from.exists()
+            && let Err(e) = std::fs::rename(&from, &to)
+        {
+            return Err(format!("{err} (손상된 기록 파일을 옮길 수 없어 백업으로 되살리지 못했습니다: {e})"));
+        }
+    }
+    for b in backups {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(side(suffix));
+        }
+        if let Err(e) = std::fs::copy(&b.path, &store) {
+            tracing::warn!("백업({})을 기록 파일 자리에 넣을 수 없습니다: {e}", b.name);
+            continue;
+        }
+        match recover(&store) {
+            Ok(rec) => return Ok((rec, Some(b))),
+            Err(e) => tracing::warn!("백업({})으로도 되살릴 수 없습니다: {e}", b.name),
+        }
+    }
+    Err(format!("{err} (백업으로도 되살릴 수 없습니다)"))
 }
 
 /// 수식 칸이 있으면 '서비스 중에는 계산하지 않음'을 알린다(에이전트는 Excel을 열지 않는다 — 저장할 때 Excel이 계산한다).

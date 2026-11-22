@@ -14,11 +14,13 @@ pub struct Settings {
     pub port: u16,
     /// 마감은 넘겨받는 때부터 이 날 수 안이어야 한다.
     pub max_days: u32,
+    /// 'Windows 시작 시 실행'을 처음 한 번 켜 두었다(그 뒤 사용자가 끄면 다시 켜지 않는다).
+    pub autostart_set: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { base_dir: default_base_dir(), port: DEFAULT_PORT, max_days: DEFAULT_MAX_DAYS }
+        Self { base_dir: default_base_dir(), port: DEFAULT_PORT, max_days: DEFAULT_MAX_DAYS, autostart_set: false }
     }
 }
 
